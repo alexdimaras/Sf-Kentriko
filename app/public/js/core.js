@@ -212,12 +212,14 @@ async function logout() {
 // you type, or while a window is open: then a small bar offers the refresh.
 const VIEW_KEYS = {
   today: /./, products: /^(catalog-|links$|costs$|market$)/, checks: /^(catalog-|ignored$|links$|settings$)/, new: /^(drafts$|catalog-)/,
-  suppliers: /^(suppliers$|orders$|pricelist-|supplier-)/, market: /^(market$|market-decisions$|competitors$|costs$|catalog-)/, settings: /^(settings$|users$)/, fixes: /^(fixes$|catalog-|enrich$)/,
+  suppliers: /^(suppliers$|orders$|pricelist-|supplier-)/, market: /^(market$|market-decisions$|competitors$|costs$|catalog-)/, settings: /^(settings$|users$)/, fixes: /^(fixes$|catalog-|enrich-cache$|pricelist-|links$|ignored$)/,
 };
 const live = {
   es: null, pendingKeys: new Set(), bar: null, timer: null,
   start() {
-    if (this.es || typeof EventSource === 'undefined') return;
+    if (typeof EventSource === 'undefined') return;
+    if (this.es && this.es.readyState !== 2) return; // 2 = closed (e.g. the session ended): open a new one
+    this.es = null;
     const url = '/api/events?c=' + encodeURIComponent(CLIENT) + (MODE === 'server' ? '' : '&t=' + encodeURIComponent(TOKEN));
     this.es = new EventSource(url);
     this.es.onmessage = (ev) => {

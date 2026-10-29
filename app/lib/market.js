@@ -460,13 +460,18 @@ const ACTIONS = { lower: 'Μείωσε', raise: 'Μπορείς να ανεβά�
  *  watch  — something looks cheaper/dearer, but the proof is too weak (one shop, suspect prices): no change
  *  nodata — no comparable offer
  */
-function decision(ours, st, list, floor) {
+function decision(ours, st, list, floor, costVat) {
   const s = settings.all();
   const minShops = Math.max(1, Math.round(Number(s.minShops) || 2));
   const used = list.filter((c) => c.used);
   const sus = list.filter((c) => c.flag === 'suspect').sort((a, b) => a.price - b.price);
   const susText = sus.length ? ` ${sus[0].shop} (${money(sus[0].price)}) δεν μετράει: ${sus[0].note.split(':')[0]}.` : '';
   const none = { suggested: 0, raised: false };
+  // first of all: never sell at a loss, whatever the others do (they may have old stock bought cheaper)
+  if (costVat > 0 && ours > 0 && ours < costVat - 0.009 && floor > ours) {
+    const mkt = st.count ? ` Η αγορά: μέση ${money(st.median)}, από ${money(st.min)} έως ${money(st.max)}.` : '';
+    return { action: 'raise', suggested: floor, raised: true, loss: true, reason: `Πουλάς με ζημιά: η τιμή σου είναι κάτω από το κόστος αγοράς με ΦΠΑ (${money(costVat)}). Πρόταση: το κατώτατο όριο (κόστος + ${s.floorMargin}% + ΦΠΑ).${mkt}${susText}` };
+  }
   if (!st.count || !ours) {
     let reason = 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο σε άλλο κατάστημα.';
     if (st.outOfStock) reason = 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής.';
@@ -504,13 +509,13 @@ function floorFor(site, p) { return costInfo(site, p).floor; }
 function compute(site, p, entry) {
   const ci = costInfo(site, p);
   const st = stats(entry.competitors, { ours: p.price, costVat: ci.costVat, rrp: ci.rrp });
-  const d = decision(p.price, st, entry.competitors, ci.floor);
+  const d = decision(p.price, st, entry.competitors, ci.floor, ci.costVat);
   // a big drop (over 20%) with fewer than 3 shops is shown as "check before changing" and needs a yes on export
   const bigDrop = !!(d.suggested && p.price && d.suggested < p.price * 0.8);
   const used = entry.competitors.filter((c) => c.used);
   return Object.assign(entry, {
     stats: st, suggested: d.suggested, floor: ci.floor, raised: d.raised, cost: ci.cost, rrp: ci.rrp, ourPrice: p.price,
-    action: d.action, verdict: d.action, reason: d.reason, bigDrop, careful: bigDrop && st.count < 3,
+    action: d.action, verdict: d.action, reason: d.reason, loss: !!d.loss, bigDrop, careful: bigDrop && st.count < 3,
     // where we stand: 1 = the cheapest, among the shops that count and us
     rank: st.count ? used.filter((c) => c.price < p.price - 0.009).length + 1 : 0, of: st.count ? st.count + 1 : 0,
     vsMedian: st.median && p.price ? U.r2((p.price - st.median) / st.median) : null,
@@ -618,7 +623,7 @@ async function run(targets, job, opts) {
     const entry = compute(t.site, p, { at, name: p.name, competitors: offers, prevStats: prev && prev.stats && prev.stats.count ? { min: prev.stats.min, median: prev.stats.median, at: prev.at } : (prev && prev.prevStats) || null });
     if (entry.stats.count) withData++;
     if (entry.stats.similar) similar++;
-    if (!offers.length && !prev) continue; // nothing to keep
+    if (!offers.length && !prev && !entry.loss) continue; // nothing to keep (a sale at a loss is always kept)
     all[key] = entry;
   }
   store.write('market', all);
@@ -805,7 +810,7 @@ function quickCounts(site) {
   const catalog = require('./catalog');
   const all = results();
   const byId = new Map(catalog.load(site).products.map((p) => [p.id, p]));
-  const c = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0 };
+  const c = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, loss: 0 };
   for (const [key, e] of Object.entries(all)) {
     if (!key.startsWith(site + ':')) continue;
     const p = byId.get(Number(key.slice(site.length + 1)));
@@ -813,6 +818,7 @@ function quickCounts(site) {
     c[verdict(e)]++;
     if (e.stats && e.stats.similar) c.similar++;
     if (e.stats && e.stats.suspect) c.suspect++;
+    if (e.loss && p.price > 0) c.loss++;
   }
   return c;
 }

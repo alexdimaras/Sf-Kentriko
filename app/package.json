@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "build:win": "pkg . --targets node22-win-x64 --output dist/SF-Kentro.exe --compress GZip",
-    "build:linux": "pkg . --targets node22-linux-x64 --output dist/sf-kentro-linux"
+    "build:linux": "pkg . --targets node22-linux-x64 --output dist/sf-kentro-linux",
+    "test": "node test/run.js"
   },
   "license": "UNLICENSED",
   "dependencies": {

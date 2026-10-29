@@ -5,6 +5,10 @@ const { uid } = require('./util');
 const jobs = new Map();
 const listeners = new Set();
 function onChange(fn) { listeners.add(fn); }
+// how a job's work is started (the server runs it outside the request that asked for it, so every screen —
+// also the one that started it — hears about the data it changes)
+let runner = (fn) => fn();
+function setRunner(r) { runner = r; }
 function changed() { for (const fn of listeners) { try { fn(); } catch (_) { /* ignore */ } } }
 
 function start(type, label, fn) {
@@ -19,7 +23,7 @@ function start(type, label, fn) {
     log(line) { job.log.push(line); if (job.log.length > 200) job.log.shift(); },
     cancelled() { return job.cancel; },
   };
-  Promise.resolve().then(() => fn(api)).then((r) => {
+  Promise.resolve().then(() => runner(() => fn(api))).then((r) => {
     job.result = r === undefined ? null : r;
     job.status = job.cancel ? 'cancelled' : 'done';
   }).catch((e) => {
@@ -44,4 +48,4 @@ function cancel(id) { const j = jobs.get(id); if (j && j.status === 'running') j
 function running() { return [...jobs.values()].filter((j) => j.status === 'running').map(view); }
 function recent() { return [...jobs.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, 10).map(view); }
 
-module.exports = { start, get, cancel, running, recent, onChange };
+module.exports = { start, get, cancel, running, recent, onChange, setRunner };

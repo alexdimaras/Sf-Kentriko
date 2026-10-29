@@ -493,23 +493,27 @@ store.onWrite((name) => {
   pendingKeys.get(name).add(by);
   if (!flushTimer) flushTimer = setTimeout(flushEvents, 400);
 });
-jobs.onChange(() => { for (const st of streams) sse(st.res, { jobs: true }); });
+jobs.onChange(() => { for (const st of [...streams]) if (alive(st)) sse(st.res, { jobs: true }); });
+jobs.setRunner((fn) => reqCtx.exit(fn));
 function flushEvents() {
   flushTimer = null;
   const pend = pendingKeys; pendingKeys = new Map();
-  for (const st of streams) {
+  for (const st of [...streams]) {
+    if (!alive(st)) continue;
     // a tab is not told about changes only it made (it already shows them)
     const keys = [...pend.entries()].filter(([, by]) => [...by].some((b) => b !== st.client)).map(([k]) => k);
     if (keys.length) sse(st.res, { keys });
   }
 }
 function sse(res, data) { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch (_) { /* closed */ } }
+// a stream whose session ended (logout, idle) is closed: nothing more is told to it
+function alive(st) { if (!SERVER || users.session(st.sid, false)) return true; streams.delete(st); try { st.res.end(); } catch (_) { /* closed */ } return false; }
 function serveEvents(req, res, url) {
   if (SERVER) { if (!sessionOf(req, false)) return send(res, 401, { error: 'Χρειάζεται σύνδεση.', login: true }); }
   else if (!safeEq(url.searchParams.get('t'), TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
   res.write('retry: 4000\n\n');
-  const st = { res, client: String(url.searchParams.get('c') || '').slice(0, 40) };
+  const st = { res, client: String(url.searchParams.get('c') || '').slice(0, 40), sid: SERVER ? cookieOf(req, 'sfk_sid') : '' };
   streams.add(st);
   const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) { /* closed */ } }, 25000);
   req.on('close', () => { clearInterval(ping); streams.delete(st); });
