@@ -179,6 +179,7 @@ function compute() {
   const L = catalog.links();
   const ign = checks.ignored();
   const ignoredIn = (id, site, pid) => (ign[id] || []).includes(site + ':' + pid);
+  const bannedSt = new Set(); // ads-site products that must not be there
   for (const site of catalog.SITES) {
     const cat = catalog.load(site);
     if (!cat.syncedAt) continue;
@@ -194,6 +195,19 @@ function compute() {
     const seo = wx.seoColumns(wx.seoMode(site));
     for (const p of main) {
       const base = { site, pid: p.id, name: p.name, img: p.thumb || (p.images || [])[0] || '', url: p.url, sku: p.sku, type: p.type };
+      // ads site: what Google / Meta do not allow. A product that is not allowed there only gets "take it off the site":
+      // no text, photo, price or title is ever asked for it.
+      let adLevel = '', adWhy = '';
+      if (site === 'st') {
+        const oid = map.get(p.id);
+        const ad = catalog.adStatus(site, p, oid ? oById.get(oid) : null, other);
+        adLevel = ad.level; adWhy = ad.why;
+        if (ad.level === 'banned') {
+          bannedSt.add(p.id);
+          if (!ignoredIn('st-ads-banned', site, p.id)) add(Object.assign({}, base, { field: 'published', from: 'Δημοσιευμένο', to: -1, why: `Απαγορεύεται σε Google και Meta (${ad.why}): γίνεται «Πρόχειρο» στο ${s.sites.st.name}, δεν διαγράφεται. Στο ${s.sites.sf.name} μένει κανονικά.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google / Meta' }, level: 'high' }));
+          continue;
+        }
+      }
       // titles: every rule of the checks, combined into one corrected title
       let fixedName = '';
       if (!['mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'].some((k) => ignoredIn(site + '-' + k, site, p.id))) {
@@ -210,13 +224,8 @@ function compute() {
         const sug = type ? guessCat(type, p.brand) : null;
         if (sug && sug.score >= 6) add(Object.assign({}, base, { field: 'cats', from: (p.catNames || []).join(', ') || '—', to: { id: sug.id, path: sug.path }, why: `Είναι μόνο στη γενική κατηγορία. Προϊόντα «${type}» είναι στην «${sug.path}».`, source: { kind: 'rule', label: 'Από παρόμοια προϊόντα του καταστήματος' }, level: 'medium' }));
       }
-      // ads site: what Google / Meta do not allow
-      if (site === 'st') {
-        const oid = map.get(p.id);
-        const ad = catalog.adStatus(site, p, oid ? oById.get(oid) : null, other);
-        if (ad.level === 'banned' && !ignoredIn('st-ads-banned', site, p.id)) add(Object.assign({}, base, { field: 'published', from: 'Δημοσιευμένο', to: -1, why: `Απαγορεύεται σε Google και Meta (${ad.why}): γίνεται «Πρόχειρο» στο ${s.sites.st.name}, δεν διαγράφεται. Στο ${s.sites.sf.name} μένει κανονικά.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google / Meta' }, level: 'high' }));
-        else if (ad.level === 'google' && !ignoredIn('st-ads-google', site, p.id)) add(Object.assign({}, base, { field: 'gla', from: 'Στο Google Shopping', to: 'dont-sync-and-show', why: `Το Google δεν το δέχεται (${ad.why}): μένει στο site, βγαίνει από το Google Shopping.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google' }, level: 'high' }));
-      }
+      // ads site, Google Shopping only
+      if (adLevel === 'google' && !ignoredIn('st-ads-google', site, p.id)) add(Object.assign({}, base, { field: 'gla', from: 'Στο Google Shopping', to: 'dont-sync-and-show', why: `Το Google δεν το δέχεται (${adWhy}): μένει στο site, βγαίνει από το Google Shopping.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google' }, level: 'high' }));
       // content: description, short description, photos, brand, EAN — only from a real source
       const need = contentNeeds(p, s);
       const found = ec.products[site + ':' + p.id];
@@ -258,7 +267,7 @@ function compute() {
   }
   // prices: the two sites must agree (the reference site wins)
   for (const it of (checks.cached().checks.find((c) => c.id === 'x-price') || { items: [] }).items) {
-    if (!it.fix || !(Number(it.fix.regular) > 0)) continue;
+    if (!it.fix || !(Number(it.fix.regular) > 0) || (it.site === 'st' && bannedSt.has(it.id))) continue;
     add({ site: it.site, pid: it.id, name: it.name, img: it.img, url: it.url, sku: it.sku, type: it.type, field: 'price', from: { price: it.site === 'st' ? it.stPrice : it.sfPrice }, to: { regular: Number(it.fix.regular), sale: Number(it.fix.sale) || 0, srcId: it.srcId }, why: `Διαφορετική τιμή στα δύο sites (${it.why}). Σωστή είναι του ${settings.all().sites[settings.all().master === 'st' ? 'st' : 'sf'].name}.`, source: { kind: 'rule', label: 'Η τιμή του κεντρικού site' }, level: 'high' });
   }
   // the user's decisions
@@ -271,16 +280,42 @@ function compute() {
       if (d.edited !== undefined) { c.edited = true; c.to = d.edited; }
     }
   }
+  // The ads site follows the main site: what is approved for a product on SpecialForces is made, by itself, on the same
+  // product of the ads site (no second approval, no second proposal). Not for what differs between the sites
+  // (categories, prices), and never for products that are not allowed there.
+  const sfC = catalog.load('sf'), stC = catalog.load('st');
+  if (sfC.syncedAt && stC.syncedAt) {
+    const stBy = new Map(stC.products.map((p) => [p.id, p]));
+    const twinOf = (c) => { const sid = L.sfToSt.get(c.pid); const sp = sid != null ? stBy.get(sid) : null; return sp && sp.type !== 'variation' && sp.status !== 'draft' && sp.status !== 'private' && !bannedSt.has(sid) ? sp : null; };
+    const lead = out.filter((c) => c.site === 'sf' && MIRROR.includes(c.field) && c.status !== 'rejected' && twinOf(c));
+    const leadKey = new Set(lead.map((c) => `${L.sfToSt.get(c.pid)}:${c.field}`));
+    // the ads site's own proposal for the same field is dropped: the main site's change is the only one
+    for (let i = out.length - 1; i >= 0; i--) if (out[i].site === 'st' && leadKey.has(`${out[i].pid}:${out[i].field}`)) out.splice(i, 1);
+    for (const c of lead) {
+      if (c.status !== 'approved' && c.status !== 'exported') continue; // waits for the yes on the main site
+      const sp = twinOf(c);
+      const cur = { name: sp.name, desc: sp.desc || '', short: sp.short || '', images: sp.images || [], brand: sp.brand || '', gtin: '' }[c.field];
+      const m = { site: 'st', pid: sp.id, name: sp.name, img: sp.thumb || (sp.images || [])[0] || '', url: sp.url, sku: sp.sku, type: sp.type, field: c.field, from: cur, to: c.to,
+        why: `Ίδια αλλαγή με το ${s.sites.sf.name}: έγινε δεκτή εκεί, γίνεται αυτόματα και εδώ.`, source: { kind: 'mirror', label: 'Από το ' + s.sites.sf.name + ' (εγκεκριμένο)', url: c.url, level: 'high' }, level: 'high', mirrorOf: c.id };
+      add(m);
+      const d = dec[m.id];
+      m.status = d && d.hash === m.hash && (d.status === 'exported' || d.status === 'rejected') ? d.status : 'approved';
+      if (d && d.hash === m.hash) { m.at = d.at; m.by = d.by || ''; }
+      else { m.by = c.by || ''; m.at = c.at; }
+    }
+  }
   memo = { at: U.nowIso(), items: out, cacheAt: ec.at || null };
   return memo;
 }
+const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin'];
 
 // ---------- quality score of the catalog (0–100 per product) ----------
 function quality(site) {
   const catalog = require('./catalog');
   const cat = catalog.load(site);
   const s = settings.all();
-  const main = cat.products.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private');
+  const bannedAds = site === 'st' ? catalog.bannedOnAds() : new Set();
+  const main = cat.products.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private' && !bannedAds.has(p.id));
   const parts = { desc: 0, images: 0, brand: 0, short: 0, title: 0, sku: 0 };
   const W = { desc: 30, images: 25, brand: 10, short: 10, title: 15, sku: 10 };
   let total = 0;
@@ -456,9 +491,11 @@ async function findSources(job, opts) {
   const sites = catalog.SITES.filter((x) => catalog.load(x).syncedAt);
   // 1. who needs what
   const needs = [];
+  const bannedAds = catalog.bannedOnAds();
   for (const site of sites) {
     for (const p of catalog.load(site).products) {
       if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
+      if (site === 'st' && bannedAds.has(p.id)) continue; // not allowed on the ads site: nothing is looked up for it
       const n = contentNeeds(p, s);
       if (n.desc || n.short || n.images || n.brand) needs.push({ site, p, n });
     }
@@ -535,6 +572,48 @@ async function findSources(job, opts) {
     ec.products[key] = { at: U.nowIso(), src: { kind: 'supplier', label: `${best.c.sup.name} · ${best.c.how}`, url: url || '', supplierId: best.c.sup.id, level: best.level }, data: Object.assign(data, prev && prev.data && prev.data.descHtmlEl && prev.data.descHtml === data.descHtml ? { descHtmlEl: prev.data.descHtmlEl } : {}) };
     found++;
   }
+  // 4. photos: nothing from a supplier → a careful search for the product itself. Only a page that shows the SAME
+  // product (title and code check) is taken, and every photo proposal shows where it comes from.
+  let researched = 0;
+  const maxResearch = process.env.SFK_NO_RESEARCH ? 0 : Math.max(0, Number(opts.maxResearch == null ? 10 : opts.maxResearch));
+  if (maxResearch) {
+    const sfind = require('./supplierfind');
+    const state = { blocked: new Set(), used: new Set() };
+    const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } };
+    const own = new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean));
+    ec.research = ec.research || {};
+    const L = catalog.links();
+    const todo = needs.filter(({ site, p }) => (p.images || []).length === 0 && !ec.products[site + ':' + p.id] && !(site === 'st' && L.stToSf.has(p.id)) && !(ec.research[site + ':' + p.id] && now - new Date(ec.research[site + ':' + p.id].at).getTime() < PAGE_DAYS * 864e5));
+    job && job.log(`Φωτογραφίες χωρίς πηγή αντιπροσώπου: ${todo.length} προϊόντα· έρευνα για τα ${Math.min(todo.length, maxResearch)} σήμερα.`);
+    for (const { site, p } of todo) {
+      if (researched >= maxResearch || (job && job.cancelled())) break;
+      const key = site + ':' + p.id;
+      researched++;
+      let hit = null;
+      try {
+        const queries = [p.sku ? `${p.brand || ''} ${p.sku}`.trim() : '', p.name].filter(Boolean);
+        for (const q of queries) {
+          const hits = (await sfind.search(q, state)).filter((h) => /^https?:\/\//i.test(h.url) && hostOf(h.url) && !own.has(hostOf(h.url)) && !sfind.NEVER.test(hostOf(h.url))).slice(0, 4);
+          for (const h of hits) {
+            let pg;
+            try { pg = await extract.fromUrl(h.url, { gap }); pages++; } catch (_) { continue; }
+            const chk = market.score({ name: p.name, brand: p.brand, sku: p.sku, price: 0 }, { name: pg.name, sku: pg.code, brand: pg.brand, price: 0 });
+            const images = extract.cleanImages(pg.images || []);
+            const sameCode = p.sku && pg.code && U.foldKey(pg.code) === U.foldKey(p.sku);
+            if (images.length && (chk.match === 'exact' || sameCode)) { hit = { h, pg, images }; break; }
+          }
+          if (hit) break;
+        }
+      } catch (e) {
+        if (e instanceof sfind.Blocked) { job && job.log('Η μηχανή αναζήτησης μας περιόρισε· η έρευνα συνεχίζει αύριο.'); break; }
+        errors++;
+      }
+      if (hit) {
+        ec.products[key] = { at: U.nowIso(), src: { kind: 'research', label: 'Έρευνα στο internet: ' + hostOf(hit.h.url), url: hit.h.url, level: 'medium' }, data: { name: hit.pg.name || '', brand: hit.pg.brand || '', ean: hit.pg.ean || '', code: hit.pg.code || '', descHtml: '', images: hit.images, features: [], specs: [], supplier: '' } };
+        found++;
+      } else ec.research[key] = { at: U.nowIso() };
+    }
+  }
   // pages not needed any more are forgotten after 30 days
   for (const [u, pg] of Object.entries(ec.pages)) if (now - new Date(pg.at).getTime() > PAGE_DAYS * 864e5) delete ec.pages[u];
   // decisions about changes that no longer exist (fixed on the site, product gone) are forgotten after 2 weeks
@@ -545,7 +624,7 @@ async function findSources(job, opts) {
   store.write(CACHE, ec);
   invalidate();
   job && job.progress(needs.length, needs.length, `Έτοιμο: πηγές για ${found.toLocaleString('el-GR')} προϊόντα · ${pages} σελίδες αντιπροσώπων διαβάστηκαν`);
-  return { needs: needs.length, found, pages, errors };
+  return { needs: needs.length, found, pages, errors, researched };
 }
 
 /** A page given by the user (manufacturer / supplier) as the source of one product. */

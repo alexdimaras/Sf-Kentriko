@@ -216,7 +216,7 @@ async function logout() {
 // you type, or while a window is open: then a small bar offers the refresh.
 const VIEW_KEYS = {
   today: /./, products: /^(catalog-|links$|costs$|market$)/, checks: /^(catalog-|ignored$|links$|settings$)/, new: /^(drafts$|catalog-)/,
-  suppliers: /^(suppliers$|orders$|pricelist-|supplier-)/, market: /^(market$|market-decisions$|competitors$|costs$|catalog-)/, settings: /^(settings$|users$)/, fixes: /^(fixes$|catalog-|enrich-cache$|pricelist-|links$|ignored$)/,
+  suppliers: /^(suppliers$|orders$|pricelist-|supplier-)/, market: /^(market$|market-decisions$|competitors$|costs$|catalog-)/, settings: /^(settings$|users$)/, fixes: /^(fixes$|catalog-|enrich-cache$|pricelist-|links$|ignored$)/, flow: /^(fixes$|catalog-|market$|links$|ignored$|enrich-cache$)/,
 };
 const live = {
   es: null, pendingKeys: new Set(), bar: null, timer: null,
@@ -515,7 +515,7 @@ function startSync(sites, full) {
 
 // ---------- router & shell ----------
 const NAV = [
-  ['today', 'Σήμερα', 'today'], ['fixes', 'Διορθώσεις', 'fixes'], ['products', 'Προϊόντα', 'products'], ['checks', 'Έλεγχοι καταλόγου', 'checks'], ['new', 'Νέα προϊόντα', 'new'],
+  ['today', 'Σήμερα', 'today'], ['flow', 'Ροή εργασίας', 'bolt'], ['fixes', 'Διορθώσεις', 'fixes'], ['products', 'Προϊόντα', 'products'], ['checks', 'Έλεγχοι καταλόγου', 'checks'], ['new', 'Νέα προϊόντα', 'new'],
   ['suppliers', 'Αντιπρόσωποι', 'suppliers'], ['market', 'Τιμές αγοράς', 'market'], ['settings', 'Ρυθμίσεις', 'settings'],
 ];
 function parseHash() {
@@ -529,8 +529,8 @@ function go(view, params) {
   if (location.hash === target) App.route(); else location.hash = target;
 }
 // phone: the four screens used most, at the bottom; everything else in the menu sheet (the sidebar)
-const TABS = ['today', 'fixes', 'market', 'products'];
-const SHORT = { today: 'Σήμερα', fixes: 'Διορθώσεις', market: 'Τιμές', products: 'Προϊόντα' };
+const TABS = ['today', 'flow', 'fixes', 'market'];
+const SHORT = { today: 'Σήμερα', flow: 'Ροή', fixes: 'Διορθώσεις', market: 'Τιμές', products: 'Προϊόντα' };
 function renderNav(active) {
   const nav = clear($('#nav'));
   for (const [id, label, ic] of NAV) {
@@ -603,6 +603,7 @@ async function refreshBadges() {
     else if (d.kpi.high) App.badges.checks = { n: d.kpi.high };
     if (d.kpi.drafts) App.badges.new = { n: d.kpi.drafts };
     if (d.kpi.fixes) App.badges.fixes = { n: d.kpi.fixes, cls: 'coy' };
+    if (d.kpi.flowOpen) App.badges.flow = { n: d.kpi.flowOpen };
     renderNav(parseHash().view);
     return d;
   } catch (_) { return null; }

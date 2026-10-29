@@ -147,6 +147,8 @@
     let q = p.q || '';
     let page = 1;
     let suspectOnly = false;
+    let readyOnly = p.ready === '1'; // prices only for products whose code, facts and texts are done (Ροή εργασίας)
+    const STEP = { 1: 'κωδικός', 2: 'στοιχεία', 3: 'περιγραφή/φωτό' };
     const selected = new Set();
     const tiles = h('div', { class: 'kpis' });
     const fbar = h('div', { class: 'toolbar' });
@@ -165,6 +167,7 @@
       if (!fbar.firstChild) { fbar.appendChild(App.seg([['sf', siteName('sf')], ['st', siteName('st')]], site, (v) => App.go('market', { site: v }))); fbar.appendChild(chips); fbar.appendChild(search); }
       clear(chips);
       chips.appendChild(h('button', { type: 'button', class: 'chip' + (action === 'all' ? ' on' : ''), onclick: () => { action = 'all'; page = 1; selected.clear(); drawF(); load(); } }, 'Όλα ', h('b', null, fmt.num(c0.all))));
+      if (c0.notReady) chips.appendChild(h('button', { type: 'button', class: 'chip' + (readyOnly ? ' on' : ''), title: 'Κρύψε προϊόντα που έχουν ακόμα κάτι να διορθωθεί σε κωδικό, στοιχεία ή περιγραφή: πρώτα αυτά, μετά η τιμή', onclick: () => { readyOnly = !readyOnly; page = 1; selected.clear(); drawF(); load(); } }, 'Μόνο έτοιμα για τιμή ', h('b', null, fmt.num(c0.all - c0.notReady))));
       if (c0.suspect) chips.appendChild(h('button', { type: 'button', class: 'chip' + (suspectOnly ? ' on' : ''), title: 'Ανταγωνιστές με τιμή κάτω από το κόστος μας ή πολύ κάτω από τους άλλους', onclick: () => { suspectOnly = !suspectOnly; page = 1; drawF(); load(); } }, 'Με ύποπτες τιμές ', h('b', null, fmt.num(c0.suspect))));
     };
     const renderBulk = () => {
@@ -193,7 +196,7 @@
       bulk.appendChild(btn('Καθαρισμός', { cls: 'ghost' }, () => { selected.clear(); load(); }));
     };
     const load = async () => {
-      const ov = await GET('/api/market', { site, action: action === 'all' ? '' : action, suspect: suspectOnly ? '1' : '', q, page, per: 100 });
+      const ov = await GET('/api/market', { site, action: action === 'all' ? '' : action, suspect: suspectOnly ? '1' : '', ready: readyOnly ? '1' : '', q, page, per: 100 });
       c0 = ov.counts; drawF(); // the counts follow every decision
       clear(box);
       if (action !== 'all') box.appendChild(h('p', { class: 'muted', style: { margin: '0 0 10px' } }, h('b', null, ACT[action][0] + ': '), ACT[action][1].replace('2 καταστήματα', minShops + ' καταστήματα')));
@@ -216,7 +219,7 @@
         } },
           h('td', { class: 'w-check' }, h('input', { type: 'checkbox', disabled: !r.suggested || r.master, title: r.master ? 'Η τιμή αλλάζει από το ' + siteName('sf') : !r.suggested ? 'Δεν προτείνεται αλλαγή τιμής' : '', checked: selected.has(r.id), onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); renderBulk(); } })),
           h('td', { style: { width: '52px' } }, thumb(r.img)),
-          h('td', { class: 'title' }, r.name, h('div', { class: 'faint meta' }, [r.brand, r.sku].filter(Boolean).join(' · '), r.rank ? ` · ${r.rank}ος φθηνότερος από ${r.of}` : '', ` · ${fmt.plural(st.count || 0, 'κατάστημα μετράει', 'καταστήματα μετράνε')}`, st.suspect ? ` · ${st.suspect} ύποπτη τιμή` : '', st.similar ? ` · ${st.similar} παρόμοια` : '', r.master ? ' · τιμή από ' + siteName('sf') : '')),
+          h('td', { class: 'title' }, r.name, r.stage && r.stage < 4 ? h('a', { class: 'pill not-ready', href: '#/flow?stage=' + r.stage, title: 'Πρώτα να ολοκληρωθεί αυτό το βήμα· μετά αποφασίζεται η τιμή', onclick: (e) => e.stopPropagation() }, 'Πρώτα: ' + STEP[r.stage]) : null, h('div', { class: 'faint meta' }, [r.brand, r.sku].filter(Boolean).join(' · '), r.rank ? ` · ${r.rank}ος φθηνότερος από ${r.of}` : '', ` · ${fmt.plural(st.count || 0, 'κατάστημα μετράει', 'καταστήματα μετράνε')}`, st.suspect ? ` · ${st.suspect} ύποπτη τιμή` : '', st.similar ? ` · ${st.similar} παρόμοια` : '', r.master ? ' · τιμή από ' + siteName('sf') : '')),
           h('td', { class: 'num ours' }, h('b', null, fmt.money(r.ourPrice)), r.vsMedian != null && st.count ? h('div', { class: 'price-diff ' + (r.vsMedian > 0.05 ? 'up' : r.vsMedian < -0.05 ? 'down' : ''), title: 'Σε σχέση με τη μέση τιμή αγοράς ' + fmt.money(st.median) }, pct(r.vsMedian) + ' vs μέση') : null),
           h('td', { class: 'ladder-cell' }, ladder(r, r.ourPrice), st.count ? h('div', { class: 'ladder-cap' }, h('span', null, fmt.money(st.min), st.minShop ? ' · ' + st.minShop : ''), h('span', null, st.maxShop ? st.maxShop + ' · ' : '', fmt.money(st.max))) : null),
           h('td', { class: 'decide' }, actPill(r.action), h('div', { class: 'reason', title: r.reason }, r.reason)),

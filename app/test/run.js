@@ -66,6 +66,10 @@ function supplierSite() {
   const srv = http.createServer((req, res) => {
     const b = 'http://127.0.0.1:' + srv.address().port;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    // a search engine and two product pages for the photo research (one is another product, one is the right one)
+    if (req.url.startsWith('/search')) return res.end(`<html><body><div class="result"><a class="result__a" href="https://www.skroutz.gr/s/1">Skroutz</a></div><div class="result"><a class="result__a" href="${b}/p/other">Other</a></div><div class="result"><a class="result__a" href="${b}/p/maui">Maui</a></div></body></html>`);
+    if (req.url === '/p/other') return res.end(page('ΣΤΥΛΟ ΑΛΛΟ ΠΡΟΪΟΝ', '<p>Άλλο προϊόν.</p>', ['https://img.example/other-1.jpg']));
+    if (req.url === '/p/maui') return res.end(page('ΚΑΠΕΛΟ HELIKON-TEX MAUI', '<p>Καπέλο.</p>', ['https://img.example/maui-1.jpg', 'https://img.example/maui-2.jpg']));
     if (req.url === '/p/raccoon') return res.end(page('Helikon-Tex Raccoon Mk2 Backpack 20L', '<p>Το σακίδιο Raccoon Mk2 είναι συμπαγές σακίδιο ημέρας 20 λίτρων από Cordura 500D, με κύρια θήκη που ανοίγει σαν βαλίτσα.</p><p>Για χονδρική επικοινωνήστε στο 2104123456.</p><ul><li>Ιμάντες ώμου με επένδυση</li><li>Πάνελ MOLLE</li></ul>', [b + '/i/1.jpg', b + '/i/2.jpg', b + '/i/3.jpg']));
     return res.end(page('Σύνδεση', '<p>Please log in to see this page.</p>', []));
   });
@@ -75,6 +79,7 @@ function supplierSite() {
 (async () => {
   const srv = await supplierSite();
   world(srv.address().port);
+  process.env.SFK_SEARCH_DDG = 'http://127.0.0.1:' + srv.address().port + '/search'; process.env.SFK_SEARCH_FAST = '1'; // the "internet" is this little server
   const store = require(APP + '/lib/store');
   const market = require(APP + '/lib/market');
   const fixes = require(APP + '/lib/fixes');
@@ -129,6 +134,54 @@ function supplierSite() {
   const ex = fixes.exportFile('sf', 'test');
   ok(/^\uFEFFID,Name,/.test(ex.csv) && ex.csv.includes('Cordura 500D') && ex.csv.includes('GTIN, UPC, EAN, or ISBN'), 'one WooCommerce update file with only the changed columns');
   ok(fixes.compute().items.filter((c) => c.status === 'exported').length === sure.count - fixes.compute().items.filter((c) => c.site === 'st' && c.status === 'approved').length, 'exported fixes are marked');
+
+  section('Ροή εργασίας: κωδικός → στοιχεία → περιγραφή → τιμή');
+  const flow = require(APP + '/lib/flow');
+  const fv = flow.view({ stage: 1 });
+  ok(fv.stages.length === 5 && fv.stages[4].id === 'ready', 'five steps, the last one is "ready"');
+  const rowOf = (site, id) => flow.compute().rows.get(site + ':' + id);
+  ok(rowOf('sf', 102) && rowOf('sf', 102).stage === 5 && rowOf('sf', 102).waitingFile, 'a product whose fixes are all approved is ready (it only waits for the file to be uploaded)');
+  // three new products: no code / the same code twice → step 1; a missing brand → step 2; a missing photo → step 3
+  const cur = require(APP + '/lib/catalog').load('sf');
+  const mk = (o) => ({ type: 'simple', parent: 0, regular: 20, sale: 0, price: 20, inStock: true, cats: [11], catNames: ['Ρουχισμός'], images: ['https://shop.example/i/x.jpg'], desc: '<p>' + 'Περιγραφή '.repeat(30) + '</p>', short: '<ul><li>a</li></ul>', status: 'publish', brand: 'ACME', tags: [], attrs: [], variations: [], url: 'https://shop.example/p/' + o.id, ...o });
+  store.write('catalog-sf', Object.assign({}, cur, { products: cur.products.concat([
+    mk({ id: 110, name: 'ΦΑΚΟΣ NITECORE MS450 BLACK', sku: '', brand: 'NITECORE' }), mk({ id: 111, name: 'ΣΤΥΛΟ ACME ΜΠΛΕ', sku: 'DUP-1' }), mk({ id: 112, name: 'ΣΤΥΛΟ ACME ΚΟΚΚΙΝΟ', sku: 'dup-1' }),
+    mk({ id: 113, name: 'ΚΑΠΕΛΟ ACME ΜΑΥΡΟ', sku: 'CAP-1', brand: '' }), mk({ id: 114, name: 'ΚΑΣΚΟΛ ACME ΜΑΥΡΟ', sku: 'HAT-1', images: [], desc: '' }), mk({ id: 115, name: 'ΓΑΝΤΙΑ ACME ΜΑΥΡΑ', sku: 'GLV-1' }),
+  ]) }));
+  require(APP + '/lib/checks').invalidate();
+  ok(rowOf('sf', 110).stage === 1 && rowOf('sf', 110).problems.some((x) => x.kind === 'nosku'), 'no code → step 1');
+  ok(rowOf('sf', 111).stage === 1 && rowOf('sf', 112).stage === 1 && /3?2 προϊόντα|2 προϊόντα/.test(rowOf('sf', 111).problems[0].text), 'the same code on two products → step 1');
+  ok(rowOf('sf', 113).stage === 2 && rowOf('sf', 114).stage <= 3 && rowOf('sf', 114).stage >= 2, 'no brand → step 2; no photo or text → not yet at the price step');
+  ok(rowOf('sf', 115).stage === 5 && rowOf('sf', 115).problems.length === 0, 'a complete product is ready');
+  ok(flow.view({ stage: 1 }).rows.some((r) => r.id === 110) && flow.summary().next.n === 1, 'the next step is the first one that still has work (1)');
+  ok(flow.stageOf('sf', 999999) === 0, 'an unknown product has no step');
+  ok(market.overview('sf', { ready: '1' }).rows.every((r) => !r.stage || r.stage >= 4), 'the prices list can show only products that finished steps 1-3');
+  ok(/^<h2>Φακός Nitecore MS450 Black<\/h2>/.test(fixes.buildDesc({ name: 'ΦΑΚΟΣ NITECORE MS450 BLACK', brand: 'Nitecore', sku: 'MS450', desc: '', short: '' }, {})), 'description starts with the title in Title Case (Φακός Nitecore MS450 Black)');
+
+  section('Συνοχή: απαγορευμένα στο Στρατιωτικά Είδη, αλλαγές που ακολουθούν, φωτογραφίες με πηγή');
+  const cat0 = require(APP + '/lib/catalog');
+  ok(cat0.bannedOnAds().has(203), 'a pistol on the ads site is "not allowed there"');
+  const items203 = fixes.compute().items.filter((c) => c.site === 'st' && c.pid === 203);
+  ok(items203.length === 1 && items203[0].field === 'published', 'for it the only proposal is to take it off the site (no text, photo, title or price work)', items203.map((c) => c.field).join());
+  ok(flow.compute().rows.get('st:203').problems.every((x) => x.kind === 'ads-banned'), 'the flow asks nothing else for it');
+  ok(!require(APP + '/lib/checks').run().checks.some((c) => c.id !== 'st-ads-banned' && c.items.some((i) => i.site === 'st' && i.id === 203)), 'no other check lists it');
+  ok(!market.overview('st').rows.some((r) => r.id === 203), 'no price advice for it');
+  // a pen on both sites: the title fix approved on SpecialForces is made on the ads site by itself
+  const cs = require(APP + '/lib/catalog');
+  const sfNow = cs.load('sf'), stNow = cs.load('st');
+  store.write('catalog-sf', Object.assign({}, sfNow, { products: sfNow.products.concat([mk({ id: 160, name: 'Στυλό Zeta Πράσινο', sku: 'PEN-ZETA' }), mk({ id: 150, name: 'ΚΑΠΕΛΟ HELIKON-TEX MAUI', sku: 'HAT-MAUI', brand: 'HELIKON-TEX', images: [] })]) }));
+  store.write('catalog-st', Object.assign({}, stNow, { products: stNow.products.concat([mk({ id: 260, name: 'Στυλό Zeta Πράσινο', sku: 'PEN-ZETA' })]) }));
+  require(APP + '/lib/checks').invalidate(); fixes.invalidate();
+  const nameSt0 = () => fixes.compute().items.find((c) => c.site === 'st' && c.pid === 260 && c.field === 'name');
+  ok(!nameSt0(), 'before the main site decides, the ads site has no proposal of its own for the same change');
+  fixes.approveSure('sf', '', 'test'); fixes.invalidate();
+  const nameSt = nameSt0(), nameSf = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 160 && c.field === 'name');
+  ok(nameSt && nameSf && nameSt.mirrorOf === nameSf.id && nameSt.status === 'approved' && nameSt.to === nameSf.to, 'after the yes on the main site the same title is approved for the ads site, automatically', JSON.stringify(fixes.compute().items.filter((c) => c.pid === 160 || c.pid === 260).map((c) => c.id + ' ' + c.status + ' ' + (c.mirrorOf || ''))) + ' links ' + JSON.stringify([...cs.links().sfToSt]));
+  // photos: no supplier has the hat → a careful search; the page of ANOTHER product is refused; the source is shown
+  const rr = await fixes.findSources(null, { maxPages: 5, maxResearch: 5 });
+  const hatImgs = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 150 && c.field === 'images');
+  ok(rr.researched >= 1 && hatImgs && hatImgs.source.kind === 'research' && /\/p\/maui$/.test(hatImgs.source.url) && hatImgs.level === 'medium', 'photos from a researched page of the same product, with the source and "medium" level', JSON.stringify(hatImgs && hatImgs.source));
+  ok(hatImgs && hatImgs.to.every((u) => /maui/.test(u)), 'photos of another product on a result page are never taken');
 
   section('Λειτουργία διακομιστή: χρήστες και ασφάλεια');
   const port = 18000 + Math.floor(Math.random() * 1000);

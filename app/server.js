@@ -302,6 +302,7 @@ const routes = {
     return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload }));
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
+  'GET /api/flow': (q) => require('./lib/flow').view(q),
   'POST /api/market/manual': (b) => market.addManual(b.site, b.id, b),
   'POST /api/market/ignore': (b) => market.toggleIgnore(b.site, b.id, b.url),
   'POST /api/market/decide': (b) => market.decide(b.site === 'st' ? 'st' : 'sf', b.id, String(b.url || ''), b.answer),

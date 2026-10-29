@@ -539,7 +539,8 @@ function targetsAll() {
   const t = [];
   for (const p of catalog.load('sf').products) if (p.type !== 'variation') t.push({ site: 'sf', id: p.id });
   // products of the ads site that are not also on SpecialForces (the rest follow the SpecialForces price)
-  for (const p of catalog.load('st').products) if (p.type !== 'variation' && !L.stToSf.has(p.id)) t.push({ site: 'st', id: p.id });
+  const banned = catalog.bannedOnAds();
+  for (const p of catalog.load('st').products) if (p.type !== 'variation' && !L.stToSf.has(p.id) && !banned.has(p.id)) t.push({ site: 'st', id: p.id });
   return t;
 }
 
@@ -776,8 +777,10 @@ function overview(site, q) {
   const cat = catalog.load(site);
   const rows = [];
   const L = site === 'st' ? catalog.links() : null;
+  const flow = require('./flow');
+  const banned = site === 'st' ? catalog.bannedOnAds() : new Set(); // not allowed on the ads site: no price work for them
   for (const p of cat.products) {
-    if (p.type === 'variation') continue;
+    if (p.type === 'variation' || banned.has(p.id)) continue;
     let e = all[site + ':' + p.id], master = false;
     if (!e && L && L.stToSf.has(p.id)) { e = all['sf:' + L.stToSf.get(p.id)]; master = !!e; }
     if (!e) continue;
@@ -786,15 +789,16 @@ function overview(site, q) {
       id: p.id, name: p.name, brand: p.brand, sku: p.sku, img: p.thumb || p.images[0] || '', url: p.url, ourPrice: p.price, at: e.at, stats: st, suggested: e.suggested,
       floor: e.floor, raised: e.raised, cost: e.cost || 0, rrp: e.rrp || 0, verdict: verdict(e), action: verdict(e), reason: e.reason || '', rank: e.rank || 0, of: e.of || 0, vsMedian: e.vsMedian == null ? null : e.vsMedian,
       competitors: e.competitors, diff: e.suggested && p.price ? U.r2(e.suggested - p.price) : 0, type: p.type, master,
-      prevStats: e.prevStats || null, bigDrop: !!e.bigDrop, careful: !!e.careful,
+      prevStats: e.prevStats || null, bigDrop: !!e.bigDrop, careful: !!e.careful, stage: flow.stageOf(site, p.id),
     });
   }
-  const counts = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length };
+  const counts = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length, notReady: rows.filter((r) => r.stage && r.stage < 4).length };
   for (const r of rows) { counts[r.action] = (counts[r.action] || 0) + 1; if (r.stats.similar) counts.similar++; if (r.stats.suspect) counts.suspect++; }
   const order = { lower: 0, raise: 1, watch: 2, hold: 3, nodata: 4 };
   let list = rows;
   const want = q.action || q.verdict;
   if (want && order[want] !== undefined) list = list.filter((r) => r.action === want);
+  if (q.ready === '1') list = list.filter((r) => !r.stage || r.stage >= 4); // prices only for products whose code, facts and texts are done
   if (q.similar === '1') list = list.filter((r) => r.stats.similar > 0);
   if (q.suspect === '1') list = list.filter((r) => r.stats.suspect > 0);
   if (q.q) { const t = U.foldKey(q.q).split(' ').filter(Boolean); list = list.filter((r) => { const h = U.foldKey(r.name + ' ' + (r.sku || '') + ' ' + (r.brand || '')); return t.every((x) => h.includes(x)); }); }
@@ -806,15 +810,16 @@ function overview(site, q) {
 }
 
 /** Counts per action without building the rows (for the dashboard). */
-function quickCounts(site) {
+function quickCounts(site, isReady) {
   const catalog = require('./catalog');
   const all = results();
   const byId = new Map(catalog.load(site).products.map((p) => [p.id, p]));
   const c = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, loss: 0 };
+  const banned = site === 'st' ? catalog.bannedOnAds() : new Set();
   for (const [key, e] of Object.entries(all)) {
     if (!key.startsWith(site + ':')) continue;
     const p = byId.get(Number(key.slice(site.length + 1)));
-    if (!p) continue;
+    if (!p || banned.has(p.id) || (isReady && !isReady(p.id))) continue;
     c[verdict(e)]++;
     if (e.stats && e.stats.similar) c.similar++;
     if (e.stats && e.stats.suspect) c.suspect++;

@@ -71,7 +71,7 @@
       let site = p.site === 'sf' || p.site === 'st' ? p.site : '';
       let group = p.group || '';
       let level = '';
-      let q = '';
+      let q = p.q || '';
       let page = 1;
       const head = h('div');
       const qual = h('div', { class: 'fx-quality' });
@@ -82,7 +82,7 @@
       const list = h('div', { class: 'stack s' });
       const pager = h('div');
       main.appendChild(head); main.appendChild(qual); main.appendChild(tabs); main.appendChild(bar); main.appendChild(act); main.appendChild(list); main.appendChild(pager);
-      const search = h('input', { type: 'search', placeholder: 'Αναζήτηση προϊόντος', oninput: debounce((e) => { q = e.target.value; page = 1; load(); }, 300) });
+      const search = h('input', { type: 'search', placeholder: 'Αναζήτηση προϊόντος', value: q, oninput: debounce((e) => { q = e.target.value; page = 1; load(); }, 300) });
       const by = () => (App.me ? App.me.name : '');
 
       const find = () => POST('/api/fixes/find', {}).then((job) => {

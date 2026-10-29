@@ -355,4 +355,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor };
+module.exports = { targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, NEVER, Blocked };

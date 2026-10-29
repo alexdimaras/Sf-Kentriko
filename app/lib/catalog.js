@@ -451,6 +451,25 @@ function adStatus(site, p, linked, linkedSite) {
   const r = adrules.evaluate({ name: p.name, brand: p.brand }, chains);
   return r;
 }
+/**
+ * Ids of the ads-site products that are not allowed there (weapons, magazines, ammunition…). The program never
+ * asks for work on them (texts, photos, prices): the only thing it proposes is to take them off the site.
+ */
+let bannedMemo = null;
+function bannedOnAds() {
+  const cst = load('st'), csf = load('sf');
+  if (bannedMemo && bannedMemo.cst === cst && bannedMemo.csf === csf) return bannedMemo.set;
+  const L = links();
+  const sfBy = new Map(csf.products.map((p) => [p.id, p]));
+  const set = new Set();
+  for (const p of cst.products) {
+    if (p.type === 'variation') continue;
+    const oid = L.stToSf.get(p.id);
+    if (adStatus('st', p, oid != null ? sfBy.get(oid) : null, 'sf').level === 'banned') set.add(p.id);
+  }
+  bannedMemo = { cst, csf, set };
+  return set;
+}
 /** Ad level of every category of a site (for the category lists). */
 function categoryAdLevels(site) {
   const adrules = require('./adrules');
@@ -780,5 +799,5 @@ function detectAttribute(site, kind) {
 
 module.exports = {
   SITES, load, siteUrl, probe, syncSite, makeProgress, fetchAll, csvDetect, csvImport, summary, productsView, productDetail, links, setManualLink,
-  categoryIndex, adStatus, categoryAdLevels, chainsFor, accents, rebuildAccents, brandsList, knownBrands, attributeNames, detectAttribute, fromStoreApi, learnTypes, learnedTypes,
+  categoryIndex, adStatus, bannedOnAds, categoryAdLevels, chainsFor, accents, rebuildAccents, brandsList, knownBrands, attributeNames, detectAttribute, fromStoreApi, learnTypes, learnedTypes,
 };

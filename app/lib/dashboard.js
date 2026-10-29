@@ -96,9 +96,16 @@ function build() {
     if (fx.exported) tasks.push({ level: 'low', title: `${pl(fx.exported, 'διόρθωση είναι', 'διορθώσεις είναι')} στο αρχείο, όχι ακόμα στο site`, text: 'Ανέβασε το αρχείο στο WooCommerce (Προϊόντα → Εισαγωγή, «Ενημέρωση υπαρχόντων») και μετά πάτα «Ανάγνωση από τα sites»: τότε φεύγουν από εδώ.', action: { kind: 'view', view: 'fixes', tab: 'exported', label: 'Δες τα' } });
   }
 
+  // the order of work: the first step that still has open products comes first
+  const flow = synced ? require('./flow') : null;
+  const fl = flow ? flow.summary() : null;
+  if (fl && fl.next) {
+    const n = fl.next, open = n.count.sf + n.count.st;
+    tasks.push({ level: 'start', title: `Βήμα ${n.n} από 4 — ${n.title}: ${pl(open, 'προϊόν χρειάζεται', 'προϊόντα χρειάζονται')} δουλειά`, text: `${n.help} ${n.n < 4 ? 'Οι τιμές έρχονται μετά: πρώτα να είναι σωστά τα προϊόντα.' : ''} Έτοιμα για όλα: ${fl.ready} από ${fl.products}.`, action: { kind: 'view', view: 'flow', label: 'Ροή εργασίας' } });
+  }
   const meta = store.read('market-meta', {});
   if (synced && !meta.lastRun) tasks.push({ level: 'start', title: 'Πρώτη έρευνα τιμών αγοράς', text: 'Κατεβαίνουν οι κατάλογοι των ανταγωνιστών και συγκρίνονται όλα τα προϊόντα σας. Μετά γίνεται μόνο του κάθε μέρα.', action: { kind: 'view', view: 'market', label: 'Έρευνα' } });
-  const mk = { counts: market.quickCounts('sf') };
+  const mk = { counts: market.quickCounts('sf', flow ? (id) => flow.stageOf('sf', id) >= 4 : null) };
   if (mk.counts.similar) tasks.push({ level: 'low', title: `${pl(mk.counts.similar, 'προϊόν θέλει', 'προϊόντα θέλουν')} επιβεβαίωση «ίδιο ή όχι;»`, text: 'Βρέθηκαν παρόμοια στους ανταγωνιστές (άλλη έκδοση ή χρώμα;). Ένα κλικ το καθένα — το πρόγραμμα θυμάται την απάντηση.', action: { kind: 'view', view: 'market', tab: 'confirm', label: 'Επιβεβαίωση' } });
   const changes = store.read('market-changes', []).filter((c) => c.at === meta.lastRun);
   const cheaper = changes.filter((c) => c.to < c.from && c.to < c.ours);
@@ -119,7 +126,7 @@ function build() {
     kpi: {
       sf: sum.sf.products, st: sum.st.products, both: L.sfToSt.size,
       critical: ck.counts.critical || 0, high: ck.counts.high || 0,
-      drafts: waiting, suppliers: sups.length, orders: ords.filter((o) => o.status === 'sent').length, fixes: fx.pending,
+      drafts: waiting, suppliers: sups.length, orders: ords.filter((o) => o.status === 'sent').length, fixes: fx.pending, flowOpen: fl && fl.next ? fl.next.count.sf + fl.next.count.st : 0,
     },
     tasks, history,
   };

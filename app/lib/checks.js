@@ -105,7 +105,7 @@ function run() {
     if (!c.syncedAt) continue;
     const other = site === 'sf' ? 'st' : 'sf';
     const all = c.products;
-    const main = all.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private');
+    let main = all.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private');
     const byId = new Map(all.map((p) => [p.id, p]));
     const oById = new Map(catalog.load(other).products.map((p) => [p.id, p]));
     const map = site === 'sf' ? L.sfToSt : L.stToSf;
@@ -127,6 +127,8 @@ function run() {
       add({ id: 'st-ads-meta18', site, severity: 'info', title: 'Στο Meta μόνο με στόχευση 18+', help: 'Θήκες όπλων, θήκες γεμιστήρων, αορτήρες: επιτρέπονται, αλλά οι διαφημίσεις στο Facebook/Instagram πρέπει να στοχεύουν 18+.', items: lv.meta18 });
     }
 
+    // what is not allowed on the ads site only gets "take it off": no other check or fix is asked for it
+    if (site === 'st') { const banned = catalog.bannedOnAds(); main = main.filter((p) => !banned.has(p.id)); }
     add({ id: site + '-noimg', site, severity: 'high', title: 'Χωρίς φωτογραφία', help: 'Προϊόντα χωρίς φωτογραφία σχεδόν δεν πουλάνε και απορρίπτονται από Google Shopping / Meta.', items: main.filter((p) => !p.images.length).map((p) => item(p)) });
     const noPrice = main.filter((p) => !(p.price > 0));
     const weaponNoPrice = [], realNoPrice = [];
@@ -215,6 +217,7 @@ function run() {
   if (sfc.syncedAt && stc.syncedAt) {
     const stById = new Map(stc.products.map((p) => [p.id, p]));
     const master = s.master === 'st' ? 'st' : 'sf';
+    const bannedSt = catalog.bannedOnAds();
     const diff = [], zero = [], missing = [], onlySt = [];
     for (const p of sfc.products) {
       if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
@@ -225,7 +228,7 @@ function run() {
         continue;
       }
       const o = stById.get(oid);
-      if (!o) continue;
+      if (!o || bannedSt.has(oid)) continue;
       const src = master === 'sf' ? p : o, dst = master === 'sf' ? o : p;
       if (!(src.price > 0) || !(dst.price > 0)) {
         if (src.price > 0 || dst.price > 0) zero.push({ site: master === 'sf' ? 'st' : 'sf', id: dst.id, name: p.name, sku: p.sku, img: p.thumb || p.images[0] || '', price: dst.price, url: dst.url, why: `${names.sf}: ${p.price > 0 ? U.money(p.price) : 'χωρίς τιμή'} · ${names.st}: ${o.price > 0 ? U.money(o.price) : 'χωρίς τιμή'}` });
@@ -237,7 +240,7 @@ function run() {
       }
     }
     for (const p of stc.products) {
-      if (p.type === 'variation' || p.status === 'draft') continue;
+      if (p.type === 'variation' || p.status === 'draft' || bannedSt.has(p.id)) continue;
       if (!L.stToSf.has(p.id)) onlySt.push({ site: 'st', id: p.id, name: p.name, sku: p.sku, price: p.price, img: p.thumb || p.images[0] || '', url: p.url });
     }
     if (s.priceSync !== 'info') add({ id: 'x-price', site: master === 'sf' ? 'st' : 'sf', severity: 'high', title: 'Διαφορετική τιμή στα δύο sites', help: `Σωστή είναι η τιμή του ${names[master]}. Το αρχείο διορθώνει το άλλο site (και τα μεγέθη των μεταβλητών προϊόντων).`, items: diff, fix: { kind: 'price', label: 'Αρχείο ενημέρωσης τιμών' } });
