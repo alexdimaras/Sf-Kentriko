@@ -1,0 +1,11 @@
+{$KENTRO_HOST} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy kentro:17321 {
+		# live updates (Server-Sent Events) go out at once
+		flush_interval -1
+	}
+}

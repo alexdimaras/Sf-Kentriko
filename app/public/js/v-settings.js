@@ -8,10 +8,13 @@
       const tab = p.tab || 'sites';
       const s = await GET('/api/settings');
       main.appendChild(pageHead('Ρυθμίσεις', 'Αλλάζουν μόνο τον τρόπο που δουλεύει το πρόγραμμα. Τίποτα δεν αλλάζει στα sites.'));
-      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'Τοπικό AI'], ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']];
+      const server = App.MODE === 'server';
+      const admin = !server || (App.me && App.me.role === 'admin');
+      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], server ? ['users', 'Χρήστες'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
       main.appendChild(h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { 'aria-selected': String(k === tab), onclick: () => App.go('settings', { tab: k }) }, l))));
       const box = h('div', { class: 'stack' });
       main.appendChild(box);
+      if (!admin && tab !== 'users' && tab !== 'data') box.appendChild(h('div', { class: 'note' }, 'Τις ρυθμίσεις τις αλλάζει μόνο ο διαχειριστής. Εδώ τις βλέπεις.'));
       const saveBtn = (collect) => h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, btn('Αποθήκευση', { cls: 'primary' }, async () => {
         try { await POST('/api/settings', collect()); await App.refreshState(); toast('Αποθηκεύτηκε.'); } catch (e) { fail(e); }
       }));
@@ -46,12 +49,18 @@
         const vat = inp(s.vat, { type: 'number', min: 0 });
         const floor = inp(s.floorMargin, { type: 'number', min: 0 });
         const greek = h('input', { type: 'checkbox', checked: s.marketGreekOnly });
+        const minShops = select([['1', '1 κατάστημα (όχι συνιστάται)'], ['2', '2 καταστήματα'], ['3', '3 καταστήματα'], ['4', '4 καταστήματα']], String(s.minShops || 2), null);
+        const suspect = inp(s.suspectPct, { type: 'number', min: 10, max: 60, step: 5 });
         const gap = inp(s.competitorGap, { type: 'number', min: 200, step: 100 });
         const auto = h('input', { type: 'checkbox', checked: s.marketAuto });
         const hour = select([['0', 'Με το πρώτο άνοιγμα της μέρας']].concat([7, 8, 9, 10, 12, 14, 16, 18, 20, 22].map((x) => [String(x), 'Όχι πριν τις ' + x + ':00'])), String(s.marketHour || 0), null);
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προτεινόμενη τιμή από την αγορά'),
           h('div', { class: 'grid3' }, field('Στρατηγική', strategy), field('X%', pct), field('Κατάληξη', rounding)),
           h('p', { class: 'hint' }, 'Η κατάληξη μπαίνει μόνο αν δεν περνάει την τιμή αναφοράς· αλλιώς μένει η ακριβής τιμή. Μετράνε μόνο ελληνικά καταστήματα με διαθέσιμο το ίδιο προϊόν.')));
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Πότε αλλάζει η τιμή'),
+          h('div', { class: 'grid3' }, field('Αλλαγή τιμής μόνο όταν συμφωνούν', minShops, 'Ένα μόνο φθηνότερο κατάστημα δεν αλλάζει την τιμή: φαίνεται ως «Μόνο ενημέρωση».'),
+            field('Ύποπτη τιμή όταν είναι κάτω κατά %', suspect, 'Από τους άλλους ή από τη λιανική του αντιπροσώπου. Και κάτω από το δικό μας κόστος: πάντα ύποπτη.')),
+          h('p', { class: 'hint' }, 'Ύποπτες τιμές = μάλλον παλιό απόθεμα που αγόρασαν φθηνότερα, ξεπούλημα ή λάθος. Φαίνονται, αλλά δεν μετράνε στην πρόταση.')));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Κόστος και ΦΠΑ'),
           h('div', { class: 'grid3' }, field('ΦΠΑ %', vat), field('Ελάχιστο κέρδος πάνω στο κόστος %', floor, 'Η προτεινόμενη τιμή δεν πέφτει ποτέ κάτω από κόστος × (1+%) × ΦΠΑ.'), field('Καθυστέρηση ανά κατάστημα (ms)', gap, 'Για να μη μας μπλοκάρουν. 900 είναι ασφαλές.')),
           h('label', { class: 'check', style: { marginTop: '10px' } }, greek, 'Μόνο ελληνικά καταστήματα στους υπολογισμούς')));
@@ -59,7 +68,7 @@
           h('label', { class: 'check' }, auto, 'Κάθε μέρα αυτόματα: τιμοκατάλογοι αντιπροσώπων (feed / κατάλογος / B2B) και τιμές αγοράς για όλα τα προϊόντα'),
           h('div', { class: 'grid3', style: { marginTop: '10px' } }, field('Πότε', hour, 'Τρέχει όσο είναι ανοιχτό το πρόγραμμα, μία φορά τη μέρα.')),
           h('p', { class: 'hint' }, 'Όταν οι τιμές των δύο sites διαφέρουν, σωστή θεωρείται η τιμή του ' + siteName('sf') + '.')));
-        box.appendChild(saveBtn(() => ({ strategy: strategy.value, percent: pct.value, rounding: rounding.value, vat: vat.value, floorMargin: floor.value, marketGreekOnly: greek.checked, competitorGap: gap.value, marketAuto: auto.checked, marketHour: hour.value })));
+        box.appendChild(saveBtn(() => ({ strategy: strategy.value, percent: pct.value, rounding: rounding.value, vat: vat.value, floorMargin: floor.value, marketGreekOnly: greek.checked, competitorGap: gap.value, marketAuto: auto.checked, marketHour: hour.value, minShops: minShops.value, suspectPct: suspect.value })));
       }
 
       if (tab === 'ads') {
@@ -68,9 +77,9 @@
         const LV = { banned: 'Απαγορεύεται (Google και Meta)', google: 'Όχι Google · Meta 18+', caution: 'Προσοχή (εξαρτάται)', meta18: 'Επιτρέπεται · Meta 18+', ok: 'Επιτρέπεται' };
         const KIND = { cat: 'Κατηγορία (και υποκατηγορίες)', type: 'Ο τίτλος ξεκινά με', word: 'Λέξη μέσα στον τίτλο' };
         box.appendChild(h('div', { class: 'note' }, 'Το ' + siteName('st') + ' υπάρχει για τις διαφημίσεις. Οι κανόνες βγήκαν από τις επίσημες πολιτικές (28/10/2026): ',
-          h('a', { href: '#', onclick: (e) => { e.preventDefault(); POST('/api/open', { kind: 'url', url: 'https://support.google.com/merchants/answer/6150004' }); } }, 'Google Merchant Center'), ' · ',
-          h('a', { href: '#', onclick: (e) => { e.preventDefault(); POST('/api/open', { kind: 'url', url: 'https://support.google.com/adspolicy/answer/6014299' }); } }, 'Google Ads'), ' · ',
-          h('a', { href: '#', onclick: (e) => { e.preventDefault(); POST('/api/open', { kind: 'url', url: 'https://transparency.meta.com/policies/ad-standards/restricted-goods-services/weapons-ammunitions-explosives' }); } }, 'Meta'),
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl('https://support.google.com/merchants/answer/6150004'); } }, 'Google Merchant Center'), ' · ',
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl('https://support.google.com/adspolicy/answer/6014299'); } }, 'Google Ads'), ' · ',
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl('https://transparency.meta.com/policies/ad-standards/restricted-goods-services/weapons-ammunitions-explosives'); } }, 'Meta'),
           '. Ό,τι «απαγορεύεται» δεν μπαίνει ποτέ στα αρχεία για το ' + siteName('st') + '· ό,τι είναι «όχι Google» μπαίνει κρυφό από το Google Shopping.'));
         box.appendChild(h('div', { class: 'grid2' }, ['st', 'sf'].map((site) => h('div', { class: 'panel' }, h('h2', null, siteName(site)),
           h('div', { class: 'row tight' }, ['banned', 'google', 'caution', 'meta18'].map((k) => h('button', { type: 'button', class: 'chip', onclick: () => App.go('products', { site, only: k === 'banned' ? 'noads' : k === 'google' ? 'nogoogle' : '' }) }, h('span', { class: 'ad ' + k }, App.AD[k]), ' ', h('b', null, fmt.num(data.counts[site][k])))))))));
@@ -138,8 +147,11 @@
         const url = inp(s.localAI.url);
         const model = inp(s.localAI.model, { placeholder: 'π.χ. qwen2.5:7b' });
         const res = h('div');
-        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Δωρεάν AI στον υπολογιστή (προαιρετικό)'),
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Δωρεάν AI (προαιρετικό)'),
           h('p', { class: 'muted' }, 'Για περιγραφές όταν δεν υπάρχει επίσημο κείμενο, ή μετάφραση αγγλικών κειμένων. Χρειάζεται το δωρεάν πρόγραμμα Ollama και υπολογιστή με τουλάχιστον 16 GB μνήμη. Χωρίς αυτό, όλα τα υπόλοιπα δουλεύουν κανονικά.'),
+          h('div', { class: 'note', style: { marginBottom: '10px' } }, h('b', null, 'Δεν χρειάζεται σε κάθε υπολογιστή. '), server
+            ? 'Το AI το καλεί ο διακομιστής, όχι ο browser: αρκεί ΕΝΑ Ollama, στον διακομιστή ή σε έναν δυνατό υπολογιστή που ο διακομιστής φτάνει (γράψε εδώ τη διεύθυνσή του).'
+            : 'Το καλεί το πρόγραμμα, όχι ο browser: αρκεί ΕΝΑΣ δυνατός υπολογιστής με Ollama. Στους άλλους γράψε εδώ τη διεύθυνσή του (π.χ. http://192.168.1.20:11434) — σε εκείνον το Ollama ξεκινά με OLLAMA_HOST=0.0.0.0. Με τη λειτουργία διακομιστή ρυθμίζεται μία φορά για όλους.'),
           h('ol', { class: 'steps' }, h('li', null, 'Κατέβασε και εγκατάστησε το Ollama από το ollama.com.'), h('li', null, 'Άνοιξε τη γραμμή εντολών και γράψε: ollama pull qwen2.5:7b'), h('li', null, 'Ενεργοποίησε εδώ και πάτα «Δοκιμή».')),
           h('div', { class: 'grid3', style: { marginTop: '12px' } }, field('Διεύθυνση', url), field('Μοντέλο', model, 'Κενό = το πρώτο εγκατεστημένο')),
           h('label', { class: 'check', style: { marginTop: '10px' } }, en, 'Ενεργό'),
@@ -150,7 +162,76 @@
         box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value } })));
       }
 
-      if (tab === 'security') {
+      if (tab === 'users' && server) {
+        const me = App.me || {};
+        const cur = h('input', { type: 'password', autocomplete: 'current-password' });
+        const n1 = h('input', { type: 'password', autocomplete: 'new-password' }), n2 = h('input', { type: 'password', autocomplete: 'new-password' });
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Ο λογαριασμός μου'),
+          h('p', { class: 'muted' }, `${me.name || ''} (${me.user || ''}) · ${me.role === 'admin' ? 'διαχειριστής' : 'χρήστης'}`),
+          h('div', { class: 'grid3' }, field('Τωρινός κωδικός', cur), field('Νέος κωδικός', n1, 'Τουλάχιστον 10 χαρακτήρες'), field('Ξανά ο νέος', n2)),
+          h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Αλλαγή κωδικού', { cls: 'primary', icon: 'lock' }, async () => {
+            if (n1.value !== n2.value) return toast('Οι δύο νέοι κωδικοί δεν είναι ίδιοι.', { err: true });
+            try { await POST('/api/me/password', { current: cur.value, password: n1.value }); cur.value = n1.value = n2.value = ''; toast('Ο κωδικός άλλαξε. Οι άλλες συνδέσεις σου έκλεισαν.'); location.reload(); } catch (e) { fail(e); }
+          }))));
+        if (me.role === 'admin') {
+          const data = await GET('/api/users');
+          const tb = h('tbody');
+          for (const u of data.users) {
+            tb.appendChild(h('tr', null, h('td', { class: 'title' }, u.name, h('div', { class: 'faint', style: { fontWeight: 400 } }, u.user)),
+              h('td', null, select([['staff', 'Χρήστης'], ['admin', 'Διαχειριστής']], u.role, (v) => POST('/api/users', { id: u.id, role: v }).then(() => toast('Αποθηκεύτηκε.')).catch((e) => { fail(e); App.route(); }))),
+              h('td', null, u.lastLoginAt ? fmt.ago(u.lastLoginAt) : 'ποτέ'),
+              h('td', null, h('div', { class: 'row tight' },
+                btn('Νέος κωδικός', { cls: 'sm' }, async () => {
+                  const pw = prompt('Νέος κωδικός για ' + u.name + ' (τουλάχιστον 10 χαρακτήρες):');
+                  if (pw) POST('/api/users', { id: u.id, password: pw }).then(() => toast('Ο κωδικός άλλαξε· οι συνδέσεις του έκλεισαν.')).catch(fail);
+                }),
+                u.id !== me.id ? btn('Διαγραφή', { cls: 'sm ghost danger' }, async () => { if (await confirmBox('Διαγραφή του ' + u.name + ';', 'Δεν θα μπορεί να συνδεθεί.', 'Διαγραφή', true)) POST('/api/users/delete', { id: u.id }).then(() => App.route()).catch(fail); }) : null))));
+          }
+          const nu = { name: h('input', { type: 'text' }), user: h('input', { type: 'text', autocapitalize: 'none', spellcheck: 'false' }), pw: h('input', { type: 'password', autocomplete: 'new-password' }), role: select([['staff', 'Χρήστης'], ['admin', 'Διαχειριστής']], 'staff', null) };
+          box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Χρήστες'),
+            h('p', { class: 'muted' }, 'Κάθε άτομο με δικό του όνομα και κωδικό. Ο «Χρήστης» κάνει όλη τη δουλειά· ο «Διαχειριστής» αλλάζει και ρυθμίσεις, ασφάλεια και χρήστες.'),
+            h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Όνομα'), h('th', null, 'Ρόλος'), h('th', null, 'Τελευταία σύνδεση'), h('th', null, ''))), tb)),
+            h('h3', { style: { margin: '16px 0 8px', fontSize: '15px' } }, 'Νέος χρήστης'),
+            h('div', { class: 'grid3' }, field('Ονοματεπώνυμο', nu.name), field('Όνομα χρήστη', nu.user, 'Λατινικά, π.χ. maria'), field('Κωδικός', nu.pw, 'Τουλάχιστον 10 χαρακτήρες')),
+            h('div', { class: 'row', style: { marginTop: '10px' } }, nu.role, btn('Προσθήκη', { cls: 'primary', icon: 'new' }, () => POST('/api/users', { name: nu.name.value, user: nu.user.value, password: nu.pw.value, role: nu.role.value }).then(() => { toast('Ο χρήστης προστέθηκε.'); App.route(); }).catch(fail)))));
+          const sb = h('tbody');
+          for (const x of data.sessions) sb.appendChild(h('tr', null, h('td', null, x.user), h('td', null, fmt.ago(x.lastSeen)), h('td', { class: 'mono' }, x.ip), h('td', { class: 'faint', style: { fontSize: '12px' } }, x.ua)));
+          box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Ανοιχτές συνδέσεις'),
+            h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Χρήστης'), h('th', null, 'Τελευταία κίνηση'), h('th', null, 'Διεύθυνση'), h('th', null, 'Browser'))), sb)),
+            h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Αποσύνδεση όλων', { cls: 'danger sm' }, async () => { if (await confirmBox('Αποσύνδεση όλων των υπολογιστών;', 'Όλοι (και εσύ) θα χρειαστεί να συνδεθούν ξανά.', 'Αποσύνδεση', true)) POST('/api/users/logout-all').then(() => location.reload()).catch(fail); }))));
+        }
+      }
+
+      if (tab === 'security' && server) {
+        const sec = await GET('/api/security/audit');
+        const ok = (b, t) => h('li', { class: b ? 'ok' : 'warn' }, icon(b ? 'check' : 'alert'), ' ', t);
+        const https = location.protocol === 'https:';
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('shield'), ' Κατάσταση ασφάλειας (διακομιστής)'),
+          h('ul', { class: 'seclist' },
+            ok(https, https ? 'Σύνδεση με https: ό,τι στέλνεται είναι κρυπτογραφημένο.' : 'Η σύνδεση ΔΕΝ είναι https. Στο internet βάλε πάντα https (π.χ. Caddy, δες τις οδηγίες εγκατάστασης). Μέσα στο δίκτυο του μαγαζιού είναι αποδεκτό.'),
+            ok(true, 'Κάθε άτομο με δικό του όνομα και κωδικό· οι κωδικοί δεν αποθηκεύονται (μόνο «αποτύπωμα» scrypt).'),
+            ok(true, `Μετά από 5 λάθος κωδικούς μπαίνει αναμονή που διπλασιάζεται. Η σύνδεση λήγει μετά από ${sec.lockMinutes}′ χωρίς χρήση.`),
+            ok(true, 'Κάθε σύνδεση έχει δικό της μυστικό κλειδί· άλλες σελίδες του browser δεν μπορούν να μιλήσουν στο πρόγραμμα.'),
+            sec.b2b.total ? ok(sec.b2b.sealed === sec.b2b.total, `Κωδικοί B2B: ${sec.b2b.total}${sec.b2b.sealed ? `, κλειδωμένοι και με PIN (${sec.b2b.sealed}/${sec.b2b.total})` : ' — βάλε PIN για επιπλέον κλείδωμα'}.`) : ok(true, 'Κωδικοί B2B προμηθευτών: κανένας αποθηκευμένος.'),
+            ok(true, 'Κωδικοί διαχειριστή (admin) των sites: δεν ζητούνται και δεν αποθηκεύονται πουθενά.'))));
+        if (admin) {
+          const mins = h('input', { type: 'number', min: 1, max: 480, value: String(sec.lockMinutes), style: { width: '90px' } });
+          box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Λήξη σύνδεσης'),
+            h('div', { class: 'row' }, h('span', null, 'Αποσύνδεση μετά από'), mins, h('span', null, 'λεπτά χωρίς χρήση'),
+              btn('Αποθήκευση', { cls: 'sm' }, () => POST('/api/security/minutes', { minutes: mins.value }).then(() => toast('Αποθηκεύτηκε.')).catch(fail)))));
+          const p1 = h('input', { type: 'password', autocomplete: 'new-password' }), p2 = h('input', { type: 'password', autocomplete: 'new-password' }), cur = h('input', { type: 'password', autocomplete: 'off' }), op = h('input', { type: 'password', autocomplete: 'off' });
+          box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'PIN για τους κωδικούς B2B'),
+            h('p', { class: 'muted' }, 'Στον διακομιστή το PIN κλειδώνει επιπλέον μόνο τους κωδικούς B2B: χωρίς αυτό, ένα αντίγραφο των δεδομένων δεν τους ανοίγει. Μετά από κάθε επανεκκίνηση του διακομιστή, ένας διαχειριστής βάζει το PIN μία φορά, για να διαβάζονται τα B2B στην ημερήσια ενημέρωση.'),
+            sec.pin ? h('div', { class: 'row' }, op, btn(sec.vaultOpen ? 'Ανοιχτοί ✓' : 'Ξεκλείδωμα κωδικών B2B', { cls: sec.vaultOpen ? 'sm' : 'primary sm', icon: 'lock' }, () => POST('/api/unlock', { pin: op.value }).then(() => { op.value = ''; toast('Οι κωδικοί B2B ξεκλείδωσαν μέχρι την επόμενη επανεκκίνηση.'); App.route(); }).catch(fail))) : null,
+            h('div', { class: 'grid3', style: { marginTop: '10px' } }, sec.pin ? field('Τρέχον PIN', cur) : null, field(sec.pin ? 'Νέο PIN' : 'PIN', p1, 'Τουλάχιστον 6 χαρακτήρες'), field('Επανάληψη', p2)),
+            h('div', { class: 'row', style: { marginTop: '10px' } }, btn(sec.pin ? 'Αλλαγή PIN' : 'Ορισμός PIN', { cls: 'sm' }, () => {
+              if (p1.value !== p2.value) return toast('Τα δύο PIN δεν είναι ίδια.', { err: true });
+              POST('/api/security/pin', { pin: p1.value, current: cur.value }).then(() => { toast('Το PIN αποθηκεύτηκε.'); App.route(); }).catch(fail);
+            }))));
+        }
+      }
+
+      if (tab === 'security' && !server) {
         const sec = await GET('/api/security/audit');
         const pw = (ph) => h('input', { type: 'password', autocomplete: 'new-password', placeholder: ph || '', inputmode: 'numeric' });
         const cur = pw('τρέχον PIN'), p1 = pw('νέο PIN (τουλάχιστον 6)'), p2 = pw('ξανά το νέο PIN');
@@ -188,7 +269,19 @@
         }
       }
 
-      if (tab === 'data') {
+      if (tab === 'data' && server) {
+        const backups = admin ? await GET('/api/backups') : [];
+        const theme = select([['', 'Όπως το σύστημα'], ['light', 'Ανοιχτό'], ['dark', 'Σκούρο']], localStorageGet('sfk-theme') || '', (v) => { localStorageSet('sfk-theme', v); applyTheme(); });
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Κοινά δεδομένα'),
+          h('p', { class: 'muted' }, 'Το πρόγραμμα τρέχει σε διακομιστή: όλοι οι υπολογιστές βλέπουν και αλλάζουν τα ίδια δεδομένα, την ίδια στιγμή. Οι αυτόματες εργασίες (ανάγνωση sites, τιμοκατάλογοι, έρευνα αγοράς) γίνονται μία φορά, στον διακομιστή, και όχι σε κάθε υπολογιστή.'),
+          h('p', { class: 'muted' }, 'Τα αρχεία (CSV για WooCommerce, Excel) κατεβαίνουν στον υπολογιστή που τα ζήτησε.')));
+        if (admin) box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα στον διακομιστή· κρατιούνται 14 μέρες. Κράτα και ένα αντίγραφο του φακέλου δεδομένων εκτός διακομιστή.'),
+          backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Ισχύει για όλους τους υπολογιστές. Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Εμφάνιση'), h('div', { style: { maxWidth: '260px' } }, field('Θέμα', theme))));
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Πρόγραμμα'), h('p', { class: 'muted' }, 'Έκδοση ' + App.state.version + ' · λειτουργία διακομιστή.')));
+      }
+
+      if (tab === 'data' && !server) {
         const st = App.state;
         const target = inp('', { placeholder: 'π.χ. C:\\Users\\…\\OneDrive\\SF-Kentro' });
         const backups = await GET('/api/backups');
@@ -196,7 +289,8 @@
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Φάκελος δεδομένων'),
           h('p', null, h('span', { class: 'mono' }, st.dataDir)),
           h('div', { class: 'row' }, btn('Άνοιγμα φακέλου', { icon: 'folder' }, () => POST('/api/open', { kind: 'data' })), btn('Φάκελος αρχείων', { icon: 'folder' }, () => POST('/api/open', { kind: 'exports' }))),
-          h('div', { class: 'stack s', style: { marginTop: '14px' } }, h('div', { class: 'muted' }, 'Μετακίνηση σε άλλο φάκελο — π.χ. στο OneDrive, για να βλέπουν τα ίδια δεδομένα και τα δύο μαγαζιά (ένας υπολογιστής κάθε φορά).'),
+          h('div', { class: 'note warn', style: { marginTop: '14px' } }, h('b', null, 'Κοινά δεδομένα σε πολλούς υπολογιστές; '), 'Ένας κοινός φάκελος (OneDrive) δουλεύει μόνο με έναν υπολογιστή ανοιχτό κάθε φορά — αλλιώς χάνονται αλλαγές. Για ταυτόχρονη δουλειά από όλα τα PC (και τα δύο μαγαζιά) χρησιμοποίησε τη λειτουργία διακομιστή: δες το αρχείο DIAKOMISTIS-CLOUD.txt.'),
+          h('div', { class: 'stack s', style: { marginTop: '14px' } }, h('div', { class: 'muted' }, 'Μετακίνηση σε άλλο φάκελο — π.χ. στο OneDrive (ένας υπολογιστής κάθε φορά).'),
             h('div', { class: 'row' }, target, btn('Μετακίνηση', {}, async () => { try { const r = await POST('/api/datadir', { path: target.value }); toast(r.usedExisting ? 'Συνδέθηκε με τα δεδομένα που υπήρχαν ήδη εκεί.' : 'Τα δεδομένα αντιγράφηκαν στον νέο φάκελο.'); await App.refreshState(); App.route(); } catch (e) { fail(e); } })))));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα που ανοίγει το πρόγραμμα· κρατιούνται 14 μέρες.'),
           backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));

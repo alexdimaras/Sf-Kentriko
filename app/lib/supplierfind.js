@@ -19,7 +19,7 @@ const DIST = /ΑΝΤΙΠΡΟΣΩΠ|ΕΙΣΑΓΩΓ|ΔΙΑΝΟΜ|ΧΟΝΔΡ|ΑΠΟ
 const SHOPISH = /ΚΑΛΑΘΙ|ΑΓΟΡΑ ΤΩΡΑ|ΠΡΟΣΘΗΚΗ|ADD TO CART|BUY NOW|ΤΙΜΗ:|€/;
 
 function data() {
-  const d = store.read(KEY, () => ({ brands: {}, rejected: {}, never: [], lastRun: null, blocked: null }));
+  const d = store.read(KEY, null) || { brands: {}, rejected: {}, never: [], lastRun: null, blocked: null };
   d.brands = d.brands || {}; d.rejected = d.rejected || {}; d.never = d.never || [];
   return d;
 }

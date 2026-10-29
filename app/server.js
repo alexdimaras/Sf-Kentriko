@@ -1,14 +1,24 @@
 'use strict';
-// SF Κέντρο — local back-office app. Runs a small web server on this PC only (127.0.0.1)
-// and opens the screen in Edge app mode. Close the black window to exit.
+// SF Κέντρο — back-office app.
+//  • Local mode (default): a small web server on this PC only (127.0.0.1); the screen opens in Edge app mode.
+//    Close the black window to exit.
+//  • Server mode (SFK_MODE=server): one copy of the program, in the cloud or on one shop PC, and every PC opens
+//    it in a browser with its own user name and password. All PCs see the same data at once (live updates).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const PORT0 = Number(process.env.SFK_PORT) || 17321;
+const MODE = process.env.SFK_MODE === 'server' ? 'server' : 'local';
+const SERVER = MODE === 'server';
+const BIND = process.env.SFK_HOST || (SERVER ? '0.0.0.0' : '127.0.0.1');
+// server mode: the addresses people type (e.g. kentro.example.gr); empty = any (shop network)
+const ALLOWED_HOSTS = String(process.env.SFK_ALLOWED_HOSTS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+const TRUST_PROXY = process.env.SFK_TRUST_PROXY === '1'; // behind Caddy / nginx: trust X-Forwarded-For / -Proto
+const LOCAL_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
 const store = require('./lib/store');
 const settings = require('./lib/settings');
@@ -27,7 +37,11 @@ const reports = require('./lib/reports');
 const supplierinfo = require('./lib/supplierinfo');
 const security = require('./lib/security');
 const supplierfind = require('./lib/supplierfind');
+const users = require('./lib/users');
+const fixes = require('./lib/fixes');
 const U = require('./lib/util');
+const { AsyncLocalStorage } = require('async_hooks');
+const reqCtx = new AsyncLocalStorage(); // which browser tab caused a change (so it is not told about its own changes)
 
 const TOKEN = crypto.randomBytes(18).toString('hex');
 try { process.title = 'SF Kentro'; } catch (_) { /* ignore */ }
@@ -63,9 +77,10 @@ function saveExport(name, content) {
   for (let i = 2; fs.existsSync(store.exportPath(fname)); i++) fname = base + '-' + stamp + '-' + i + ext;
   const p = store.exportPath(fname);
   fs.writeFileSync(p, content);
-  return { file: p, name: fname, url: `/api/export/${encodeURIComponent(fname)}?t=${TOKEN}` };
+  return { file: SERVER ? '' : p, name: fname, url: `/api/export/${encodeURIComponent(fname)}` + (SERVER ? '' : `?t=${TOKEN}`) };
 }
 function openPath(target, select) {
+  if (SERVER) return; // nothing opens on the server: files are downloaded in the browser
   const opt = { detached: true, stdio: 'ignore', windowsHide: true };
   if (process.platform === 'win32') {
     const quoted = '"' + String(target).replace(/"/g, '') + '"';
@@ -77,7 +92,7 @@ function openPath(target, select) {
 }
 /** A web page in a tab of the person's Chrome (Edge or the default browser if Chrome is not installed). */
 function openBrowser(url) {
-  if (process.env.SFK_NO_OPEN) return;
+  if (process.env.SFK_NO_OPEN || SERVER) return;
   try { url = new URL(url).href; } catch (_) { return; }
   if (!/^https?:\/\//i.test(url)) return;
   if (process.platform === 'win32') {
@@ -103,7 +118,7 @@ function openDefault(url) {
   } catch (e) { console.error('open browser:', e.message); }
 }
 function openApp(url) {
-  if (process.env.SFK_NO_OPEN) return;
+  if (process.env.SFK_NO_OPEN || SERVER) return;
   if (process.platform === 'win32') {
     const candidates = [
       path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
@@ -126,7 +141,7 @@ const num = (v) => Number(v) || 0;
 
 // ---------- API ----------
 const routes = {
-  'GET /api/state': () => ({ version: VERSION, dataDir: store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform }),
+  'GET /api/state': (q, _, ctx) => ({ version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances() }),
   'GET /api/dashboard': () => dashboard.build(),
 
   // Sync
@@ -139,7 +154,7 @@ const routes = {
       await Promise.all(sites.map(async (site) => {
         try { out[site] = await catalog.syncSite(site, job, { full: !!b.full, progress }); if (out[site]) job.log(`${settings.all().sites[site].name}: έτοιμο.`); } catch (e) { out[site] = { error: e.message }; job.log(`${settings.all().sites[site].name}: ${e.message}`); }
       }));
-      checks.invalidate(); suppliers.resetIndex();
+      checks.invalidate(); suppliers.resetIndex(); fixes.invalidate();
       if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => out[s].error).join(' / '));
       market.recompute();
       return out;
@@ -147,13 +162,13 @@ const routes = {
   },
   'POST /api/probe': async (b) => catalog.probe(b.site),
   'POST /api/csv/detect': (b) => { const d = catalog.csvDetect(U.decodeText(Buffer.from(b.base64 || '', 'base64'))); delete d.sample; return d; },
-  'POST /api/csv/import': (b) => { const r = catalog.csvImport(b.site === 'st' ? 'st' : 'sf', U.decodeText(Buffer.from(b.base64 || '', 'base64')), b.mapping); checks.invalidate(); market.recompute(); return r; },
+  'POST /api/csv/import': (b) => { const r = catalog.csvImport(b.site === 'st' ? 'st' : 'sf', U.decodeText(Buffer.from(b.base64 || '', 'base64')), b.mapping); checks.invalidate(); fixes.invalidate(); market.recompute(); return r; },
   'GET /api/history': () => store.read('history', []),
 
   // Products
   'GET /api/products': (q) => catalog.productsView(q),
   'GET /api/product': (q) => catalog.productDetail(q.site === 'st' ? 'st' : 'sf', q.id) || Promise.reject(new Error('Δεν βρέθηκε το προϊόν.')),
-  'POST /api/link': (b) => { catalog.setManualLink(num(b.sfId), b.stId === null ? null : num(b.stId)); checks.invalidate(); return { ok: true }; },
+  'POST /api/link': (b) => { catalog.setManualLink(num(b.sfId), b.stId === null ? null : num(b.stId)); checks.invalidate(); fixes.invalidate(); return { ok: true }; },
   'GET /api/categories': (q) => { const site = q.site === 'st' ? 'st' : 'sf'; const idx = catalog.categoryIndex(site); const lv = catalog.categoryAdLevels(site); return idx.cats.map((c) => ({ id: c.id, name: c.name, parent: c.parent, count: c.count, path: idx.pathOf(c.id).join(' › '), ads: lv.get(c.id) || 'ok', regulated: lv.get(c.id) === 'banned' })).sort((a, b) => a.path.localeCompare(b.path, 'el')); },
   'GET /api/brands': () => catalog.brandsList(),
   'GET /api/attributes': (q) => catalog.attributeNames(q.site === 'st' ? 'st' : 'sf'),
@@ -168,7 +183,16 @@ const routes = {
   'GET /api/checks': (q) => { const r = checks.cached(q.force === '1'); return { counts: r.counts, at: r.at, checks: r.checks.map((c) => Object.assign({}, c, { items: c.items.slice(0, Number(q.limit) || 400), total: c.items.length })) }; },
   'GET /api/check': (q) => { const r = checks.cached(); const c = r.checks.find((x) => x.id === q.id); if (!c) throw new Error('Δεν βρέθηκε ο έλεγχος.'); return c; },
   'POST /api/checks/fix': (b) => { const r = checks.fixFile(b.id, b.ids, b.overrides); const f = saveExport(r.name, r.csv); return Object.assign({ count: r.count, site: r.site, skipped: r.skipped || [], newCategories: r.newCategories || [], note: r.note || '' }, f); },
-  'POST /api/checks/ignore': (b) => { checks.setIgnored(b.id, (b.keys || []).map(String), b.on !== false); checks.invalidate(); return { ok: true }; },
+  'POST /api/checks/ignore': (b) => { checks.setIgnored(b.id, (b.keys || []).map(String), b.on !== false); checks.invalidate(); fixes.invalidate(); return { ok: true }; },
+
+  // Fixes waiting for approval: everything the program can correct by itself, filled in here (never on the sites)
+  'GET /api/fixes': (q) => fixes.view(q),
+  'POST /api/fixes/decide': (b, _, ctx) => fixes.decide(b.ids || [], b.status, ctx.user ? ctx.user.name : '', b.edited),
+  'POST /api/fixes/approve-sure': (b, _, ctx) => fixes.approveSure(b.site === 'st' ? 'st' : b.site === 'sf' ? 'sf' : '', b.group || '', ctx.user ? ctx.user.name : ''),
+  'POST /api/fixes/export': (b, _, ctx) => { const site = b.site === 'st' ? 'st' : 'sf'; const r = fixes.exportFile(site, ctx.user ? ctx.user.name : ''); return Object.assign({ count: r.count, products: r.products, changes: r.changes, site, gtin: r.gtin }, saveExport(r.name, r.csv)); },
+  'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) })),
+  'POST /api/fixes/page': (b) => fixes.fromPage(b.site === 'st' ? 'st' : 'sf', b.id, b.url),
+  'POST /api/fixes/translate': (b) => fixes.translate(b.site === 'st' ? 'st' : 'sf', b.id),
   'GET /api/checks/ignored': (q) => checks.ignoredItems(q.id),
   // Reports: interactive page (HTML) and formatted Excel
   'POST /api/report': async (b) => {
@@ -178,11 +202,11 @@ const routes = {
     const f = saveExport((rep.file || 'anafora') + '.' + fmt, content);
     let view = '';
     if (fmt === 'html') {
-      // shown by the program in a browser tab, with a one-off key for this page only
+      // shown in a browser tab, with a one-off key for this page only
       const k = crypto.randomBytes(18).toString('hex');
       reportKeys.set(f.name, k);
-      view = `http://127.0.0.1:${port}/r/${encodeURIComponent(f.name)}?k=${k}`;
-      if (b.open) openBrowser(view);
+      view = `/r/${encodeURIComponent(f.name)}?k=${k}`;
+      if (b.open) openBrowser(`http://127.0.0.1:${port}${view}`);
     } else if (b.open) openPath(f.file);
     return Object.assign({ rows: rep.rows.length, format: fmt, view }, f);
   },
@@ -212,15 +236,15 @@ const routes = {
   'POST /api/suppliers/refresh': (b) => {
     const s = suppliers.get(b.id);
     if (!s) throw new Error('Δεν βρέθηκε ο αντιπρόσωπος.');
-    return jobs.start('supplier-' + s.id, 'Ενημέρωση από ' + s.name, async (job) => { const r = await pricelist.refresh(s.id, job); checks.invalidate(); return r; });
+    return jobs.start('supplier-' + s.id, 'Ενημέρωση από ' + s.name, async (job) => { const r = await pricelist.refresh(s.id, job); checks.invalidate(); fixes.invalidate(); return r; });
   },
   // automatic search for suppliers, for approval
   'GET /api/supplierfind': () => supplierfind.view(),
   'POST /api/supplierfind/run': (b) => jobs.start('supplierfind', 'Αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { brands: Array.isArray(b.brands) && b.brands.length ? b.brands : null, limit: Math.min(400, Number(b.limit) || 40) })),
-  'POST /api/supplierfind/approve': (b) => { const r = supplierfind.approve(b.key, b.host); checks.invalidate(); return r; },
+  'POST /api/supplierfind/approve': (b) => { const r = supplierfind.approve(b.key, b.host); checks.invalidate(); fixes.invalidate(); return r; },
   'POST /api/supplierfind/reject': (b) => supplierfind.reject(b.key, b.host, !!b.never),
   'POST /api/supplierfind/dismiss': (b) => supplierfind.dismiss(b.key, !!b.undo),
-  'POST /api/suppliers': (b) => { const r = suppliers.save(b); checks.invalidate(); return r; },
+  'POST /api/suppliers': (b) => { const r = suppliers.save(b); checks.invalidate(); fixes.invalidate(); return r; },
   'POST /api/suppliers/delete': (b) => { suppliers.remove(b.id); return { ok: true }; },
   'GET /api/orders': () => suppliers.orders(),
   'POST /api/orders': (b) => suppliers.saveOrder(b),
@@ -230,7 +254,7 @@ const routes = {
 
   // Price lists
   'POST /api/pricelist/preview': (b) => pricelist.preview(b.supplierId, b),
-  'POST /api/pricelist/import': (b) => pricelist.importList(b.supplierId, b),
+  'POST /api/pricelist/import': (b) => { const r = pricelist.importList(b.supplierId, b); fixes.invalidate(); return r; },
   'GET /api/pricelist/compare': (q) => pricelist.compare(q.supplierId, q.site) || Promise.reject(new Error('Δεν έχει φορτωθεί τιμοκατάλογος για αυτόν τον αντιπρόσωπο.')),
   'POST /api/pricelist/export': (b) => {
     const cmp = pricelist.compare(b.supplierId, b.site);
@@ -338,8 +362,8 @@ const routes = {
       if (!comps.length) throw new Error('Δεν υπάρχουν ανταγωνιστές που διαβάζονται αυτόματα. Πάτα «Έλεγχος» στη σελίδα Ανταγωνισμός.');
       job.progress(0, 1, 'Αναζήτηση σε ' + comps.length + ' καταστήματα…');
       const r = await market.researchOne({ name: d.title, brand: d.fields.brand, sku: d.code, price: d.price }, comps, settings.all().competitorGap);
-      const st = market.stats(r.competitors.map((c) => Object.assign(c, { country: /\.gr$/.test(U.hostOf(c.url)) ? 'GR' : 'other' })));
       const s = settings.all();
+      const st = market.stats(r.competitors.map((c) => Object.assign(c, { country: /\.gr$/.test(U.hostOf(c.url)) ? 'GR' : 'other' })), { ours: d.price, costVat: d.cost > 0 ? U.r2(d.cost * (1 + s.vat / 100)) : 0 });
       const floor = d.cost > 0 ? U.roundPrice(d.cost * (1 + s.floorMargin / 100) * (1 + s.vat / 100), s.rounding) : 0;
       const sug = market.suggest(st, floor);
       const res = { at: U.nowIso(), competitors: r.competitors, stats: st, suggested: sug.price, floor, raised: sug.raised, errors: r.errors.slice(0, 5) };
@@ -405,11 +429,12 @@ const routes = {
   },
   // Settings & data
   'GET /api/settings': () => settings.all(),
-  'POST /api/settings': (b) => { const before = settings.all(); if ('adRules' in b) { b = Object.assign({}, b); if (Array.isArray(b.adRules)) b.adRules = b.adRules.filter((x) => x && x.match && ['cat', 'type', 'word'].includes(x.kind) && ['banned', 'google', 'caution', 'meta18', 'ok'].includes(x.level)).map((x) => ({ kind: x.kind, match: String(x.match).trim(), level: x.level, why: String(x.why || '').trim() })); else b.adRules = null; } const r = settings.save(b); checks.invalidate(); if (before.strategy !== r.strategy || before.percent !== r.percent || before.rounding !== r.rounding || before.floorMargin !== r.floorMargin || before.vat !== r.vat || before.marketGreekOnly !== r.marketGreekOnly) market.recompute(); if (JSON.stringify(before.newProduct) !== JSON.stringify(r.newProduct)) drafts.refreshAll(); return r; },
-  'POST /api/datadir': (b) => store.setDataDir(b.path),
+  'POST /api/settings': (b) => { const before = settings.all(); if ('adRules' in b) { b = Object.assign({}, b); if (Array.isArray(b.adRules)) b.adRules = b.adRules.filter((x) => x && x.match && ['cat', 'type', 'word'].includes(x.kind) && ['banned', 'google', 'caution', 'meta18', 'ok'].includes(x.level)).map((x) => ({ kind: x.kind, match: String(x.match).trim(), level: x.level, why: String(x.why || '').trim() })); else b.adRules = null; } const r = settings.save(b); checks.invalidate(); fixes.invalidate(); if (before.strategy !== r.strategy || before.percent !== r.percent || before.rounding !== r.rounding || before.floorMargin !== r.floorMargin || before.vat !== r.vat || before.marketGreekOnly !== r.marketGreekOnly || before.minShops !== r.minShops || before.suspectPct !== r.suspectPct) market.recompute(); if (JSON.stringify(before.newProduct) !== JSON.stringify(r.newProduct)) drafts.refreshAll(); return r; },
+  'POST /api/datadir': (b) => { if (SERVER) throw new Error('Στη λειτουργία διακομιστή ο φάκελος δεδομένων ορίζεται στη ρύθμιση του διακομιστή (SFK_DATA).'); return store.setDataDir(b.path); },
   'GET /api/backups': () => store.listBackups(),
-  'POST /api/backups/restore': (b) => { store.restoreBackup(b.day); checks.invalidate(); suppliers.resetIndex(); return { ok: true }; },
+  'POST /api/backups/restore': (b) => { store.restoreBackup(b.day); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return { ok: true }; },
   'POST /api/open': (b) => {
+    if (SERVER) { if (b.kind === 'url' && /^https?:\/\//i.test(b.url || '')) return { url: b.url }; throw new Error('Στη λειτουργία διακομιστή τα αρχεία κατεβαίνουν από τον browser.'); }
     if (b.kind === 'url' && /^https?:\/\//i.test(b.url || '')) openBrowser(b.url);
     else if (b.kind === 'data') openPath(store.dir());
     else if (b.kind === 'exports') openPath(path.join(store.dir(), 'exports'));
@@ -420,18 +445,97 @@ const routes = {
   },
   'GET /api/jobs': () => jobs.recent(),
   'POST /api/jobs/cancel': (b) => jobs.cancel(b.id),
-  'POST /api/shutdown': () => { setTimeout(() => process.exit(0), 300); return { ok: true }; },
-};
+  'POST /api/shutdown': () => { if (SERVER) throw new Error('Ο διακομιστής δεν κλείνει από εδώ.'); setTimeout(() => process.exit(0), 300); return { ok: true }; },
 
-const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown']);
+  // Users and sessions (server mode)
+  'GET /api/session': (q, _, ctx) => ({ mode: MODE, version: VERSION, user: ctx.user || null, csrf: ctx.csrf || '', setup: SERVER && !users.count() }),
+  'POST /api/login': (b, _, ctx) => { const r = users.login(b.user, b.password, ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
+  'POST /api/setup': (b, _, ctx) => { const r = users.setup(b, ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
+  'POST /api/logout': (b, _, ctx) => { if (ctx.sid) users.end(ctx.sid); ctx.setCookie(''); return { ok: true }; },
+  'GET /api/users': () => ({ users: users.list(), sessions: users.active() }),
+  'POST /api/users': (b) => (b.id ? users.update(b.id, b) : users.create(b)),
+  'POST /api/users/delete': (b, _, ctx) => { if (ctx.user && b.id === ctx.user.id) throw new Error('Δεν διαγράφεις τον εαυτό σου.'); users.remove(b.id); return { ok: true }; },
+  'POST /api/users/logout-all': (b, _, ctx) => { users.endAll(); ctx.setCookie(''); return { ok: true }; },
+  'POST /api/me/password': (b, _, ctx) => { users.login(ctx.user.user, b.current, ctx.ip, ctx.ua); users.update(ctx.user.id, { password: b.password }); const r = users.startSession(users.byId(ctx.user.id), ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { csrf: r.csrf }; },
+};
+// server mode: open without a session / only for administrators
+const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
+const ADMIN_ROUTES = new Set(['POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+
+const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
+
+// ---------- server mode helpers ----------
+function cookieOf(req, name) {
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return '';
+}
+function isHttps(req) { return !!(req.socket && req.socket.encrypted) || (TRUST_PROXY && /^https$/i.test(String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim())); }
+function clientIp(req) { const f = TRUST_PROXY ? String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() : ''; return f || (req.socket && req.socket.remoteAddress) || ''; }
+function sessionCookie(req, sid) {
+  const secure = isHttps(req) || process.env.SFK_SECURE_COOKIE === '1';
+  return `sfk_sid=${sid ? encodeURIComponent(sid) : ''}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}; Max-Age=${sid ? 30 * 86400 : 0}`;
+}
+function sessionOf(req, touch) { return SERVER ? users.session(cookieOf(req, 'sfk_sid'), touch) : null; }
+
+// ---------- live updates: every open screen hears about changes (Server-Sent Events) ----------
+const streams = new Set(); // { res, client }
+let pendingKeys = new Map(); // store key -> Set of tabs that caused it ('' = the program itself)
+let flushTimer = null;
+const QUIET_KEYS = /^(sessions|security|accents|types|market-meta|competitors-meta)$|^comp-/;
+store.onWrite((name) => {
+  if (QUIET_KEYS.test(name) || !streams.size) return;
+  const by = (reqCtx.getStore() || {}).client || '';
+  if (!pendingKeys.has(name)) pendingKeys.set(name, new Set());
+  pendingKeys.get(name).add(by);
+  if (!flushTimer) flushTimer = setTimeout(flushEvents, 400);
+});
+jobs.onChange(() => { for (const st of streams) sse(st.res, { jobs: true }); });
+function flushEvents() {
+  flushTimer = null;
+  const pend = pendingKeys; pendingKeys = new Map();
+  for (const st of streams) {
+    // a tab is not told about changes only it made (it already shows them)
+    const keys = [...pend.entries()].filter(([, by]) => [...by].some((b) => b !== st.client)).map(([k]) => k);
+    if (keys.length) sse(st.res, { keys });
+  }
+}
+function sse(res, data) { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch (_) { /* closed */ } }
+function serveEvents(req, res, url) {
+  if (SERVER) { if (!sessionOf(req, false)) return send(res, 401, { error: 'Χρειάζεται σύνδεση.', login: true }); }
+  else if (!safeEq(url.searchParams.get('t'), TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
+  res.write('retry: 4000\n\n');
+  const st = { res, client: String(url.searchParams.get('c') || '').slice(0, 40) };
+  streams.add(st);
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) { /* closed */ } }, 25000);
+  req.on('close', () => { clearInterval(ping); streams.delete(st); });
+}
+
+// ---------- the same data folder used by another PC at the same time (e.g. OneDrive) ----------
+// Two copies writing the same files lose each other's changes. Each copy leaves a small "I am here" note
+// in the folder every minute; the screen warns when another PC's note is fresh.
+const os = require('os');
+const INSTANCE = { host: os.hostname(), pid: process.pid, startedAt: new Date().toISOString() };
+function instanceFile() { return path.join(store.dir(), '.instance-' + INSTANCE.host.replace(/[^a-z0-9_-]+/gi, '_') + '.json'); }
+function heartbeat() { try { fs.writeFileSync(instanceFile(), JSON.stringify(Object.assign({ at: new Date().toISOString() }, INSTANCE))); } catch (_) { /* optional */ } }
+function otherInstances() {
+  try {
+    return fs.readdirSync(store.dir()).filter((f) => /^\.instance-.+\.json$/.test(f)).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(store.dir(), f), 'utf8')); } catch (_) { return null; } })
+      .filter((x) => x && x.host !== INSTANCE.host && Date.now() - new Date(x.at).getTime() < 5 * 60000).map((x) => ({ host: x.host, at: x.at }));
+  } catch (_) { return []; }
+}
 
 /** A report page in a browser tab: only with its own key, never while the program is locked. */
 function serveReport(req, res, url) {
   const name = path.basename(decodeURIComponent(url.pathname.slice(3)));
+  if (SERVER && !sessionOf(req, false)) return send(res, 401, '<!doctype html><meta charset="utf-8"><p style="font:16px system-ui;padding:40px">Συνδέσου πρώτα στο πρόγραμμα και άνοιξε ξανά την αναφορά.</p>', 'text/html; charset=utf-8');
   const k = reportKeys.get(name);
   if (!k || !safeEq(url.searchParams.get('k'), k)) return send(res, 403, '<!doctype html><meta charset="utf-8"><p style="font:16px system-ui;padding:40px">Ο σύνδεσμος της αναφοράς έληξε. Άνοιξέ την ξανά από το πρόγραμμα.</p>', 'text/html; charset=utf-8');
-  if (security.isLocked()) return send(res, 423, '<!doctype html><meta charset="utf-8"><p style="font:16px system-ui;padding:40px">Το πρόγραμμα είναι κλειδωμένο. Βάλε το PIN στο πρόγραμμα και άνοιξε ξανά την αναφορά.</p>', 'text/html; charset=utf-8');
+  if (!SERVER && security.isLocked()) return send(res, 423, '<!doctype html><meta charset="utf-8"><p style="font:16px system-ui;padding:40px">Το πρόγραμμα είναι κλειδωμένο. Βάλε το PIN στο πρόγραμμα και άνοιξε ξανά την αναφορά.</p>', 'text/html; charset=utf-8');
   const p = store.exportPath(name);
   if (!fs.existsSync(p)) return send(res, 404, 'Δεν βρέθηκε.', 'text/plain; charset=utf-8');
   const nonce = crypto.randomBytes(16).toString('base64');
@@ -444,33 +548,51 @@ function serveReport(req, res, url) {
 
 async function handleApi(req, res, url) {
   const q = Object.fromEntries(url.searchParams);
+  const key0 = req.method + ' ' + url.pathname;
+  if (key0 === 'GET /api/events') return serveEvents(req, res, url);
   if (req.method === 'GET' && url.pathname.startsWith('/api/export/')) {
-    if (!safeEq(q.t, TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
-    if (security.isLocked()) return send(res, 423, { error: 'Το πρόγραμμα είναι κλειδωμένο.', locked: true });
+    if (SERVER ? !sessionOf(req, false) : !safeEq(q.t, TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
+    if (!SERVER && security.isLocked()) return send(res, 423, { error: 'Το πρόγραμμα είναι κλειδωμένο.', locked: true });
     const name = decodeURIComponent(url.pathname.slice('/api/export/'.length));
     const p = store.exportPath(path.basename(name));
     if (!fs.existsSync(p)) return send(res, 404, { error: 'Δεν βρέθηκε το αρχείο.' });
     return send(res, 200, fs.readFileSync(p), MIME[path.extname(p).toLowerCase()] || 'application/octet-stream', { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(p))}` });
   }
-  if (!safeEq(req.headers['x-sfk'], TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
-  // the lock is enforced here, for every call: without the PIN nothing can be read or changed
-  const key0 = req.method + ' ' + url.pathname;
-  if (security.isLocked() && !OPEN_WHEN_LOCKED.has(key0)) return send(res, 423, { error: 'Το πρόγραμμα είναι κλειδωμένο. Βάλε το PIN.', locked: true });
-  if (req.headers['x-active'] === '1') security.touch();
+  const ctx = { ip: clientIp(req), ua: String(req.headers['user-agent'] || ''), client: String(req.headers['x-client'] || '').slice(0, 40), cookies: [] };
+  ctx.setCookie = (sid) => ctx.cookies.push(sessionCookie(req, sid));
+  if (SERVER) {
+    // every call needs a logged-in user and the session's own token; settings and users only for administrators
+    const sid = cookieOf(req, 'sfk_sid');
+    const sess = users.session(sid, req.headers['x-active'] === '1');
+    if (sess) Object.assign(ctx, { sid, user: sess.user, csrf: sess.csrf });
+    if (!PUBLIC_ROUTES.has(key0)) {
+      if (!sess) return send(res, 401, { error: 'Η σύνδεση έληξε. Συνδέσου ξανά.', login: true });
+      if (!safeEq(req.headers['x-sfk'], sess.csrf)) return send(res, 403, { error: 'Απαγορεύεται.' });
+      if (ADMIN_ROUTES.has(key0) && sess.user.role !== 'admin') return send(res, 403, { error: 'Μόνο για διαχειριστές.' });
+    } else if (req.method === 'POST' && key0 !== 'POST /api/logout' && sess && key0 !== 'POST /api/login') {
+      return send(res, 400, { error: 'Είσαι ήδη συνδεδεμένος.' });
+    }
+  } else {
+    if (!safeEq(req.headers['x-sfk'], TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
+    // the lock is enforced here, for every call: without the PIN nothing can be read or changed
+    if (security.isLocked() && !OPEN_WHEN_LOCKED.has(key0)) return send(res, 423, { error: 'Το πρόγραμμα είναι κλειδωμένο. Βάλε το PIN.', locked: true });
+    if (req.headers['x-active'] === '1') security.touch();
+  }
   if (req.method === 'GET' && url.pathname.startsWith('/api/jobs/') && url.pathname.length > 10) {
     const j = jobs.get(url.pathname.slice(10));
     return j ? send(res, 200, j) : send(res, 404, { error: 'Η εργασία δεν υπάρχει πια.' });
   }
-  const key = req.method + ' ' + url.pathname;
-  const fn = routes[key];
+  const fn = routes[key0];
   if (!fn) return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
   try {
-    const body = req.method === 'POST' ? await readBody(req, 120 * 1024 * 1024) : {};
-    const out = await fn(req.method === 'GET' ? q : body, q);
-    send(res, 200, out === undefined ? { ok: true } : out);
+    // before login only small bodies are read
+    const limit = SERVER && !ctx.user ? 64 * 1024 : 120 * 1024 * 1024;
+    const body = req.method === 'POST' ? await readBody(req, limit) : {};
+    const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx));
+    send(res, 200, out === undefined ? { ok: true } : out, null, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null);
   } catch (e) {
-    if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key, e);
-    send(res, 400, { error: e && e.message ? e.message : String(e) });
+    if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key0, e);
+    send(res, 400, { error: e && e.message ? e.message : String(e) }, null, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null);
   }
 }
 
@@ -482,17 +604,28 @@ function serveStatic(req, res, url) {
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'Not found', 'text/plain');
     const ext = path.extname(file);
-    if (ext === '.html') data = Buffer.from(String(data).replace('__SFK_TOKEN__', TOKEN).replace('__SFK_VERSION__', VERSION));
-    send(res, 200, data, MIME[ext] || 'application/octet-stream', ext === '.woff2' ? { 'Cache-Control': 'max-age=31536000' } : { 'Content-Security-Policy': "default-src 'self'; img-src * data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'" });
+    if (ext === '.html') {
+      // server mode: the page carries the token of the logged-in session (none before login)
+      const sess = SERVER ? sessionOf(req, false) : null;
+      data = Buffer.from(String(data).replace('__SFK_TOKEN__', SERVER ? (sess ? sess.csrf : '') : TOKEN).replace('__SFK_VERSION__', VERSION).replace('__SFK_MODE__', MODE));
+    }
+    send(res, 200, data, MIME[ext] || 'application/octet-stream', ext === '.woff2' ? { 'Cache-Control': 'max-age=31536000' } : { 'Content-Security-Policy': "default-src 'self'; img-src * data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
   });
 }
 
 const server = http.createServer((req, res) => {
-  const host = String(req.headers.host || '');
-  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
-  // requests from web pages of other sites are refused (protection against cross-site requests)
-  const origin = req.headers.origin;
-  if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
+  const host = String(req.headers.host || '').toLowerCase();
+  if (SERVER) {
+    if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(host.replace(/:\d+$/, '')) && !LOCAL_HOST.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
+    // requests from web pages of other sites are refused (protection against cross-site requests)
+    const origin = req.headers.origin;
+    if (origin) { let oh = ''; try { oh = new URL(origin).host.toLowerCase(); } catch (_) { /* bad origin */ } if (oh !== host) return send(res, 403, 'Forbidden', 'text/plain'); }
+    if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  } else {
+    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
+    const origin = req.headers.origin;
+    if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
+  }
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname === '/ping') return send(res, 200, { app: 'sf-kentro', version: VERSION });
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
@@ -514,13 +647,20 @@ function listen(p, tries) {
     }
     fatal(new Error('Cannot listen on port ' + p + ': ' + e.message));
   });
-  server.listen(p, '127.0.0.1', () => {
+  server.listen(p, BIND, () => {
     port = p;
     const url = `http://127.0.0.1:${p}/`;
     console.log('');
-    console.log('  SF Kentro ' + VERSION);
-    console.log('  Running at ' + url);
+    console.log('  SF Kentro ' + VERSION + (SERVER ? ' — server mode (shared by every PC)' : ''));
+    console.log('  Running at ' + url + (SERVER ? '  (listening on ' + BIND + ':' + p + ')' : ''));
     console.log('  Data folder: ' + store.dir());
+    if (SERVER) {
+      const code = users.ensureAdmin();
+      if (code) { console.log(''); console.log('  FIRST START: open the program in a browser and use this setup code: ' + code); console.log('  ΠΡΩΤΗ ΕΚΚΙΝΗΣΗ: άνοιξε το πρόγραμμα στον browser και γράψε τον κωδικό: ' + code); }
+      if (!ALLOWED_HOSTS.length) console.log('  Tip: set SFK_ALLOWED_HOSTS to the address people use (e.g. kentro.example.gr).');
+      console.log('');
+      return afterStart();
+    }
     console.log('  Keep this window open while you work. Close it to exit.');
     console.log('  If no window appears, open this address in your browser: ' + url);
     console.log('');
@@ -538,6 +678,8 @@ function listen(p, tries) {
 const STARTED_AT = Date.now();
 function afterStart() {
   try { store.backup(14); } catch (e) { console.error('backup:', e.message); }
+  if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
+  setInterval(() => { try { store.backup(14); } catch (e) { console.error('backup:', e.message); } }, 3600 * 1000).unref();
   // after an update with new market rules (e.g. out-of-stock offers no longer count): recalculate the saved results once
   try {
     const meta = store.read('market-meta', {});
@@ -570,16 +712,25 @@ function afterStart() {
             try { const r = await pricelist.refresh(s.id, job); job.log(`${s.name}: ${r ? r.items + ' κωδικοί, ' + r.changed + ' αλλαγές τιμής' : 'διακόπηκε'}`); } catch (e) { job.log(`${s.name}: ${e.message}`); }
           }
           // 2. competitor prices for every product
-          return market.run(null, job, { auto: true });
+          const res = await market.run(null, job, { auto: true });
+          // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
+          if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
+          return res;
         });
-      } catch (e) { console.error('daily research:', e.message); }
+      } catch (e) {
+        // the same problem is written once an hour, not every minute
+        const msg = e && e.message ? e.message : String(e);
+        if (msg !== tickErr.msg || Date.now() - tickErr.at > 36e5) { console.error('daily research:', e && e.stack ? e.stack : msg); tickErr.msg = msg; tickErr.at = Date.now(); }
+      }
     };
+    const tickErr = { msg: '', at: 0 };
     setTimeout(tick, 20000).unref();
     setInterval(tick, 60 * 1000).unref();
   }
 }
 
 process.on('uncaughtException', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { users.flush(); } catch (_) { /* ignore */ } process.exit(0); });
 process.on('unhandledRejection', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
 
 void execFile;

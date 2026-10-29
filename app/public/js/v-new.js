@@ -256,7 +256,7 @@
 
     const supSel = select([['', '—']].concat(supsCache.map((s) => [s.id, s.name])), d.supplierId || '', (v) => save({ supplierId: v }));
     const left = h('div', { class: 'stack' },
-      d.source && d.source.url ? h('div', { class: 'faint' }, 'Πηγή: ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); POST('/api/open', { kind: 'url', url: d.source.url }); } }, d.source.url.slice(0, 90))) : null,
+      d.source && d.source.url ? h('div', { class: 'faint' }, 'Πηγή: ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(d.source.url); } }, d.source.url.slice(0, 90))) : null,
       (d.notes || []).map((n) => h('div', { class: 'note warn' }, n)),
       h('div', { class: 'panel' }, h('h2', null, 'Τίτλος'),
         h('div', { class: 'grid2' }, field('Είδος', fIn('type', 'π.χ. ΠΑΝΤΕΛΟΝΙ', 'dl-types')), field('Μάρκα', fIn('brand', 'π.χ. Pentagon', 'dl-brands')), field('Μοντέλο', fIn('model', 'π.χ. Ranger 2.0')), field('Χρώμα ή ιδιαιτερότητα', fIn('extra', 'π.χ. ΜΑΥΡΟ'))),

@@ -12,6 +12,10 @@ const DEFAULTS = {
   strategy: 'median_minus',
   percent: 3,
   floorMargin: 25,
+  // the price changes only when at least this many shops (in stock, not suspect) agree
+  minShops: 2,
+  // a competitor price this many % under the others (or under the supplier's retail price) is suspect: old stock, mistake
+  suspectPct: 30,
   marketGreekOnly: true,
   competitorGap: 900, // ms between requests to the same competitor
   syncVariations: true,
@@ -53,6 +57,8 @@ function save(patch) {
   next.vat = clampNum(next.vat, 0, 40, 24);
   next.percent = clampNum(next.percent, 0, 50, 3);
   next.floorMargin = clampNum(next.floorMargin, 0, 300, 25);
+  next.minShops = Math.round(clampNum(next.minShops, 1, 5, 2));
+  next.suspectPct = clampNum(next.suspectPct, 10, 60, 30);
   next.competitorGap = clampNum(next.competitorGap, 200, 10000, 900);
   next.autoSyncHours = clampNum(next.autoSyncHours, 0, 720, 12);
   next.descMinChars = clampNum(next.descMinChars, 0, 5000, 150);

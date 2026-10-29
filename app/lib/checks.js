@@ -253,6 +253,50 @@ function run() {
   return { checks, counts, at: U.nowIso() };
 }
 
+// ---------- One combined title correction (for the fixes waiting for approval) ----------
+/** What the title checks need, built once for many titles. */
+function titleContext(site) {
+  const brands = new Set([...catalog.knownBrands().keys()].map((k) => k.replace(/[^A-Z0-9]/g, '')));
+  const { freq, latin } = wordStats();
+  const latinCommon = new Set([...latin].filter(([, n]) => n >= 3).map(([w]) => w));
+  for (const b of brands) latinCommon.add(b);
+  return { latinCommon, dict: spell.dict(), freq, suggestType: typeSuggester(site), memo: new Map() };
+}
+/**
+ * Every title rule of the checks, one after the other, on one title → { fix, steps:[{ kind, why, level }] }.
+ * level high = mechanical (spaces, capitals, accents, letters of the wrong alphabet); medium = needs a look
+ * (Greek words typed in Latin, spelling, type word first).
+ */
+function titleFix(p, ctx) {
+  const steps = [];
+  let t = String(p.name || '');
+  const sp = U.collapse(t.replace(/\u200b/g, ''));
+  if (sp !== t) steps.push({ kind: 'spaces', why: 'Διπλά ή κρυφά κενά', level: 'high' });
+  t = sp;
+  const fm = U.fixMixedScript(t, ctx.latinCommon, ctx.dict, ctx.freq);
+  if (fm.changed) { t = fm.text; steps.push({ kind: 'mixed', why: 'Ελληνικά και λατινικά γράμματα μαζί (ο πελάτης δεν το βρίσκει στην αναζήτηση)', level: 'high' }); }
+  for (const x of fm.suspects) { t = t.split(x.word).join(x.fix); steps.push({ kind: 'suspect', why: `«${x.word}» → «${x.fix}» (ελληνική λέξη με λατινικά)`, level: 'medium' }); }
+  const caps = U.capsTitle(t);
+  if (caps !== t) { steps.push(U.hasLowercase(t) ? { kind: 'caps', why: 'Κεφαλαία, όπως όλοι οι τίτλοι', level: 'high' } : { kind: 'accents', why: 'Χωρίς τόνους στα κεφαλαία', level: 'high' }); t = caps; }
+  const fixes = [];
+  for (const w of new Set(t.split(/[^\u0370-\u03ffA-Z]+/))) {
+    if (!w) continue;
+    let r = ctx.memo.get(w);
+    if (r === undefined) { r = spell.check(w, ctx.freq); ctx.memo.set(w, r); }
+    if (r) fixes.push([w, r.fix]);
+  }
+  if (fixes.length) {
+    t = t.split(' ').map((tok) => tok.replace(/[\u0370-\u03ff]+/g, (m) => { const hit = fixes.find(([a]) => a === m); return hit ? hit[1] : m; })).join(' ');
+    steps.push({ kind: 'typo', why: 'Ορθογραφία: ' + fixes.map(([a, b]) => `${a} → ${b}`).join(', '), level: 'medium' });
+  }
+  const first = U.greekUpper(t).split(' ')[0] || '';
+  if (first && !/[\u0370-\u03ff]/.test(first)) {
+    const sug = ctx.suggestType(Object.assign({}, p, { name: t }));
+    if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: 'medium' }); }
+  }
+  return { fix: U.collapse(t), steps };
+}
+
 let last = null;
 function cached(force) { if (!last || force) last = run(); return last; }
 function invalidate() { last = null; }
@@ -321,4 +365,4 @@ function ignoredItems(checkId) {
   return keys.map((k) => { const [site, id] = k.split(':'); const p = catalog.load(site).products.find((x) => x.id === Number(id)); return p ? { site, id: p.id, name: p.name, sku: p.sku } : { site, id: Number(id), name: '(δεν υπάρχει πια)' }; });
 }
 
-module.exports = { run, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats };
+module.exports = { run, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };

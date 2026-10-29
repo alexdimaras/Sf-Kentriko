@@ -5,35 +5,114 @@
 const fs = require('fs');
 const path = require('path');
 
-let words = null;
-let stems = null;
-const plain = (w) => String(w).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+const plain = (w) => String(w).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 
-function dict() {
-  if (words) return words;
-  words = new Set();
-  stems = new Set();
-  try {
-    const raw = fs.readFileSync(path.join(__dirname, 'dict', 'el.dic'), 'utf8');
-    let start = raw.indexOf('\n') + 1; // first line = count
-    for (let i = start; i <= raw.length; i++) {
-      if (i === raw.length || raw.charCodeAt(i) === 10) {
-        const w = raw.slice(start, i).trim();
-        if (w.length >= 2) {
-          const u = plain(w);
-          words.add(u);
-          // stems: the word without its ending, so other forms of the same word count as known
-          if (u.length >= 6) { stems.add(u.slice(0, -1)); stems.add(u.slice(0, -2)); }
-        }
-        start = i + 1;
-      }
+// The 812.000 words are kept packed: one byte per letter in one buffer, an index of where each word starts,
+// a hash table for "is it a word?", and one for the stems (a word without its last 1–2 letters, pointing into
+// the same buffer, compared letter by letter: exact, no false matches). About 38 MB instead of ~150 MB as
+// JavaScript Sets, with the same answers, and no big temporary list while loading.
+let D = null;
+const FNV = (x, c) => Math.imul(x ^ c, 16777619);
+function build() {
+  let raw = null;
+  try { raw = fs.readFileSync(path.join(__dirname, 'dict', 'el.dic'), 'utf8'); } catch (e) { console.error('dictionary:', e.message); raw = ''; }
+  // the alphabet: every letter used (Greek capitals, a few others), one byte each
+  const code = new Map();
+  const lines = [];
+  let start = raw.indexOf('\n') + 1; // first line = count
+  let total = 0, n = 0, long = 0;
+  // first pass: sizes and alphabet (the words are made and dropped one by one)
+  for (let i = start; i <= raw.length; i++) {
+    if (i === raw.length || raw.charCodeAt(i) === 10) {
+      const w = plain(raw.slice(start, i).trim());
+      start = i + 1;
+      if (w.length < 2 || w.length > 255) continue;
+      for (let j = 0; j < w.length; j++) { const c = w.charCodeAt(j); if (!code.has(c)) code.set(c, code.size + 1); }
+      total += w.length; n++; if (w.length >= 6) long++;
     }
-  } catch (e) { console.error('dictionary:', e.message); }
-  return words;
+  }
+  void lines;
+  if (code.size > 254) throw new Error('dictionary alphabet too large');
+  const data = Buffer.allocUnsafe(total);
+  const offs = new Uint32Array(n + 1);
+  let wsize = 1; while (wsize < n * 2) wsize <<= 1;
+  const wmask = wsize - 1;
+  const words = new Int32Array(wsize).fill(-1);
+  let ssize = 1; while (ssize < long * 3) ssize <<= 1;
+  const smask = ssize - 1;
+  const stems = new Int32Array(ssize).fill(-1); // -1 = empty, else word index * 2 + (cut - 1)
+  const stemLen = (e) => offs[(e >> 1) + 1] - offs[e >> 1] - ((e & 1) + 1);
+  const sameBytes = (a, b, len) => { for (let j = 0; j < len; j++) if (data[a + j] !== data[b + j]) return false; return true; };
+  const addStem = (x, k, cut) => {
+    const e = k * 2 + (cut - 1), len = offs[k + 1] - offs[k] - cut;
+    let hh = x & smask;
+    while (stems[hh] !== -1) { const f = stems[hh]; if (stemLen(f) === len && sameBytes(offs[f >> 1], offs[k], len)) return; hh = (hh + 1) & smask; }
+    stems[hh] = e;
+  };
+  // second pass: pack, index, hash
+  let o = 0, k = 0;
+  start = raw.indexOf('\n') + 1;
+  for (let i = start; i <= raw.length; i++) {
+    if (i === raw.length || raw.charCodeAt(i) === 10) {
+      const w = plain(raw.slice(start, i).trim());
+      start = i + 1;
+      if (w.length < 2 || w.length > 255) continue;
+      const a = o;
+      let x = 2166136261 | 0;
+      const pre = [];
+      for (let j = 0; j < w.length; j++) {
+        const c = code.get(w.charCodeAt(j));
+        data[o++] = c;
+        x = FNV(x, c);
+        if (w.length >= 6 && (j === w.length - 3 || j === w.length - 2)) pre.push(x >>> 0); // hashes of w[:-2], w[:-1]
+      }
+      const hh0 = x >>> 0;
+      let hh = hh0 & wmask, dup = false;
+      while (words[hh] !== -1) {
+        const t = words[hh], ta = offs[t], tl = offs[t + 1] - ta;
+        if (tl === w.length) { let j = 0; while (j < tl && data[ta + j] === data[a + j]) j++; if (j === tl) { dup = true; break; } }
+        hh = (hh + 1) & wmask;
+      }
+      if (dup) { o = a; continue; }
+      offs[k] = a; offs[k + 1] = o; words[hh] = k;
+      if (pre.length === 2) { addStem(pre[0], k, 2); addStem(pre[1], k, 1); }
+      k++;
+    }
+  }
+  raw = null;
+  offs[k] = o;
+  const q = new Uint8Array(256);
+  const enc = (w) => { if (w.length > 255) return -1; for (let j = 0; j < w.length; j++) { const c = code.get(w.charCodeAt(j)); if (!c) return -1; q[j] = c; } return w.length; };
+  const hashQ = (len) => { let x = 2166136261 | 0; for (let j = 0; j < len; j++) x = FNV(x, q[j]); return x >>> 0; };
+  const has = (w) => {
+    const len = enc(w);
+    if (len < 0) return false;
+    let hh = hashQ(len) & wmask;
+    for (;;) {
+      const i = words[hh];
+      if (i === -1) return false;
+      const a = offs[i];
+      if (offs[i + 1] - a === len) { let j = 0; while (j < len && data[a + j] === q[j]) j++; if (j === len) return true; }
+      hh = (hh + 1) & wmask;
+    }
+  };
+  const stemHas = (x) => {
+    const len = enc(x);
+    if (len < 0) return false;
+    let hh = hashQ(len) & smask;
+    while (stems[hh] !== -1) {
+      const f = stems[hh];
+      if (stemLen(f) === len) { const a = offs[f >> 1]; let j = 0; while (j < len && data[a + j] === q[j]) j++; if (j === len) return true; }
+      hh = (hh + 1) & smask;
+    }
+    return false;
+  };
+  return { size: k, has, stem: (w) => stemHas(w.slice(0, -1)) || stemHas(w.slice(0, -2)), bytes: data.length + offs.byteLength + words.byteLength + stems.byteLength };
 }
+function dict() { if (!D) D = build(); return D; }
 function isWord(w) { return dict().has(plain(w)); }
 /** Another form of a known word (different ending): ΑΝΤΙΟΞΕΙΔΩΤΙΚΟ next to ΑΝΤΙΟΞΕΙΔΩΤΙΚΗ. */
-function knownStem(w) { dict(); return w.length >= 6 && (stems.has(w.slice(0, -1)) || stems.has(w.slice(0, -2))); }
+function knownStem(w) { return w.length >= 6 && dict().stem(w); }
 
 const GR = 'ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ';
 // Letters that sound the same in Greek: the classic spelling mistakes (ΣΠΙΝΘΙΡΑΣ / ΣΠΙΝΘΗΡΑΣ, ΠΡΟΠΟΝΙΤΙΚΟ).

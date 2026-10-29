@@ -1,6 +1,7 @@
 'use strict';
 // JSON files in a data folder (default: Documents\SF-Kentro). Atomic writes, in-memory cache, daily backups.
 const fs = require('fs');
+const zlib = require('zlib');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
@@ -88,19 +89,29 @@ function setDataDir(target) {
 
 function file(name) { return path.join(dir(), name + '.json'); }
 
+// A file that does not exist (yet) is remembered as MISSING, never as some caller's default: two callers can ask
+// for the same file with different defaults (e.g. null and an empty list) and each must get its own.
+const MISSING = Symbol('missing');
+function fresh(def) { return typeof def === 'function' ? def() : (def === undefined || def === null ? null : JSON.parse(JSON.stringify(def))); }
+
 function read(name, def) {
-  if (cache.has(name)) return cache.get(name);
+  if (cache.has(name)) { const c = cache.get(name); return c === MISSING ? fresh(def) : c; }
   let v;
   try { v = JSON.parse(fs.readFileSync(file(name), 'utf8')); } catch (e) {
     if (e.code !== 'ENOENT') {
       // Corrupt file: keep a copy, start from default so the app still opens.
       try { fs.copyFileSync(file(name), file(name) + '.broken-' + Date.now()); } catch (_) { /* ignore */ }
     }
-    v = typeof def === 'function' ? def() : (def === undefined ? null : JSON.parse(JSON.stringify(def)));
+    v = MISSING;
   }
+  if (v === null) v = MISSING; // an empty ("null") file counts as missing
   cache.set(name, v);
-  return v;
+  return v === MISSING ? fresh(def) : v;
 }
+
+// who wants to know about every change (live updates on the other PCs)
+const listeners = new Set();
+function onWrite(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 function write(name, value) {
   cache.set(name, value);
@@ -108,6 +119,7 @@ function write(name, value) {
   const tmp = f + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, f);
+  for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
   return value;
 }
 
@@ -117,6 +129,9 @@ function update(name, def, fn) {
   return write(name, r === undefined ? v : r);
 }
 
+/** Does the file exist (saved at least once)? */
+function exists(name) { read(name); return cache.get(name) !== MISSING; }
+
 /** Drop a big file from memory (it is read again from disk when needed). */
 function forget(name) { cache.delete(name); }
 
@@ -125,19 +140,27 @@ function exportPath(fname) {
   return path.join(dir(), 'exports', safe);
 }
 
+// Files that are only copies of something that can be read again (competitors' catalogs, supplier pages,
+// learned words, sessions) are not backed up; the rest is compressed (JSON shrinks about 10×).
+const NO_BACKUP = /^(comp-.+|enrich-cache|accents|types|sessions)\.json$/;
 function backup(keep) {
   const day = new Date().toISOString().slice(0, 10);
-  const bdir = path.join(dir(), 'backups', day);
+  const root = path.join(dir(), 'backups');
+  const bdir = path.join(root, day);
   if (fs.existsSync(bdir)) return null;
   fs.mkdirSync(bdir, { recursive: true });
   for (const f of fs.readdirSync(dir())) {
-    if (f.endsWith('.json')) fs.copyFileSync(path.join(dir(), f), path.join(bdir, f));
+    if (!f.endsWith('.json') || NO_BACKUP.test(f)) continue;
+    fs.writeFileSync(path.join(bdir, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f)), { level: 6 }));
   }
-  const all = fs.readdirSync(path.join(dir(), 'backups')).filter((d) => /^\d{4}-\d\d-\d\d$/.test(d)).sort();
+  const all = fs.readdirSync(root).filter((d) => /^\d{4}-\d\d-\d\d$/.test(d)).sort();
   while (all.length > (keep || 14)) {
     const old = all.shift();
-    fs.rmSync(path.join(dir(), 'backups', old), { recursive: true, force: true });
+    fs.rmSync(path.join(root, old), { recursive: true, force: true });
   }
+  // the safety copies made before a restore: the last 3 are enough
+  const safety = fs.readdirSync(root).filter((d) => /^before-restore-\d+$/.test(d)).sort();
+  while (safety.length > 3) fs.rmSync(path.join(root, safety.shift()), { recursive: true, force: true });
   return bdir;
 }
 
@@ -154,9 +177,13 @@ function restoreBackup(day) {
   // Safety copy of the current state first.
   const safety = path.join(dir(), 'backups', 'before-restore-' + Date.now());
   fs.mkdirSync(safety, { recursive: true });
-  for (const f of fs.readdirSync(dir())) if (f.endsWith('.json')) fs.copyFileSync(path.join(dir(), f), path.join(safety, f));
-  for (const f of fs.readdirSync(bdir)) if (f.endsWith('.json')) fs.copyFileSync(path.join(bdir, f), path.join(dir(), f));
+  for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
+  // older backups are plain .json, newer ones .json.gz
+  for (const f of fs.readdirSync(bdir)) {
+    if (f.endsWith('.json.gz')) fs.writeFileSync(path.join(dir(), f.slice(0, -3)), zlib.gunzipSync(fs.readFileSync(path.join(bdir, f))));
+    else if (f.endsWith('.json')) fs.copyFileSync(path.join(bdir, f), path.join(dir(), f));
+  }
   cache.clear();
 }
 
-module.exports = { forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
+module.exports = { exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };

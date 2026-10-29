@@ -17,10 +17,12 @@ function emptyProduct() {
   return { url: '', host: '', platform: '', name: '', brand: '', code: '', ean: '', price: 0, currency: '', descHtml: '', descText: '', shortHtml: '', features: [], specs: [], images: [], variants: [], category: '', notes: [] };
 }
 
-async function fromUrl(url) {
+/** opts.gap: pause (ms) between requests to the same site, when many pages are read one after the other. */
+async function fromUrl(url, opts) {
   url = String(url || '').trim();
+  const gap = (opts && opts.gap) || 0;
   if (!/^https?:\/\//i.test(url)) throw new Error('Δώσε πλήρη διεύθυνση (https://…).');
-  const r = await http.get(url, { timeout: 30000, retries: 1 });
+  const r = await http.get(url, { timeout: 30000, retries: 1, gap });
   let html = r.text;
   const cs = (html.slice(0, 3000).match(/<meta[^>]+charset=["']?([a-z0-9_-]+)/i) || [])[1];
   if (cs && !/utf-?8/i.test(cs)) {
@@ -29,8 +31,8 @@ async function fromUrl(url) {
   const out = fromHtml(html, r.url || url);
   // Platform APIs give cleaner data than the HTML.
   try {
-    if (out.platform === 'shopify') await enrichShopify(out, r.url || url);
-    else if (out.platform === 'woocommerce') await enrichWoo(out, r.url || url);
+    if (out.platform === 'shopify') await enrichShopify(out, r.url || url, gap);
+    else if (out.platform === 'woocommerce') await enrichWoo(out, r.url || url, gap);
   } catch (e) { out.notes.push('Δεν διαβάστηκαν τα επιπλέον δεδομένα του καταστήματος: ' + e.message); }
   finish(out);
   if (!out.name && !out.descText) throw new Error('Η σελίδα δεν έδωσε στοιχεία προϊόντος (ίσως φορτώνει με JavaScript). Συμπλήρωσε τα πεδία με το χέρι.');
@@ -114,11 +116,11 @@ function addSpec(out, k, v) {
   out.specs.push({ k, v });
 }
 
-async function enrichShopify(out, url) {
+async function enrichShopify(out, url, gap) {
   const u = new URL(url);
   const m = u.pathname.match(/\/products\/([^/?#]+)/);
   if (!m) return;
-  const r = await http.getJson(`${u.origin}/products/${m[1]}.js`, { retries: 0, timeout: 15000 });
+  const r = await http.getJson(`${u.origin}/products/${m[1]}.js`, { retries: 0, timeout: 15000, gap });
   const p = r.json || {};
   if (p.title) out.name = p.title;
   if (p.vendor) out.brand = p.vendor;
@@ -136,11 +138,11 @@ async function enrichShopify(out, url) {
   if (!out.code && p.variants && p.variants[0] && p.variants[0].sku) out.code = String(p.variants[0].sku).replace(/[-_ ]?(XS|S|M|L|XL|XXL|\d?XL|\d{2})$/i, '');
 }
 
-async function enrichWoo(out, url) {
+async function enrichWoo(out, url, gap) {
   const u = new URL(url);
   const slug = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
   if (!slug) return;
-  const r = await http.getJson(`${u.origin}/wp-json/wc/store/v1/products?slug=${encodeURIComponent(slug)}`, { retries: 0, timeout: 15000 });
+  const r = await http.getJson(`${u.origin}/wp-json/wc/store/v1/products?slug=${encodeURIComponent(slug)}`, { retries: 0, timeout: 15000, gap });
   const p = Array.isArray(r.json) ? r.json[0] : null;
   if (!p) return;
   out.name = U.decodeEntities(p.name) || out.name;

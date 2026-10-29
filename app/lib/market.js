@@ -347,43 +347,88 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', country: comp.foreign ? 'other' : 'GR', seenAt: (ix.cat && ix.cat.at) || U.nowIso() };
 }
 
-// ---------- Stats & suggestion ----------
-/**
- * Market prices of one product. Only offers that are really comparable count:
- *  - the same product ("Ίδιο"), not ignored, from a Greek shop (setting),
- *  - IN STOCK: a low price of something they cannot sell is not a market price,
- *  - seen recently (an offer kept from a shop that could not be read for over a week no longer counts),
- *  - not an outlier: with 3+ shops, a price below half or above double the middle price is set aside
- *    (clearance, wrong product, different pack).
- * Every offer gets a reason (c.note) when it does not count, so the screen can show why.
- */
-function stats(list) {
+// ---------- Stats & decision ----------
+// The rule of thumb: a price changes only when the market agrees, never because of one shop.
+//  - Only offers that are really comparable count: the same product ("Ίδιο"), in stock, from a Greek shop
+//    (setting), seen in the last week.
+//  - A "suspect" price does not count either: below OUR cost (they may sell old stock bought cheaper, or it is
+//    a mistake), far below the supplier's retail price, or far below the other shops.
+//  - To lower (or raise) our price, at least `minShops` shops (default 2) must be cheaper (or dearer) than us.
+//    One cheaper shop is shown for information only: "watch", no suggested price.
+// Every offer gets a flag (used / suspect / out / stale / high / foreign / similar / ignored) and, when it does
+// not count, a reason in plain words (c.note), so the screen can show exactly why.
+const money = (n) => (Number(n) || 0).toLocaleString('el-GR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+const pctOf = (a, b) => Math.round((1 - a / b) * 100);
+
+/** What we know about our own cost for a product: cost (without VAT), the same with VAT, the price floor, the supplier's retail price. */
+function costInfo(site, p) {
+  const c = store.read('costs', {})[site + ':' + p.id];
+  const s = settings.all();
+  const vat = 1 + s.vat / 100;
+  const cost = c && c.cost > 0 ? c.cost : 0;
+  return {
+    cost, costVat: cost ? U.r2(cost * vat) : 0,
+    floor: cost ? U.roundPrice(cost * (1 + s.floorMargin / 100) * vat, s.rounding) : 0,
+    rrp: c && c.rrp > 0 ? c.rrp : 0,
+  };
+}
+
+function stats(list, ctx) {
+  ctx = ctx || {};
   const s = settings.all();
   const weekAgo = Date.now() - 7 * 864e5;
+  const lim = 1 - (Number(s.suspectPct) || 30) / 100;
   for (const c of list) {
-    c.used = false; c.note = '';
-    if (c.match !== 'exact' || c.ignored) continue;
-    if (s.marketGreekOnly && c.country === 'other') { c.note = 'κατάστημα εξωτερικού'; continue; }
-    if (c.inStock === false) { c.note = 'εξαντλημένο: δεν μετράει'; continue; }
-    if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < weekAgo) { c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
-    c.used = true;
+    c.used = false; c.note = ''; c.flag = '';
+    if (c.ignored) { c.flag = 'ignored'; continue; }
+    if (c.match !== 'exact') { c.flag = 'similar'; continue; }
+    if (s.marketGreekOnly && c.country === 'other') { c.flag = 'foreign'; c.note = 'κατάστημα εξωτερικού'; continue; }
+    if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
+    if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < weekAgo) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
+    c.used = true; c.flag = 'used';
   }
+  const suspect = (c, why) => { c.used = false; c.flag = 'suspect'; c.note = why; };
+  // against what we know: our cost and the supplier's retail price
+  for (const c of list) {
+    if (!c.used) continue;
+    if (ctx.costVat > 0 && c.price < ctx.costVat) suspect(c, `κάτω από το δικό μας κόστος αγοράς (${money(ctx.costVat)} με ΦΠΑ): μάλλον παλιό απόθεμα, ξεπούλημα ή λάθος`);
+    else if (ctx.rrp > 0 && c.price < ctx.rrp * lim) suspect(c, `${pctOf(c.price, ctx.rrp)}% κάτω από τη λιανική του αντιπροσώπου (${money(ctx.rrp)}): μάλλον παλιό απόθεμα ή λάθος`);
+  }
+  // against the other shops
   let use = list.filter((c) => c.used);
   if (use.length >= 3) {
-    const mid = U.median(use.map((c) => c.price));
-    for (const c of use) if (c.price < mid * 0.5 || c.price > mid * 2) { c.used = false; c.note = c.price < mid ? 'πολύ χαμηλή σε σχέση με τους άλλους: δεν μετράει' : 'πολύ υψηλή σε σχέση με τους άλλους: δεν μετράει'; }
-    use = use.filter((c) => c.used);
+    const marks = [];
+    for (const c of use) {
+      const mid = U.median(use.filter((x) => x !== c).map((x) => x.price));
+      if (c.price < mid * lim) marks.push([c, 'low', mid]);
+      else if (c.price > mid * 2) marks.push([c, 'high', mid]);
+    }
+    for (const [c, kind, mid] of marks) {
+      if (kind === 'low') suspect(c, `${pctOf(c.price, mid)}% φθηνότερο από τα άλλα καταστήματα (μέση ${money(mid)}): μάλλον παλιό απόθεμα ή λάθος`);
+      else { c.used = false; c.flag = 'high'; c.note = 'πολύ ακριβότερο από τα άλλα καταστήματα: δεν μετράει'; }
+    }
+  } else if (use.length === 2) {
+    // two shops far apart: the cheap one is the odd one out when our price (or the supplier's) sides with the other
+    const [a, b] = use.slice().sort((x, y) => x.price - y.price);
+    const ref = ctx.rrp || ctx.ours;
+    if (a.price < b.price * lim && ref && Math.abs(ref - b.price) < Math.abs(ref - a.price)) suspect(a, `${pctOf(a.price, b.price)}% φθηνότερο από το ${b.shop}: μάλλον παλιό απόθεμα ή λάθος`);
   }
+  use = list.filter((c) => c.used);
   const prices = use.map((c) => c.price).sort((a, b) => a - b);
-  const out = list.filter((c) => c.match === 'exact' && !c.ignored && c.inStock === false).length;
+  const cheapest = use.reduce((m, c) => (!m || c.price < m.price ? c : m), null);
+  const dearest = use.reduce((m, c) => (!m || c.price > m.price ? c : m), null);
   return {
     count: prices.length, min: prices[0] || 0, max: prices[prices.length - 1] || 0, median: U.median(prices),
-    similar: list.filter((c) => c.match === 'similar' && !c.ignored).length, outOfStock: out,
-    // how much to trust the suggestion: 3+ shops high, 2 medium, 1 low
+    minShop: cheapest ? cheapest.shop : '', maxShop: dearest ? dearest.shop : '',
+    similar: list.filter((c) => c.flag === 'similar').length,
+    outOfStock: list.filter((c) => c.flag === 'out').length,
+    suspect: list.filter((c) => c.flag === 'suspect').length,
+    // how much to trust the market price: 3+ shops high, 2 medium, 1 low
     confidence: prices.length >= 3 ? 'high' : prices.length === 2 ? 'medium' : prices.length === 1 ? 'low' : '',
   };
 }
 
+/** Target price from the chosen strategy (never under the cost floor). */
 function suggest(st, floor) {
   const s = settings.all();
   if (!st.count) return { price: 0, floor: floor || 0, raised: false };
@@ -405,28 +450,71 @@ function suggest(st, floor) {
   return { price, floor: floor || 0, raised };
 }
 
-function verdict(our, st) {
-  if (!st || !st.count || !our) return 'nodata';
-  if (our < st.median * 0.85) return 'cheap';
-  if (our > st.median * 1.05) return 'expensive';
-  return 'ok';
+const ACTIONS = { lower: 'Μείωσε', raise: 'Μπορείς να ανεβάσεις', hold: 'Σωστή τιμή', watch: 'Μόνο ενημέρωση', nodata: 'Χωρίς στοιχεία' };
+
+/**
+ * What to do with our price → { action, suggested, raised, reason }.
+ *  lower  — at least minShops shops (in stock, not suspect) are cheaper and we are over the market → suggested price
+ *  raise  — at least minShops shops are dearer and we are far under the market → suggested price
+ *  hold   — we are inside the market (or already at the cost floor)
+ *  watch  — something looks cheaper/dearer, but the proof is too weak (one shop, suspect prices): no change
+ *  nodata — no comparable offer
+ */
+function decision(ours, st, list, floor) {
+  const s = settings.all();
+  const minShops = Math.max(1, Math.round(Number(s.minShops) || 2));
+  const used = list.filter((c) => c.used);
+  const sus = list.filter((c) => c.flag === 'suspect').sort((a, b) => a.price - b.price);
+  const susText = sus.length ? ` ${sus[0].shop} (${money(sus[0].price)}) δεν μετράει: ${sus[0].note.split(':')[0]}.` : '';
+  const none = { suggested: 0, raised: false };
+  if (!st.count || !ours) {
+    let reason = 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο σε άλλο κατάστημα.';
+    if (st.outOfStock) reason = 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής.';
+    else if (sus.length) reason = 'Οι μόνες τιμές που βρέθηκαν είναι ύποπτες.' + susText;
+    else if (st.similar) reason = 'Υπάρχουν μόνο παρόμοια προϊόντα: επιβεβαίωσε αν είναι ίδια.';
+    return Object.assign({ action: 'nodata', reason }, none);
+  }
+  const cheaper = used.filter((c) => c.price < ours * 0.98);
+  const dearer = used.filter((c) => c.price > ours * 1.02);
+  const band = `μέση αγοράς ${money(st.median)}, από ${money(st.min)} έως ${money(st.max)}`;
+  if (ours > st.median * 1.05) {
+    if (cheaper.length < minShops) {
+      const c = cheaper.slice().sort((a, b) => a.price - b.price)[0] || used[0];
+      const who = cheaper.length > 1 ? `Μόνο ${cheaper.length} καταστήματα είναι φθηνότερα (φθηνότερο: ${c.shop}, ${money(c.price)}).` : `Μόνο 1 κατάστημα (${c.shop}, ${money(c.price)}) είναι φθηνότερο από εσένα.`;
+      return Object.assign({ action: 'watch', reason: `${who} Για αλλαγή τιμής χρειάζονται τουλάχιστον ${minShops}: ίσως έχει παλιό απόθεμα, προσφορά ή λάθος.${susText}` }, none);
+    }
+    const sug = suggest(st, floor);
+    if (!(sug.price < ours * 0.99)) return Object.assign({ action: 'hold', reason: `${cheaper.length} καταστήματα είναι φθηνότερα (${band}), αλλά είσαι ήδη στο κατώτατο όριο κόστους.${susText}` }, none);
+    return { action: 'lower', suggested: sug.price, raised: sug.raised, reason: `${cheaper.length} καταστήματα είναι φθηνότερα από εσένα (${band}).${sug.raised ? ' Η πρόταση σταματάει στο κατώτατο όριο κόστους.' : ''}${susText}` };
+  }
+  if (ours < st.median * 0.85) {
+    if (dearer.length < minShops) return Object.assign({ action: 'watch', reason: `Είσαι πολύ φθηνότερος από ${dearer.length > 1 ? dearer.length + ' καταστήματα' : 'το ' + (dearer[0] || used[0]).shop + ' (' + money((dearer[0] || used[0]).price) + ')'}, αλλά για αύξηση χρειάζονται τουλάχιστον ${minShops}.${susText}` }, none);
+    const sug = suggest(st, floor);
+    if (!(sug.price > ours * 1.01)) return Object.assign({ action: 'hold', reason: `Η τιμή σου είναι μέσα στην αγορά (${band}).` }, none);
+    return { action: 'raise', suggested: sug.price, raised: sug.raised, reason: `${dearer.length} καταστήματα το πουλάνε ακριβότερα (${band}): χάνεις κέρδος χωρίς λόγο.${susText}` };
+  }
+  return Object.assign({ action: 'hold', reason: `Η τιμή σου είναι μέσα στην αγορά (${band}).${susText}` }, none);
 }
 
-function floorFor(site, p) {
-  const costs = store.read('costs', {});
-  const c = costs[site + ':' + p.id];
-  if (!c || !(c.cost > 0)) return 0;
-  const s = settings.all();
-  return U.roundPrice(c.cost * (1 + s.floorMargin / 100) * (1 + s.vat / 100), s.rounding);
-}
+/** Old name, kept for callers that only need the label of the result. */
+function verdict(entry) { return (entry && entry.action) || 'nodata'; }
+
+function floorFor(site, p) { return costInfo(site, p).floor; }
 
 function compute(site, p, entry) {
-  const st = stats(entry.competitors);
-  const floor = floorFor(site, p);
-  const sug = suggest(st, floor);
-  // a big drop (over 20%) based on a single shop is shown as "check before changing"
-  const bigDrop = !!(sug.price && p.price && sug.price < p.price * 0.8);
-  return Object.assign(entry, { stats: st, suggested: sug.price, floor: sug.floor, raised: sug.raised, ourPrice: p.price, verdict: verdict(p.price, st), bigDrop, careful: bigDrop && st.count < 2 });
+  const ci = costInfo(site, p);
+  const st = stats(entry.competitors, { ours: p.price, costVat: ci.costVat, rrp: ci.rrp });
+  const d = decision(p.price, st, entry.competitors, ci.floor);
+  // a big drop (over 20%) with fewer than 3 shops is shown as "check before changing" and needs a yes on export
+  const bigDrop = !!(d.suggested && p.price && d.suggested < p.price * 0.8);
+  const used = entry.competitors.filter((c) => c.used);
+  return Object.assign(entry, {
+    stats: st, suggested: d.suggested, floor: ci.floor, raised: d.raised, cost: ci.cost, rrp: ci.rrp, ourPrice: p.price,
+    action: d.action, verdict: d.action, reason: d.reason, bigDrop, careful: bigDrop && st.count < 3,
+    // where we stand: 1 = the cheapest, among the shops that count and us
+    rank: st.count ? used.filter((c) => c.price < p.price - 0.009).length + 1 : 0, of: st.count ? st.count + 1 : 0,
+    vsMedian: st.median && p.price ? U.r2((p.price - st.median) / st.median) : null,
+  });
 }
 
 function results() { return store.read('market', {}); }
@@ -479,37 +567,49 @@ async function run(targets, job, opts) {
 
   const list = targets && targets.length ? targets : targetsAll();
   job && job.progress(0, list.length, 'Σύγκριση με ' + withCatalog.length + ' καταστήματα…');
-  const indexes = withCatalog.map((c) => ({ c, ix: indexFor(c.id) }));
   const cats = { sf: catalog.load('sf'), st: catalog.load('st') };
   const byId = { sf: new Map(cats.sf.products.map((p) => [p.id, p])), st: new Map(cats.st.products.map((p) => [p.id, p])) };
   const all = results();
   const dec = decisions();
   const changes = [];
   const at = U.nowIso();
-  let done = 0, withData = 0, similar = 0;
+  // our products once; then one competitor catalog in memory at a time (the indexes are the big part)
+  const work = [];
   for (const t of list) {
-    if (job && job.cancelled()) break;
     const p = byId[t.site] && byId[t.site].get(Number(t.id));
-    done++;
     if (!p) continue;
     const key = t.site + ':' + p.id;
-    const prev = all[key];
     const d = dec[key] || {};
-    const yes = new Set(d.yes || []), no = new Set(d.no || []);
     const f = features(p);
-    const found = [];
-    if (f.keys.length || f.sku || f.codes.length) for (const { c, ix } of indexes) { const o = bestIn(f, ix, c, yes, no); if (o) found.push(o); }
+    work.push({ t, p, key, f, yes: new Set(d.yes || []), no: new Set(d.no || []), found: [], searchable: !!(f.keys.length || f.sku || f.codes.length) });
+  }
+  let step = 0;
+  for (const c of withCatalog) {
+    if (job && job.cancelled()) break;
+    const ix = indexFor(c.id);
+    for (const w of work) { if (w.searchable) { const o = bestIn(w.f, ix, c, w.yes, w.no); if (o) w.found.push(o); } }
+    idxCache.delete(c.id);
+    store.forget('comp-' + c.id);
+    step++;
+    job && job.progress(Math.round((step / withCatalog.length) * list.length * 0.9), list.length, `Σύγκριση… ${step}/${withCatalog.length} καταστήματα`);
+  }
+  const failed = new Set(dl.errors.map((e) => e.id));
+  let done = 0, withData = 0, similar = 0;
+  for (const w of work) {
+    if (job && job.cancelled()) break;
+    done++;
+    const { t, p, key, found, yes, no } = w;
+    const prev = all[key];
     // offers from competitors we could not refresh today stay as they were
-    const failed = new Set(dl.errors.map((e) => e.id));
     const kept = prev ? prev.competitors.filter((c) => c.manual || (failed.has(c.competitorId) && !found.some((x) => x.competitorId === c.competitorId))) : [];
     const offers = found.concat(kept);
     for (const o of offers) { o.ignored = no.has(o.url); if (yes.has(o.url)) { o.match = 'exact'; o.confirmed = true; } }
-    // price changes since the last run
+    // price changes since the last run (only for products they can actually sell)
     if (prev) {
       const before = new Map(prev.competitors.map((c) => [c.url, c]));
       for (const o of found) {
         const b = before.get(o.url);
-        if (b && b.price > 0 && Math.abs(b.price - o.price) >= 0.01 && o.match === 'exact') {
+        if (b && b.price > 0 && Math.abs(b.price - o.price) >= 0.01 && o.match === 'exact' && o.inStock !== false) {
           o.prevPrice = b.price;
           changes.push({ at, site: t.site, id: p.id, name: p.name, shop: o.shop, url: o.url, from: b.price, to: o.price, ours: p.price });
         }
@@ -520,23 +620,24 @@ async function run(targets, job, opts) {
     if (entry.stats.similar) similar++;
     if (!offers.length && !prev) continue; // nothing to keep
     all[key] = entry;
-    if (done % 500 === 0) job && job.progress(done, list.length, `Σύγκριση… ${withData.toLocaleString('el-GR')} προϊόντα με τιμές αγοράς`);
   }
   store.write('market', all);
   const log = store.read('market-changes', []);
   store.write('market-changes', changes.concat(log).slice(0, 400));
   const meta = Object.assign(store.read('market-meta', {}), {
-    lastRun: at, lastRunDay: at.slice(0, 10), auto: !!opts.auto, seconds: Math.round((Date.now() - t0) / 1000),
+    lastRun: at, lastRunDay: localDay(new Date(at)), auto: !!opts.auto, seconds: Math.round((Date.now() - t0) / 1000),
     compared: done, withData, similar, changes: changes.length, competitors: withCatalog.length,
     errors: dl.errors.map((e) => ({ name: e.name, error: e.error })),
   });
   store.write('market-meta', meta);
   // the competitor catalogs are big: free the memory until the next run
   idxCache.clear();
-  for (const c of withCatalog) store.forget('comp-' + c.id);
   job && job.progress(list.length, list.length, `Έτοιμο: ${withData.toLocaleString('el-GR')} από ${done.toLocaleString('el-GR')} προϊόντα έχουν τιμές αγοράς.`);
   return { done, withData, similar, changes: changes.length, errors: dl.errors };
 }
+
+/** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
+function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 
 /** Is today's automatic research due? (once a day, after the chosen hour, while the app is open) */
 function dailyDue(now) {
@@ -545,8 +646,7 @@ function dailyDue(now) {
   if (!readable().length) return false;
   const meta = store.read('market-meta', {});
   const d = now || new Date();
-  const today = d.toISOString().slice(0, 10);
-  if (meta.lastRunDay === today) return false;
+  if (meta.lastRunDay === localDay(d)) return false;
   return d.getHours() >= (Number(s.marketHour) || 0);
 }
 
@@ -647,7 +747,7 @@ function addManual(site, id, input) {
 }
 
 /** Recalculate suggestions after settings or our prices change. */
-const LOGIC_VERSION = 2; // bump when the rules of stats()/suggest() change
+const LOGIC_VERSION = 3; // bump when the rules of stats()/suggest()/decision() change
 function recompute() {
   const catalog = require('./catalog');
   const all = results();
@@ -671,59 +771,81 @@ function overview(site, q) {
   const cat = catalog.load(site);
   const rows = [];
   const L = site === 'st' ? catalog.links() : null;
-  const sfById = site === 'st' ? new Map(catalog.load('sf').products.map((p) => [p.id, p])) : null;
   for (const p of cat.products) {
     if (p.type === 'variation') continue;
     let e = all[site + ':' + p.id], master = false;
     if (!e && L && L.stToSf.has(p.id)) { e = all['sf:' + L.stToSf.get(p.id)]; master = !!e; }
     if (!e) continue;
     const st = e.stats || { count: 0 };
-    let sug = e.suggested;
-    if (master) { const sp = sfById.get(L.stToSf.get(p.id)); sug = sp && sp.price ? sp.price : e.suggested; }
     rows.push({
-      id: p.id, name: p.name, brand: p.brand, sku: p.sku, img: p.thumb || p.images[0] || '', url: p.url, ourPrice: p.price, at: e.at, stats: st, suggested: master ? e.suggested : sug,
-      floor: e.floor, raised: e.raised, verdict: verdict(p.price, st), competitors: e.competitors, diff: e.suggested && p.price ? U.r2(e.suggested - p.price) : 0, type: p.type, master,
+      id: p.id, name: p.name, brand: p.brand, sku: p.sku, img: p.thumb || p.images[0] || '', url: p.url, ourPrice: p.price, at: e.at, stats: st, suggested: e.suggested,
+      floor: e.floor, raised: e.raised, cost: e.cost || 0, rrp: e.rrp || 0, verdict: verdict(e), action: verdict(e), reason: e.reason || '', rank: e.rank || 0, of: e.of || 0, vsMedian: e.vsMedian == null ? null : e.vsMedian,
+      competitors: e.competitors, diff: e.suggested && p.price ? U.r2(e.suggested - p.price) : 0, type: p.type, master,
       prevStats: e.prevStats || null, bigDrop: !!e.bigDrop, careful: !!e.careful,
     });
   }
-  const counts = { expensive: 0, cheap: 0, ok: 0, nodata: 0, similar: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length };
-  for (const r of rows) { counts[r.verdict]++; if (r.stats.similar) counts.similar++; }
-  const order = { expensive: 0, cheap: 1, ok: 2, nodata: 3 };
+  const counts = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length };
+  for (const r of rows) { counts[r.action] = (counts[r.action] || 0) + 1; if (r.stats.similar) counts.similar++; if (r.stats.suspect) counts.suspect++; }
+  const order = { lower: 0, raise: 1, watch: 2, hold: 3, nodata: 4 };
   let list = rows;
-  if (q.verdict && order[q.verdict] !== undefined) list = list.filter((r) => r.verdict === q.verdict);
+  const want = q.action || q.verdict;
+  if (want && order[want] !== undefined) list = list.filter((r) => r.action === want);
   if (q.similar === '1') list = list.filter((r) => r.stats.similar > 0);
+  if (q.suspect === '1') list = list.filter((r) => r.stats.suspect > 0);
   if (q.q) { const t = U.foldKey(q.q).split(' ').filter(Boolean); list = list.filter((r) => { const h = U.foldKey(r.name + ' ' + (r.sku || '') + ' ' + (r.brand || '')); return t.every((x) => h.includes(x)); }); }
-  list.sort((a, b) => order[a.verdict] - order[b.verdict] || Math.abs(b.diff) - Math.abs(a.diff));
+  // the biggest money first: the largest change, then the farthest from the market
+  list.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.diff) - Math.abs(a.diff) || Math.abs(b.vsMedian || 0) - Math.abs(a.vsMedian || 0));
   const total = list.length;
   if (q.per) { const per = Math.min(500, Number(q.per) || 100), page = Math.max(1, Number(q.page) || 1); list = list.slice((page - 1) * per, page * per); }
-  return { rows: list, counts, total, meta: store.read('market-meta', {}), changes: store.read('market-changes', []).filter((c) => c.site === site || (site === 'st' && c.site === 'sf')).slice(0, 50) };
+  return { rows: list, counts, total, actions: ACTIONS, meta: store.read('market-meta', {}), changes: store.read('market-changes', []).filter((c) => c.site === site || (site === 'st' && c.site === 'sf')).slice(0, 50) };
 }
 
-/** Verdict counts without building the rows (for the dashboard). */
+/** Counts per action without building the rows (for the dashboard). */
 function quickCounts(site) {
   const catalog = require('./catalog');
   const all = results();
   const byId = new Map(catalog.load(site).products.map((p) => [p.id, p]));
-  const c = { expensive: 0, cheap: 0, ok: 0, nodata: 0, similar: 0 };
+  const c = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0 };
   for (const [key, e] of Object.entries(all)) {
     if (!key.startsWith(site + ':')) continue;
     const p = byId.get(Number(key.slice(site.length + 1)));
     if (!p) continue;
-    c[verdict(p.price, e.stats)]++;
+    c[verdict(e)]++;
     if (e.stats && e.stats.similar) c.similar++;
+    if (e.stats && e.stats.suspect) c.suspect++;
   }
   return c;
 }
 
-function setCost(site, id, cost, source) {
+/** Many costs in one write: items [{ site, id, cost, rrp }]; only: keep a cost set by hand or by another list. */
+function setCosts(items, source, onlyIf) {
+  let n = 0;
+  store.update('costs', {}, (c) => {
+    for (const it of items) {
+      const k = it.site + ':' + it.id;
+      if (onlyIf && !onlyIf(c[k])) continue;
+      const cost = U.r2(U.parseNumber(it.cost));
+      if (!(cost > 0)) continue;
+      const rrp = U.parseNumber(it.rrp);
+      c[k] = Object.assign({ cost, source, at: U.nowIso() }, rrp > 0 ? { rrp: U.r2(rrp) } : {});
+      n++;
+    }
+    return c;
+  });
+  return n;
+}
+
+/** Our cost (without VAT) for a product; rrp = the supplier's suggested retail price, when the price list has one. */
+function setCost(site, id, cost, source, rrp) {
   store.update('costs', {}, (c) => {
     const n = U.parseNumber(cost);
-    if (n > 0) c[site + ':' + id] = { cost: U.r2(n), source: source || 'manual', at: U.nowIso() }; else delete c[site + ':' + id];
+    const r = U.parseNumber(rrp) || (c[site + ':' + id] && c[site + ':' + id].rrp) || 0;
+    if (n > 0) c[site + ':' + id] = Object.assign({ cost: U.r2(n), source: source || 'manual', at: U.nowIso() }, r > 0 ? { rrp: U.r2(r) } : {}); else delete c[site + ':' + id];
     return c;
   });
 }
 
-module.exports = { LOGIC_VERSION,
+module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, overview,
   resultFor, results, suggest, stats, score, compare, features, candFeatures, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

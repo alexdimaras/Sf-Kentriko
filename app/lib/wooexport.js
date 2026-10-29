@@ -222,4 +222,4 @@ function updateFile(rows, columns) {
   return U.toCSV(rows, ['ID'].concat(columns).map((c) => ({ key: c, label: c })), { sep: ',', bom: true });
 }
 
-module.exports = { newProducts, transfer, updateFile, categoryMap, saveCategoryMap, metaDescription, draftRows, seoMode, usesBrandTaxonomy };
+module.exports = { newProducts, transfer, updateFile, categoryMap, saveCategoryMap, metaDescription, draftRows, seoMode, seoColumns, usesBrandTaxonomy, cats, imgs, setAttrs, GLA };

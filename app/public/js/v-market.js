@@ -2,53 +2,95 @@
 'use strict';
 (function () {
   const { h, clear, btn, icon, fmt, GET, POST, toast, fail, modal, dlgHead, thumb, pageHead, siteName, fileReady, watchJob, confirmBox, debounce } = App;
-  const VERDICT = { expensive: 'Ακριβότερο', cheap: 'Πολύ φθηνότερο', ok: 'Στην αγορά', nodata: 'Χωρίς σίγουρη τιμή' };
+  const ACT = {
+    lower: ['Μείωσε', 'Πιο ακριβό από την αγορά: τουλάχιστον 2 καταστήματα με απόθεμα το πουλάνε φθηνότερα.'],
+    raise: ['Μπορείς να ανεβάσεις', 'Πολύ φθηνότερο από την αγορά: χάνεις κέρδος.'],
+    watch: ['Μόνο ενημέρωση', 'Κάτι φαίνεται φθηνότερο/ακριβότερο, αλλά από ένα μόνο κατάστημα ή με ύποπτη τιμή: δεν αλλάζεις.'],
+    hold: ['Σωστή τιμή', 'Μέσα στην αγορά.'],
+    nodata: ['Χωρίς στοιχεία', 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο αλλού.'],
+  };
+  const FLAG = { used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], ignored: ['δεν μετράει', ''] };
+  const flagOf = (c) => c.flag || (c.ignored ? 'ignored' : c.match === 'exact' ? (c.used === false ? 'out' : 'used') : 'similar');
+  const pct = (v) => (v > 0 ? '+' : '') + Math.round(v * 100) + '%';
+  const actPill = (a) => h('span', { class: 'act ' + a, title: (ACT[a] || ACT.nodata)[1] }, (ACT[a] || ACT.nodata)[0]);
 
-  function rangeBar(stats, ours) {
-    if (!stats || !stats.count) return h('span', { class: 'faint' }, '—');
-    const lo = Math.min(stats.min, ours || stats.min) * 0.97, hi = Math.max(stats.max, ours || stats.max) * 1.03;
-    const pos = (v) => ((v - lo) / (hi - lo || 1)) * 100 + '%';
-    return h('div', { class: 'range', title: `Φθηνότερο ${fmt.money(stats.min)} · μέση ${fmt.money(stats.median)} · ακριβότερο ${fmt.money(stats.max)}${ours ? ' · δική μας ' + fmt.money(ours) : ''}` },
-      h('div', { class: 'track' }), h('div', { class: 'span', style: { left: pos(stats.min), width: `calc(${pos(stats.max)} - ${pos(stats.min)})` } }), h('div', { class: 'med', style: { left: pos(stats.median) } }), ours ? h('div', { class: 'ours', style: { left: pos(ours) } }) : null);
+  /** Price ladder: every shop as a dot on one line, our price as the marker. Hollow red = suspect, grey = out of stock. */
+  function ladder(m, ours, opts) {
+    opts = opts || {};
+    const offers = (m.competitors || []).filter((c) => !c.ignored && c.match === 'exact' && c.price > 0);
+    if (!offers.length) return h('span', { class: 'faint' }, '—');
+    const vals = offers.map((c) => c.price).concat(ours ? [ours] : []);
+    const lo = Math.min(...vals) * 0.96, hi = Math.max(...vals) * 1.04;
+    const pos = (v) => ((v - lo) / (hi - lo || 1)) * 100;
+    const box = h('div', { class: 'ladder' + (opts.big ? ' big' : ''), role: 'img', 'aria-label': `Η τιμή μας ${fmt.money(ours)} ανάμεσα σε ${offers.length} καταστήματα` });
+    box.appendChild(h('div', { class: 'rail' }));
+    const st = m.stats || {};
+    if (st.count) box.appendChild(h('div', { class: 'band', style: { left: pos(st.min) + '%', width: Math.max(0.5, pos(st.max) - pos(st.min)) + '%' }, title: `Αγορά (όσα μετράνε): ${fmt.money(st.min)} – ${fmt.money(st.max)} · μέση ${fmt.money(st.median)}` }));
+    if (st.count) box.appendChild(h('div', { class: 'mid', style: { left: pos(st.median) + '%' }, title: 'Μέση τιμή αγοράς ' + fmt.money(st.median) }));
+    for (const c of offers.slice().sort((a, b) => a.price - b.price)) {
+      const f = flagOf(c);
+      box.appendChild(h('div', { class: 'dot ' + f, style: { left: pos(c.price) + '%' }, title: `${c.shop}: ${fmt.money(c.price)} · ${FLAG[f][0]}${c.note ? ' — ' + c.note : ''}` }));
+    }
+    if (ours) box.appendChild(h('div', { class: 'us', style: { left: pos(ours) + '%' }, title: 'Η τιμή μας ' + fmt.money(ours) }, h('span', null, opts.big ? 'Εμείς ' + fmt.money(ours) : 'εμείς')));
+    return box;
   }
+  App.priceLadder = ladder;
 
   function decide(ctx, url, answer) {
     return POST('/api/market/decide', { site: ctx.site, id: ctx.id, url, answer }).then(() => { toast(answer === 'yes' ? 'Μετράει πλέον στην τιμή (το θυμάμαι και για τις επόμενες έρευνες).' : answer === 'no' ? 'Δεν μετράει (το θυμάμαι).' : 'Επαναφορά.'); if (ctx.refresh) ctx.refresh(); }).catch(fail);
   }
 
-  /** Market box for one product (also used in the product drawer). */
+  /** Market box for one product (also used in the product drawer): decision, numbers, ladder, and every shop next to us. */
   App.marketSummary = function (m, ours, ctx) {
     const st = m.stats || { count: 0 };
+    const action = m.action || m.verdict || 'nodata';
     const box = h('div', { class: 'stack s' });
     if (m.master) box.appendChild(h('div', { class: 'note' }, 'Το προϊόν υπάρχει και στο ' + siteName('sf') + ': ισχύει η έρευνα και η τιμή του ' + siteName('sf') + '.'));
-    if (!st.count) box.appendChild(h('p', { class: 'muted' }, (st.outOfStock ? 'Το ίδιο προϊόν υπάρχει σε ' + st.outOfStock + ' κατάστημα/τα αλλά είναι εξαντλημένο εκεί, οπότε δεν μετράει στην τιμή' : 'Δεν βρέθηκε σίγουρα το ίδιο προϊόν σε άλλο κατάστημα') + (m.at ? ' (' + fmt.dateTime(m.at) + ')' : '') + '.' + (st.similar ? ' Υπάρχουν παρόμοια: επιβεβαίωσέ τα παρακάτω.' : ' Πρόσθεσε τιμή με το χέρι αν το ξέρεις.')));
-    else {
-      box.appendChild(h('div', { class: 'row', style: { gap: '22px' } },
-        h('div', null, h('div', { class: 'faint' }, 'Φθηνότερο'), h('b', null, fmt.money(st.min))),
-        h('div', null, h('div', { class: 'faint' }, 'Μέση τιμή'), h('b', null, fmt.money(st.median))),
-        h('div', null, h('div', { class: 'faint' }, 'Ακριβότερο'), h('b', null, fmt.money(st.max))),
-        h('div', null, h('div', { class: 'faint' }, 'Προτεινόμενη'), h('b', { style: { color: 'var(--coyote)' } }, fmt.money(m.suggested)), m.raised ? h('div', { class: 'hint' }, 'ανέβηκε στο όριο κόστους') : null,
-          h('div', { class: 'hint' }, { high: 'σίγουρη (3+ καταστήματα)', medium: 'μέτρια σιγουριά (2 καταστήματα)', low: 'μόνο 1 κατάστημα: έλεγξέ την' }[st.confidence] || '')),
-        h('div', { class: 'grow', style: { minWidth: '160px' } }, rangeBar(st, ours))));
+    box.appendChild(h('div', { class: 'decision ' + action },
+      h('div', { class: 'row tight' }, actPill(action), m.suggested ? h('b', { class: 'newprice' }, 'Νέα τιμή ' + fmt.money(m.suggested), h('span', { class: 'price-diff ' + (m.suggested < ours ? 'down' : 'up') }, ' (' + (m.suggested > ours ? '+' : '') + fmt.money(m.suggested - ours) + ')')) : null,
+        m.careful ? h('span', { class: 'pill crit', title: 'Μεγάλη πτώση με λίγα καταστήματα' }, 'έλεγξε πριν αλλάξεις') : null),
+      h('p', null, m.reason || (ACT[action] || ACT.nodata)[1]),
+      m.at ? h('div', { class: 'hint' }, 'Έρευνα ' + fmt.dateTime(m.at)) : null));
+    if (st.count || (m.competitors || []).length) {
+      box.appendChild(h('div', { class: 'mk-nums' },
+        h('div', { class: 'us' }, h('span', null, 'Η τιμή μας'), h('b', null, fmt.money(ours))),
+        h('div', null, h('span', null, 'Φθηνότερο'), h('b', null, st.count ? fmt.money(st.min) : '—'), st.minShop ? h('small', null, st.minShop) : null),
+        h('div', null, h('span', null, 'Μέση αγοράς'), h('b', null, st.count ? fmt.money(st.median) : '—'), m.vsMedian != null ? h('small', { class: m.vsMedian > 0.05 ? 'up' : m.vsMedian < -0.05 ? 'down' : '' }, 'εμείς ' + pct(m.vsMedian)) : null),
+        h('div', null, h('span', null, 'Ακριβότερο'), h('b', null, st.count ? fmt.money(st.max) : '—'), st.maxShop ? h('small', null, st.maxShop) : null),
+        h('div', null, h('span', null, 'Θέση μας'), h('b', null, m.rank ? m.rank + 'ος' : '—'), m.of ? h('small', null, 'από ' + m.of + ' (1 = φθηνότερος)') : null)));
+      box.appendChild(ladder(m, ours, { big: true }));
+      box.appendChild(h('div', { class: 'legend' }, h('span', null, h('i', { class: 'dot used' }), 'μετράει'), h('span', null, h('i', { class: 'dot suspect' }), 'ύποπτη τιμή (δεν μετράει)'), h('span', null, h('i', { class: 'dot out' }), 'εξαντλημένο / παλιό'), h('span', null, h('i', { class: 'usk' }), 'εμείς')));
     }
-    const list = h('div', { class: 'comp-list' });
-    const order = (c) => (c.ignored ? 3 : c.match === 'exact' ? 0 : 1);
-    for (const c of (m.competitors || []).slice().sort((a, b) => order(a) - order(b) || a.price - b.price)) {
-      const pill = c.ignored ? h('span', { class: 'pill' }, 'δεν μετράει') : c.match === 'exact' ? h('span', { class: 'pill st' }, c.confirmed ? 'ίδιο ✓' : 'ίδιο') : h('span', { class: 'pill warn' }, 'παρόμοιο;');
-      list.appendChild(h('div', { class: 'c' + (c.used ? '' : ' unused') },
-        h('div', { class: 'row tight', style: { minWidth: 0, flexWrap: 'nowrap' } }, c.img ? thumb(c.img, 'sm') : null,
-          h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill', style: { marginLeft: '6px' } }, 'χειροκίνητα') : null,
-            h('div', { class: 'faint', style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: c.name }, c.name),
-            c.why ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
-            c.note ? h('div', { class: 'hint', style: { margin: 0, color: 'var(--signal)' } }, c.note) : null)),
-        h('div', null, pill, c.inStock === false ? h('div', { class: 'hint', style: { margin: 0 } }, 'εξαντλημένο') : null),
-        h('div', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),
-        h('div', { class: 'row tight' }, c.url ? h('button', { class: 'x', title: 'Άνοιγμα της σελίδας τους', onclick: () => POST('/api/open', { kind: 'url', url: c.url }) }, icon('ext')) : null,
-          ctx && !c.manual && c.match !== 'exact' && !c.ignored ? h('button', { class: 'btn sm', title: 'Είναι το ίδιο προϊόν: να μετράει στην τιμή', onclick: () => decide(ctx, c.url, 'yes') }, icon('check'), 'Ίδιο') : null,
-          ctx && !c.ignored ? h('button', { class: 'btn sm ghost', title: 'Δεν είναι το ίδιο προϊόν', onclick: () => decide(ctx, c.url, 'no') }, icon('x'), 'Όχι') : null,
-          ctx && (c.ignored || c.confirmed) ? h('button', { class: 'btn sm ghost', title: 'Να το κρίνει ξανά το πρόγραμμα', onclick: () => decide(ctx, c.url, '') }, 'Επαναφορά') : null)));
-    }
-    if ((m.competitors || []).length) box.appendChild(list);
+    // every shop and us in one list, cheapest first
+    const rows = (m.competitors || []).filter((c) => !c.ignored || ctx).slice();
+    if (rows.length) {
+      const all = rows.map((c) => ({ c })).concat(ours ? [{ us: true, price: ours }] : []);
+      all.sort((a, b) => (a.us ? a.price : a.c.price) - (b.us ? b.price : b.c.price) || (a.us ? -1 : 1));
+      const tb = h('tbody');
+      for (const r of all) {
+        if (r.us) {
+          tb.appendChild(h('tr', { class: 'me' }, h('td', null, h('b', null, 'ΕΜΕΙΣ · ' + siteName(ctx && ctx.site ? ctx.site : 'sf'))),
+            h('td', { class: 'num' }, h('b', null, fmt.money(ours))), h('td', null, ''), h('td', null, m.cost ? h('span', { class: 'faint' }, 'κόστος ' + fmt.money(m.cost) + ' + ΦΠΑ') : ''),
+            h('td', null, m.floor ? h('span', { class: 'faint', title: 'Κόστος + ελάχιστο περιθώριο + ΦΠΑ' }, 'όριο ' + fmt.money(m.floor)) : ''), h('td', null, m.rrp ? h('span', { class: 'faint' }, 'λιανική αντιπρ. ' + fmt.money(m.rrp)) : '')));
+          continue;
+        }
+        const c = r.c, f = flagOf(c);
+        const vs = ours ? (c.price - ours) / ours : 0;
+        tb.appendChild(h('tr', { class: c.used ? '' : 'unused' },
+          h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', minWidth: 0 } }, c.img ? thumb(c.img, 'sm') : null,
+            h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill', style: { marginLeft: '6px' } }, 'χειροκίνητα') : null,
+              h('div', { class: 'faint ell', title: c.name }, c.name), c.why && f === 'similar' ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null))),
+          h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),
+          h('td', { class: 'num' }, ours ? h('span', { class: 'price-diff ' + (vs < -0.005 ? 'down' : vs > 0.005 ? 'up' : '') }, pct(vs)) : ''),
+          h('td', null, c.inStock === false ? h('span', { class: 'faint' }, 'εξαντλημένο') : 'διαθέσιμο'),
+          h('td', null, h('span', { class: 'pill ' + FLAG[f][1] }, FLAG[f][0]), c.note && f !== 'used' ? h('div', { class: 'hint', style: { margin: '2px 0 0' } }, c.note) : null),
+          h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', justifyContent: 'flex-end' } }, c.url ? h('button', { class: 'x', title: 'Άνοιγμα της σελίδας τους', onclick: () => App.openUrl(c.url) }, icon('ext')) : null,
+            ctx && !c.manual && c.match !== 'exact' && !c.ignored ? h('button', { class: 'btn sm', title: 'Είναι το ίδιο προϊόν: να μετράει στην τιμή', onclick: () => decide(ctx, c.url, 'yes') }, icon('check'), 'Ίδιο') : null,
+            ctx && !c.ignored ? h('button', { class: 'btn sm ghost', title: 'Δεν είναι το ίδιο προϊόν / να μη μετράει', onclick: () => decide(ctx, c.url, 'no') }, icon('x'), 'Όχι') : null,
+            ctx && (c.ignored || c.confirmed) ? h('button', { class: 'btn sm ghost', title: 'Να το κρίνει ξανά το πρόγραμμα', onclick: () => decide(ctx, c.url, '') }, 'Επαναφορά') : null))));
+      }
+      box.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl cmp-tbl' }, h('thead', null, h('tr', null, h('th', null, 'Κατάστημα'), h('th', { class: 'num' }, 'Τιμή'), h('th', { class: 'num' }, 'vs εμάς'), h('th', null, 'Απόθεμα'), h('th', null, 'Μετράει;'), h('th', null, ''))), tb)));
+    } else if (!st.count) box.appendChild(h('p', { class: 'muted' }, 'Πρόσθεσε τιμή με το χέρι αν την ξέρεις.'));
     return box;
   };
 
@@ -100,21 +142,30 @@
       main.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Δεν έχει γίνει έρευνα ακόμα'), h('p', null, 'Πάτα «Έρευνα τώρα»: κατεβαίνουν οι κατάλογοι των ανταγωνιστών (λίγα λεπτά την πρώτη φορά) και συγκρίνονται όλα τα προϊόντα σε δευτερόλεπτα. Μετά γίνεται μόνο του κάθε μέρα.'), btn('Έρευνα τώρα', { cls: 'primary', icon: 'market' }, () => startRun())));
       return;
     }
-    let verdict = p.f || (head.counts.expensive ? 'expensive' : head.counts.cheap ? 'cheap' : '');
+    let c0 = head.counts;
+    let action = (ACT[p.f] || p.f === 'all') ? p.f : (c0.lower ? 'lower' : c0.raise ? 'raise' : c0.watch ? 'watch' : 'all');
     let q = p.q || '';
     let page = 1;
+    let suspectOnly = false;
     const selected = new Set();
+    const tiles = h('div', { class: 'kpis' });
     const fbar = h('div', { class: 'toolbar' });
+    const chips = h('div', { class: 'row tight' });
     const box = h('div');
     const bulk = h('div', { class: 'bulkbar hidden' });
     const search = h('input', { type: 'search', placeholder: 'Αναζήτηση: όνομα, κωδικός, μάρκα', value: q, oninput: debounce((e) => { q = e.target.value; page = 1; load(); }, 300) });
+    const minShops = App.state.settings.minShops || 2;
     const drawF = () => {
-      clear(fbar);
-      fbar.appendChild(App.seg([['sf', siteName('sf')], ['st', siteName('st')]], site, (v) => App.go('market', { site: v })));
-      for (const [k, l] of [['expensive', VERDICT.expensive], ['cheap', VERDICT.cheap], ['ok', VERDICT.ok], ['nodata', VERDICT.nodata], ['', 'Όλα']]) {
-        fbar.appendChild(h('button', { type: 'button', class: 'chip' + (verdict === k ? ' on' : ''), onclick: () => { verdict = k; page = 1; selected.clear(); drawF(); load(); } }, l, ' ', h('b', null, fmt.num(k ? head.counts[k] : head.counts.all))));
+      clear(tiles);
+      for (const k of ['lower', 'raise', 'watch', 'hold', 'nodata']) {
+        tiles.appendChild(h('button', { type: 'button', class: 'kpi ' + k, 'aria-pressed': String(action === k), title: ACT[k][1], onclick: () => { action = action === k ? 'all' : k; page = 1; selected.clear(); drawF(); load(); } },
+          h('b', null, fmt.num(c0[k] || 0)), h('span', null, ACT[k][0])));
       }
-      fbar.appendChild(search);
+      // the search box stays the same element (it keeps the focus while you type)
+      if (!fbar.firstChild) { fbar.appendChild(App.seg([['sf', siteName('sf')], ['st', siteName('st')]], site, (v) => App.go('market', { site: v }))); fbar.appendChild(chips); fbar.appendChild(search); }
+      clear(chips);
+      chips.appendChild(h('button', { type: 'button', class: 'chip' + (action === 'all' ? ' on' : ''), onclick: () => { action = 'all'; page = 1; selected.clear(); drawF(); load(); } }, 'Όλα ', h('b', null, fmt.num(c0.all))));
+      if (c0.suspect) chips.appendChild(h('button', { type: 'button', class: 'chip' + (suspectOnly ? ' on' : ''), title: 'Ανταγωνιστές με τιμή κάτω από το κόστος μας ή πολύ κάτω από τους άλλους', onclick: () => { suspectOnly = !suspectOnly; page = 1; drawF(); load(); } }, 'Με ύποπτες τιμές ', h('b', null, fmt.num(c0.suspect))));
     };
     const renderBulk = () => {
       clear(bulk); bulk.classList.toggle('hidden', !selected.size);
@@ -124,8 +175,8 @@
         if (r.needConfirm) {
           const choice = await new Promise((resolve) => {
             let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); modal.close(); } };
-            modal.open(h('div', null, dlgHead(`${fmt.plural(r.carefulCount, 'προϊόν έχει', 'προϊόντα έχουν')} μεγάλη πτώση τιμής με βάση ένα μόνο κατάστημα`),
-              h('p', { class: 'muted' }, 'Μπορεί το άλλο κατάστημα να έχει λάθος ή παλιά τιμή. Προτείνεται να μπουν στο αρχείο μόνο τα υπόλοιπα και να ελεγχθούν αυτά ένα-ένα.'),
+            modal.open(h('div', null, dlgHead(`${fmt.plural(r.carefulCount, 'προϊόν έχει', 'προϊόντα έχουν')} μεγάλη πτώση τιμής (πάνω από 20%)`),
+              h('p', { class: 'muted' }, 'Τη στηρίζουν λιγότερα από 3 καταστήματα. Προτείνεται να μπουν στο αρχείο μόνο τα υπόλοιπα και να ελεγχθούν αυτά ένα-ένα.'),
               h('ul', { class: 'why' }, r.careful.slice(0, 8).map((x) => h('li', null, `${x.name}: ${fmt.money(x.ourPrice)} → ${fmt.money(x.suggested)}`))),
               h('div', { class: 'dlg-foot' }, btn('Άκυρο', () => fin(null)), btn('Μαζί κι αυτά', () => fin(true)), btn('Μόνο τα υπόλοιπα', { cls: 'primary' }, () => fin(false)))), { onClose: () => { if (!done) { done = true; resolve(null); } } });
           });
@@ -133,53 +184,55 @@
           return doExport({ includeCareful: choice });
         }
         if (!r) return;
-        if (r.skipped) toast(`${fmt.plural(r.skipped, 'προϊόν', 'προϊόντα')} με μεγάλη πτώση (1 κατάστημα) δεν μπήκαν στο αρχείο· έλεγξέ τα πρώτα.`, { ms: 9000 });
+        if (r.skipped) toast(`${fmt.plural(r.skipped, 'προϊόν', 'προϊόντα')} με μεγάλη πτώση δεν μπήκαν στο αρχείο· έλεγξέ τα πρώτα.`, { ms: 9000 });
         fileReady(Object.assign({ site }, r), { title: 'Αρχείο νέων τιμών έτοιμο' });
         if (r.extra) toast(`Έγινε και αρχείο για το ${siteName('st')} (${fmt.num(r.extra.count)} γραμμές, ίδιες τιμές για τα κοινά προϊόντα).`, { ms: 9000, action: { label: 'Άνοιγμα', fn: () => fileReady(Object.assign({ site: 'st' }, r.extra), { title: 'Αρχείο για το ' + siteName('st') }) } });
       }).catch(fail);
-      bulk.appendChild(btn('Αρχείο με τις προτεινόμενες τιμές', { cls: 'primary', icon: 'download' }, () => doExport()));
+      bulk.appendChild(btn('Αρχείο με τις νέες τιμές', { cls: 'primary', icon: 'download' }, () => doExport()));
       bulk.appendChild(btn('Ξανά έρευνα για αυτά', { icon: 'sync' }, () => startRun([...selected].map((id) => ({ site, id })))));
       bulk.appendChild(btn('Καθαρισμός', { cls: 'ghost' }, () => { selected.clear(); load(); }));
     };
     const load = async () => {
-      const ov = await GET('/api/market', { site, verdict, q, page, per: 100 });
+      const ov = await GET('/api/market', { site, action: action === 'all' ? '' : action, suspect: suspectOnly ? '1' : '', q, page, per: 100 });
+      c0 = ov.counts; drawF(); // the counts follow every decision
       clear(box);
+      if (action !== 'all') box.appendChild(h('p', { class: 'muted', style: { margin: '0 0 10px' } }, h('b', null, ACT[action][0] + ': '), ACT[action][1].replace('2 καταστήματα', minShops + ' καταστήματα')));
       if (!ov.rows.length) { box.appendChild(h('div', { class: 'panel empty' }, h('p', null, 'Κανένα προϊόν εδώ.'))); renderBulk(); return; }
-      const allBox = h('input', { type: 'checkbox', title: 'Όλα της σελίδας', onchange: (e) => { ov.rows.forEach((r) => (e.target.checked && r.suggested && !r.master ? selected.add(r.id) : selected.delete(r.id))); load(); } });
+      const allBox = h('input', { type: 'checkbox', title: 'Όλα της σελίδας (όσα έχουν νέα τιμή)', onchange: (e) => { ov.rows.forEach((r) => (e.target.checked && r.suggested && !r.master ? selected.add(r.id) : selected.delete(r.id))); load(); } });
       const tb = h('tbody');
       for (const r of ov.rows) {
-        const detail = h('tr', { class: 'hidden' }, h('td', { colspan: 9 }, h('div', { style: { padding: '6px 4px' } })));
+        const detail = h('tr', { class: 'hidden' }, h('td', { colspan: 7 }, h('div', { class: 'mk-detail' })));
         const refresh = async () => { await load(); };
-        const tr = h('tr', { class: 'click' + (selected.has(r.id) ? ' sel' : ''), onclick: () => {
+        const st = r.stats || {};
+        const tr = h('tr', { class: 'click mk-row' + (selected.has(r.id) ? ' sel' : ''), onclick: () => {
           const open = detail.classList.toggle('hidden');
           if (!open) {
             const c = clear(detail.querySelector('div'));
             c.appendChild(App.marketSummary(r, r.ourPrice, r.master ? null : { site, id: r.id, refresh }));
-            c.appendChild(h('div', { class: 'row tight', style: { marginTop: '8px' } }, r.master ? null : btn('Χειροκίνητη τιμή', { cls: 'sm' }, () => App.manualPrice(site, r.id, refresh)), btn('Στοιχεία προϊόντος', { cls: 'sm' }, () => App.openProduct(site, r.id)),
-              btn('Skroutz', { cls: 'sm', icon: 'ext' }, () => GET('/api/links/search', { q: r.name }).then((l) => POST('/api/open', { kind: 'url', url: l.skroutz }))),
-              btn('BestPrice', { cls: 'sm', icon: 'ext' }, () => GET('/api/links/search', { q: r.name }).then((l) => POST('/api/open', { kind: 'url', url: l.bestprice })))));
+            c.appendChild(h('div', { class: 'row tight', style: { marginTop: '10px' } }, r.master ? null : btn('Χειροκίνητη τιμή', { cls: 'sm' }, () => App.manualPrice(site, r.id, refresh)), btn('Στοιχεία προϊόντος', { cls: 'sm' }, () => App.openProduct(site, r.id)),
+              btn('Skroutz', { cls: 'sm', icon: 'ext' }, () => GET('/api/links/search', { q: r.name }).then((l) => App.openUrl(l.skroutz))),
+              btn('BestPrice', { cls: 'sm', icon: 'ext' }, () => GET('/api/links/search', { q: r.name }).then((l) => App.openUrl(l.bestprice)))));
           }
         } },
-          h('td', { class: 'w-check' }, h('input', { type: 'checkbox', disabled: !r.suggested || r.master, title: r.master ? 'Η τιμή αλλάζει από το ' + siteName('sf') : '', checked: selected.has(r.id), onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); renderBulk(); } })),
+          h('td', { class: 'w-check' }, h('input', { type: 'checkbox', disabled: !r.suggested || r.master, title: r.master ? 'Η τιμή αλλάζει από το ' + siteName('sf') : !r.suggested ? 'Δεν προτείνεται αλλαγή τιμής' : '', checked: selected.has(r.id), onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); renderBulk(); } })),
           h('td', { style: { width: '52px' } }, thumb(r.img)),
-          h('td', { class: 'title' }, r.name, h('div', { class: 'faint', style: { fontWeight: 400, fontSize: '12.5px' } }, `${fmt.plural(r.stats.count, 'κατάστημα', 'καταστήματα')}${r.stats.similar ? ' · ' + r.stats.similar + ' παρόμοια' : ''}${r.stats.outOfStock ? ' · ' + r.stats.outOfStock + ' εξαντλημένα αλλού (δεν μετράνε)' : ''} · ${fmt.ago(r.at)}${r.master ? ' · τιμή από ' + siteName('sf') : ''}`,
-            !r.stats.count && r.stats.outOfStock ? h('div', { class: 'hint', style: { color: 'var(--ok, #2f7d4f)', fontWeight: 600 } }, 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής') : null)),
-          h('td', { class: 'num' }, fmt.money(r.ourPrice)),
-          h('td', null, rangeBar(r.stats, r.ourPrice)),
-          h('td', { class: 'num' }, r.stats.count ? fmt.money(r.stats.median) : '—'),
-          h('td', { class: 'num' }, r.suggested ? h('b', null, fmt.money(r.suggested)) : '—', r.raised ? h('div', { class: 'hint' }, 'όριο κόστους') : null,
-            r.careful ? h('div', { class: 'hint', style: { color: 'var(--signal)' }, title: 'Πτώση πάνω από 20% με βάση ένα μόνο κατάστημα' }, 'έλεγξε πριν αλλάξεις') : r.stats.confidence === 'low' ? h('div', { class: 'hint' }, '1 κατάστημα') : null),
-          h('td', { class: 'num' }, r.diff ? h('span', { class: 'price-diff ' + (r.diff < 0 ? 'down' : 'up') }, (r.diff > 0 ? '+' : '') + fmt.money(r.diff)) : ''),
-          h('td', null, h('span', { class: 'verdict ' + r.verdict }, VERDICT[r.verdict])));
+          h('td', { class: 'title' }, r.name, h('div', { class: 'faint meta' }, [r.brand, r.sku].filter(Boolean).join(' · '), r.rank ? ` · ${r.rank}ος φθηνότερος από ${r.of}` : '', ` · ${fmt.plural(st.count || 0, 'κατάστημα μετράει', 'καταστήματα μετράνε')}`, st.suspect ? ` · ${st.suspect} ύποπτη τιμή` : '', st.similar ? ` · ${st.similar} παρόμοια` : '', r.master ? ' · τιμή από ' + siteName('sf') : '')),
+          h('td', { class: 'num ours' }, h('b', null, fmt.money(r.ourPrice)), r.vsMedian != null && st.count ? h('div', { class: 'price-diff ' + (r.vsMedian > 0.05 ? 'up' : r.vsMedian < -0.05 ? 'down' : ''), title: 'Σε σχέση με τη μέση τιμή αγοράς ' + fmt.money(st.median) }, pct(r.vsMedian) + ' vs μέση') : null),
+          h('td', { class: 'ladder-cell' }, ladder(r, r.ourPrice), st.count ? h('div', { class: 'ladder-cap' }, h('span', null, fmt.money(st.min), st.minShop ? ' · ' + st.minShop : ''), h('span', null, st.maxShop ? st.maxShop + ' · ' : '', fmt.money(st.max))) : null),
+          h('td', { class: 'decide' }, actPill(r.action), h('div', { class: 'reason', title: r.reason }, r.reason)),
+          h('td', { class: 'num' }, r.suggested ? h('b', { class: 'newprice' }, fmt.money(r.suggested)) : h('span', { class: 'faint' }, '—'),
+            r.diff ? h('div', { class: 'price-diff ' + (r.diff < 0 ? 'down' : 'up') }, (r.diff > 0 ? '+' : '') + fmt.money(r.diff)) : null,
+            r.raised ? h('div', { class: 'hint' }, 'όριο κόστους') : null,
+            r.careful ? h('div', { class: 'hint', style: { color: 'var(--signal)' }, title: 'Πτώση πάνω από 20% με λιγότερα από 3 καταστήματα' }, 'έλεγξε πριν αλλάξεις') : null));
         tb.appendChild(tr); tb.appendChild(detail);
       }
-      box.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', { class: 'w-check' }, allBox), h('th', null, ''), h('th', null, 'Προϊόν'), h('th', { class: 'num' }, 'Δική μας'), h('th', null, 'Εύρος αγοράς'), h('th', { class: 'num' }, 'Μέση'), h('th', { class: 'num' }, 'Προτεινόμενη'), h('th', { class: 'num' }, 'Αλλαγή'), h('th', null, ''))), tb)));
+      box.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl mk-tbl' }, h('thead', null, h('tr', null, h('th', { class: 'w-check' }, allBox), h('th', null, ''), h('th', null, 'Προϊόν'), h('th', { class: 'num' }, 'Η τιμή μας'), h('th', null, 'Εμείς και οι ανταγωνιστές'), h('th', null, 'Απόφαση'), h('th', { class: 'num' }, 'Νέα τιμή'))), tb)));
       const pages = Math.ceil(ov.total / 100);
       if (pages > 1) box.appendChild(h('div', { class: 'pager' }, btn('‹', { cls: 'sm', disabled: page <= 1 }, () => { page--; load(); }), h('span', null, `Σελίδα ${page} από ${pages} · ${fmt.num(ov.total)} προϊόντα`), btn('›', { cls: 'sm', disabled: page >= pages }, () => { page++; load(); })));
-      box.appendChild(h('p', { class: 'hint' }, 'Πάτα μια γραμμή για να δεις τα καταστήματα. Μετράνε μόνο τα «Ίδια» προϊόντα που είναι διαθέσιμα· εξαντλημένα, παλιές τιμές και ακραίες τιμές δεν μετράνε. «Παρόμοιο;» = ίσως άλλη έκδοση ή χρώμα: πάτα «Ίδιο» ή «Όχι» και το πρόγραμμα το θυμάται.'));
+      box.appendChild(h('p', { class: 'hint' }, `Πάτα μια γραμμή για όλα τα καταστήματα δίπλα στη δική μας τιμή. Μετράνε μόνο τα «Ίδια» προϊόντα που είναι διαθέσιμα. Δεν μετράνε: εξαντλημένα, παλιές τιμές και ύποπτες τιμές (κάτω από το κόστος μας ή ${App.state.settings.suspectPct || 30}%+ κάτω από τους άλλους — π.χ. παλιό απόθεμα ή λάθος). Αλλαγή τιμής προτείνεται μόνο όταν συμφωνούν τουλάχιστον ${minShops} καταστήματα.`));
       renderBulk();
     };
-    main.appendChild(fbar); main.appendChild(box); main.appendChild(bulk);
+    main.appendChild(tiles); main.appendChild(fbar); main.appendChild(box); main.appendChild(bulk);
     drawF(); load();
   }
 
@@ -201,7 +254,7 @@
         h('div', { class: 'row tight', style: { marginTop: '10px' } },
           btn('Ίδιο προϊόν', { cls: 'primary', icon: 'check' }, () => answer('yes')),
           btn('Όχι, άλλο', { icon: 'x' }, () => answer('no')),
-          c.url ? btn('Η σελίδα τους', { cls: 'ghost', icon: 'ext' }, () => POST('/api/open', { kind: 'url', url: c.url })) : null));
+          c.url ? btn('Η σελίδα τους', { cls: 'ghost', icon: 'ext' }, () => App.openUrl(c.url)) : null));
       function answer(a) { POST('/api/market/decide', { site, id: r.id, url: c.url, answer: a }).then(() => { el.classList.add('done'); setTimeout(() => el.remove(), 180); }).catch(fail); }
       el.answer = answer;
       return el;
@@ -246,7 +299,7 @@
         h('td', { class: 'title' }, c.name, h('div', { class: 'faint', style: { fontWeight: 400 } }, c.url)),
         h('td', null, h('span', { class: 'badge ' + k[1] }, k[0]), c.status ? h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.status) : null),
         h('td', { class: 'num' }, c.catalog && c.catalog.count ? h('div', null, h('b', null, fmt.num(c.catalog.count)), h('div', { class: 'faint', style: { fontSize: '12.5px' } }, fmt.ago(c.catalog.at))) : h('span', { class: 'faint' }, '—')),
-        h('td', null, h('div', { class: 'row tight' }, btn('Άνοιγμα', { cls: 'sm', icon: 'ext' }, () => POST('/api/open', { kind: 'url', url: c.url })), btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox('Αφαίρεση ' + c.name + ';', null, 'Αφαίρεση', true)) POST('/api/competitors/delete', { id: c.id }).then(() => App.route()).catch(fail); })))));
+        h('td', null, h('div', { class: 'row tight' }, btn('Άνοιγμα', { cls: 'sm', icon: 'ext' }, () => App.openUrl(c.url)), btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox('Αφαίρεση ' + c.name + ';', null, 'Αφαίρεση', true)) POST('/api/competitors/delete', { id: c.id }).then(() => App.route()).catch(fail); })))));
     }
     const name = h('input', { type: 'text', placeholder: 'Όνομα' });
     const url = h('input', { type: 'url', placeholder: 'https://κατάστημα.gr' });

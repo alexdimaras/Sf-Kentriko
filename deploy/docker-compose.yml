@@ -1,0 +1,33 @@
+# SF Κέντρο στο cloud: το πρόγραμμα + Caddy (https αυτόματα, με δωρεάν πιστοποιητικό Let's Encrypt).
+# Οδηγίες: DIAKOMISTIS-CLOUD.txt
+services:
+  kentro:
+    build: ../app
+    restart: unless-stopped
+    environment:
+      SFK_ALLOWED_HOSTS: ${KENTRO_HOST}
+      SFK_TRUST_PROXY: "1"
+      SFK_SECURE_COOKIE: "1"
+      SFK_ADMIN_USER: ${KENTRO_ADMIN_USER:-}
+      SFK_ADMIN_PASSWORD: ${KENTRO_ADMIN_PASSWORD:-}
+    volumes:
+      - kentro-data:/data
+    expose:
+      - "17321"
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [kentro]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KENTRO_HOST: ${KENTRO_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  kentro-data: {}
+  caddy-data: {}
+  caddy-config: {}

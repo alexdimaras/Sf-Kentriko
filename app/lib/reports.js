@@ -7,7 +7,8 @@ const U = require('./util');
 
 const PILLS = {
   severity: { critical: ['Κρίσιμο', 'crit'], high: ['Σημαντικό', 'warn'], medium: ['Μέτριο', 'mid'], low: ['Χαμηλό', 'low'], info: ['Πληροφορία', 'info'] },
-  verdict: { expensive: ['Ακριβότερο', 'warn'], cheap: ['Πολύ φθηνότερο', 'info'], ok: ['Στην αγορά', 'ok'], nodata: ['Χωρίς σίγουρη τιμή', 'low'] },
+  verdict: { lower: ['Μείωσε', 'warn'], raise: ['Μπορείς να ανεβάσεις', 'info'], hold: ['Σωστή τιμή', 'ok'], watch: ['Μόνο ενημέρωση', 'mid'], nodata: ['Χωρίς στοιχεία', 'low'] },
+  flag: { used: ['Μετράει', 'ok'], suspect: ['Ύποπτη τιμή', 'crit'], out: ['Εξαντλημένο', 'low'], stale: ['Παλιά τιμή', 'low'], high: ['Πολύ ακριβό', 'low'], foreign: ['Εξωτερικό', 'low'], similar: ['Παρόμοιο;', 'mid'], ignored: ['Δεν μετράει', 'low'] },
   match: { exact: ['Ίδιο', 'ok'], similar: ['Παρόμοιο;', 'mid'] },
   stock: { true: ['Διαθέσιμο', 'ok'], false: ['Εξαντλημένο', 'low'] },
   ads: { banned: ['Όχι διαφήμιση', 'crit'], google: ['Όχι Google', 'warn'], caution: ['Προσοχή', 'mid'], meta18: ['Meta 18+', 'info'], ok: ['Διαφήμιση ΟΚ', 'ok'] },
@@ -85,43 +86,47 @@ function marketReport(site, q) {
   const pm = productMap(site);
   const rows = ov.rows.map((r) => ({
     img: r.img, imgFull: full(pm.get(r.id)), name: r.name, url: r.url, sku: r.sku, brand: r.brand, ourPrice: r.ourPrice,
-    min: r.stats.min || null, median: r.stats.median || null, max: r.stats.max || null, count: r.stats.count, similar: r.stats.similar || 0,
+    min: r.stats.min || null, minShop: r.stats.minShop || '', median: r.stats.median || null, max: r.stats.max || null, count: r.stats.count, similar: r.stats.similar || 0, suspect: r.stats.suspect || 0,
     suggested: r.suggested || null, diff: r.suggested && r.ourPrice ? U.r2(r.suggested - r.ourPrice) : null,
-    diffPct: r.stats.median && r.ourPrice ? U.r2((r.ourPrice - r.stats.median) / r.stats.median) : null,
-    verdict: r.verdict, confidence: r.stats.confidence || '', master: r.master ? 'από ' + siteName('sf') : '',
-    why: r.careful ? 'Μεγάλη πτώση με βάση ένα μόνο κατάστημα: έλεγξε πριν αλλάξεις.' : (!r.stats.count && r.stats.outOfStock ? 'Εξαντλημένο σε όλα τα άλλα καταστήματα: δεν υπάρχει ανταγωνισμός τώρα.' : ''),
-    detail: r.competitors.filter((o) => !o.ignored).map((o) => ({ shop: o.shop, name: o.name, url: o.url, price: o.price, prevPrice: o.prevPrice || null, stock: o.inStock !== false, match: o.match, why: o.note || o.why || (o.manual ? 'καταχωρήθηκε με το χέρι' : ''), img: o.img || '' })),
+    diffPct: r.vsMedian, rank: r.rank ? r.rank + 'ος από ' + r.of : '',
+    verdict: r.action, confidence: r.stats.confidence || '', master: r.master ? 'από ' + siteName('sf') : '',
+    why: (r.careful ? 'Μεγάλη πτώση: έλεγξε πριν αλλάξεις. ' : '') + (r.reason || ''),
+    detail: r.competitors.filter((o) => !o.ignored).sort((a, b) => a.price - b.price).map((o) => ({ shop: o.shop, name: o.name, url: o.url, price: o.price, vsUs: r.ourPrice ? U.r2((o.price - r.ourPrice) / r.ourPrice) : null, prevPrice: o.prevPrice || null, stock: o.inStock !== false, flag: o.flag || (o.match === 'exact' ? 'used' : 'similar'), why: o.note || o.why || (o.manual ? 'καταχωρήθηκε με το χέρι' : ''), img: o.img || '' })),
   }));
   const m = ov.meta || {};
+  const pill = (k) => ({ key: 'verdict', value: pillText('verdict', k) });
   return {
     title: 'Τιμές αγοράς · ' + siteName(site),
     subtitle: (m.lastRun ? 'Έρευνα ' + new Date(m.lastRun).toLocaleString('el-GR') + ' · ' : '') + rows.length.toLocaleString('el-GR') + ' προϊόντα με στοιχεία από ' + (m.competitors || '?') + ' καταστήματα',
-    help: 'Μετράνε μόνο τα «Ίδια» προϊόντα που είναι διαθέσιμα στο άλλο κατάστημα. Εξαντλημένα, παλιές και ακραίες τιμές δεν μετράνε. «Παρόμοιο;» = πιθανή άλλη έκδοση/χρώμα: δεν μετράει μέχρι να το επιβεβαιώσετε στο πρόγραμμα.',
+    help: `Μετράνε μόνο τα «Ίδια» προϊόντα που είναι διαθέσιμα στο άλλο κατάστημα. Εξαντλημένα, παλιές τιμές και ύποπτες τιμές (κάτω από το κόστος μας ή πολύ κάτω από τους άλλους) δεν μετράνε. Αλλαγή τιμής προτείνεται μόνο όταν συμφωνούν τουλάχιστον ${settings.all().minShops || 2} καταστήματα.`,
     summary: [
-      { label: 'Ακριβότερα από την αγορά', value: ov.counts.expensive, tone: 'warn', filter: { key: 'verdict', value: pillText('verdict', 'expensive') } },
-      { label: 'Πολύ φθηνότερα', value: ov.counts.cheap, tone: 'info', filter: { key: 'verdict', value: pillText('verdict', 'cheap') } },
-      { label: 'Στην αγορά', value: ov.counts.ok, tone: 'ok', filter: { key: 'verdict', value: pillText('verdict', 'ok') } },
-      { label: 'Περιμένουν επιβεβαίωση', value: ov.counts.similar, tone: 'mid' },
+      { label: 'Μείωσε (ακριβότερα από την αγορά)', value: ov.counts.lower, tone: 'warn', filter: pill('lower') },
+      { label: 'Μπορείς να ανεβάσεις', value: ov.counts.raise, tone: 'info', filter: pill('raise') },
+      { label: 'Μόνο ενημέρωση (1 κατάστημα / ύποπτη τιμή)', value: ov.counts.watch, tone: 'mid', filter: pill('watch') },
+      { label: 'Σωστή τιμή', value: ov.counts.hold, tone: 'ok', filter: pill('hold') },
     ],
     columns: [
       { key: 'img', label: '', type: 'img' },
       { key: 'name', label: 'Προϊόν', type: 'name', width: 44 },
       { key: 'sku', label: 'Κωδικός', type: 'code', width: 12 },
       { key: 'brand', label: 'Μάρκα', type: 'text', facet: true, width: 14 },
-      { key: 'ourPrice', label: 'Δική μας', type: 'money', width: 11 },
+      { key: 'ourPrice', label: 'Δική μας', type: 'money', width: 11, strong: true },
       { key: 'min', label: 'Φθηνότερη', type: 'money', width: 11 },
-      { key: 'median', label: 'Μέση', type: 'money', width: 11 },
+      { key: 'minShop', label: 'Φθηνότερο κατάστημα', type: 'text', facet: true, width: 16 },
+      { key: 'median', label: 'Μέση αγοράς', type: 'money', width: 11 },
       { key: 'max', label: 'Ακριβότερη', type: 'money', width: 11 },
       { key: 'diffPct', label: 'Εμείς vs μέση', type: 'pct', width: 11 },
-      { key: 'suggested', label: 'Προτεινόμενη', type: 'money', width: 12, strong: true },
+      { key: 'rank', label: 'Θέση μας', type: 'text', width: 10 },
+      { key: 'verdict', label: 'Απόφαση', type: 'pill', map: 'verdict', facet: true, width: 16 },
+      { key: 'suggested', label: 'Νέα τιμή', type: 'money', width: 12, strong: true },
       { key: 'diff', label: 'Αλλαγή', type: 'diff', width: 10 },
+      { key: 'why', label: 'Γιατί', type: 'text', width: 50 },
       { key: 'count', label: 'Καταστ.', type: 'num', width: 8 },
       { key: 'confidence', label: 'Σιγουριά', type: 'pill', map: 'confidence', facet: true, width: 14 },
-      { key: 'verdict', label: 'Κατάσταση', type: 'pill', map: 'verdict', facet: true, width: 14 },
       site === 'st' ? { key: 'master', label: 'Τιμή', type: 'text', facet: true, width: 14 } : null,
     ].filter(Boolean),
-    card: { img: 'img', full: 'imgFull', title: 'name', sub: ['brand', 'sku'], price: 'ourPrice', priceLabel: 'Δική μας', price2: 'suggested', price2Label: 'Προτεινόμενη', badges: ['verdict', 'confidence'], note: 'why', range: true },
-    detail: { label: 'Ανταγωνιστές', columns: [{ key: 'img', label: '', type: 'img' }, { key: 'shop', label: 'Κατάστημα', type: 'text' }, { key: 'name', label: 'Προϊόν τους', type: 'name' }, { key: 'price', label: 'Τιμή', type: 'money' }, { key: 'prevPrice', label: 'Πριν', type: 'money' }, { key: 'stock', label: 'Απόθεμα', type: 'pill', map: 'stock' }, { key: 'match', label: 'Ταίριασμα', type: 'pill', map: 'match' }, { key: 'why', label: 'Σημείωση', type: 'text' }] },
+    card: { img: 'img', full: 'imgFull', title: 'name', sub: ['brand', 'sku'], price: 'ourPrice', priceLabel: 'Δική μας', price2: 'suggested', price2Label: 'Νέα τιμή', badges: ['verdict', 'confidence'], note: 'why', range: true },
+    detail: { label: 'Ανταγωνιστές', columns: [{ key: 'img', label: '', type: 'img' }, { key: 'shop', label: 'Κατάστημα', type: 'text' }, { key: 'name', label: 'Προϊόν τους', type: 'name' }, { key: 'price', label: 'Τιμή', type: 'money' }, { key: 'vsUs', label: 'vs εμάς', type: 'pct' }, { key: 'prevPrice', label: 'Πριν', type: 'money' }, { key: 'stock', label: 'Απόθεμα', type: 'pill', map: 'stock' }, { key: 'flag', label: 'Μετράει;', type: 'pill', map: 'flag' }, { key: 'why', label: 'Σημείωση', type: 'text' }] },
     rows, file: 'times-agoras-' + site,
   };
 }

@@ -285,6 +285,7 @@ async function refresh(supplierId, job) {
   const sup = require('./suppliers').get(supplierId);
   if (!sup) throw new Error('Δεν βρέθηκε ο αντιπρόσωπος.');
   const res = sup.catalogMode === 'public' || sup.catalogMode === 'b2b' ? await fromCatalog(supplierId, job) : await refreshFeed(supplierId);
+  if (res) { try { res.costs = refreshCosts(supplierId); } catch (e) { console.error('costs ' + supplierId + ':', e.message); } }
   store.update('supplier-updates', [], (l) => { l.unshift(Object.assign({ supplierId, name: sup.name, at: U.nowIso() }, res || {})); return l.slice(0, 200); });
   return res;
 }
@@ -405,13 +406,34 @@ function compare(supplierId, site) {
   return { supplier: require('./suppliers').view(sup), importedAt: list.importedAt, fileName: list.fileName, priceKind: list.priceKind, vatIncluded: list.vatIncluded, site, rows, counts, source: list.source };
 }
 
-/** Save costs from the list (used as price floor in competitor research). */
+/** Cost rows of a list for our products; the supplier's retail price too when the list is a retail list. */
+function costRows(cmp, strongOnly) {
+  const out = [];
+  for (const r of cmp.rows) {
+    if (!r.match || !(r.cost > 0) || (strongOnly && r.match.weak)) continue;
+    out.push({ site: cmp.site, id: r.match.parent || r.match.id, cost: r.cost, rrp: cmp.priceKind === 'retail' ? r.retail : 0 });
+  }
+  return out;
+}
+
+/** Save costs from the list (used as price floor and to spot suspect competitor prices). */
 function storeCosts(supplierId, site) {
   const cmp = compare(supplierId, site);
   if (!cmp) return 0;
-  const market = require('./market');
+  return require('./market').setCosts(costRows(cmp, false), 'pricelist:' + supplierId);
+}
+
+/**
+ * After an automatic refresh: keep the costs from this list up to date (new prices of the supplier = new cost).
+ * Only sure matches (code / EAN), and never over a cost typed by hand or taken from another supplier.
+ */
+function refreshCosts(supplierId) {
+  const src = 'pricelist:' + supplierId;
   let n = 0;
-  for (const r of cmp.rows) if (r.match && r.cost > 0) { market.setCost(site, r.match.parent || r.match.id, r.cost, 'pricelist:' + supplierId); n++; }
+  for (const site of ['sf', 'st']) {
+    const cmp = compare(supplierId, site);
+    if (cmp) n += require('./market').setCosts(costRows(cmp, true), src, (prev) => !prev || prev.source === src);
+  }
   return n;
 }
 
@@ -421,4 +443,4 @@ function info(supplierId) {
 }
 function rawItems(supplierId) { const l = store.read('pricelist-' + supplierId, null); return l ? l.items : []; }
 
-module.exports = { refreshFeed, fromCatalog, refresh, autoSources, smartMatch, preview, importList, compare, storeCosts, info, rawItems, FIELD_LABELS, retailFor, rowsFromBuffer, guessMapping };
+module.exports = { refreshFeed, fromCatalog, refresh, refreshCosts, autoSources, smartMatch, preview, importList, compare, storeCosts, info, rawItems, FIELD_LABELS, retailFor, rowsFromBuffer, guessMapping };

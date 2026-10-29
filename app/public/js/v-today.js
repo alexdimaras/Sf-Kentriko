@@ -7,7 +7,7 @@
     if (!a) return;
     if (a.kind === 'sync') return startSync();
     if (a.kind === 'check') return go('checks', { open: a.id });
-    if (a.kind === 'view') return go(a.view, Object.assign({}, a.tab ? { tab: a.tab } : {}, a.id ? { id: a.id } : {}));
+    if (a.kind === 'view') return go(a.view, Object.assign({}, a.tab ? { tab: a.tab } : {}, a.id ? { id: a.id } : {}, a.f ? { f: a.f } : {}, a.group ? { group: a.group } : {}));
     void t;
   }
 

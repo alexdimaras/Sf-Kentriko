@@ -30,8 +30,19 @@ function build() {
   let ck = { checks: [], counts: {} };
   if (synced) {
     ck = checks.cached();
-    for (const c of ck.checks.filter((x) => ['critical', 'high'].includes(x.severity)).slice(0, 6)) {
-      tasks.push({ level: c.severity, title: `${c.title} — ${c.items.length}`, text: c.help, site: c.site, action: { kind: 'check', id: c.id, label: c.fix ? c.fix.label : 'Δες τη λίστα' } });
+    // Only what the program could NOT correct by itself is shown as a problem: products of a check that already
+    // have a ready fix (waiting, approved or in the file) are in the "fixes" task instead.
+    const FIELD_OF = { mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', oneimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
+    const fixed = new Set();
+    try { for (const x of require('./fixes').compute().items) if (x.status !== 'rejected') fixed.add(x.site + ':' + x.pid + ':' + x.field); } catch (_) { /* no fixes yet */ }
+    let shown = 0;
+    for (const c of ck.checks.filter((x) => ['critical', 'high'].includes(x.severity))) {
+      if (shown >= 6) break;
+      const field = FIELD_OF[c.id.replace(/^(sf|st)-/, '')];
+      const left = field ? c.items.filter((i) => !fixed.has(i.site + ':' + i.id + ':' + field)) : c.items;
+      if (!left.length) continue;
+      shown++;
+      tasks.push({ level: c.severity, title: `${c.title} — ${left.length}`, text: field ? `Για αυτά δεν βρέθηκε αυτόματη διόρθωση (π.χ. ο αντιπρόσωπος δεν έχει στοιχεία). ${c.help}` : c.help, site: c.site, action: { kind: 'check', id: c.id, label: c.fix ? c.fix.label : 'Δες τη λίστα' } });
     }
   }
 
@@ -76,6 +87,15 @@ function build() {
   // security: a PIN protects the program and seals the B2B passwords
   if (!require('./security').hasPin()) tasks.push({ level: sups.some((x) => x.b2bPass) ? 'high' : 'low', title: 'Βάλε PIN στο πρόγραμμα', text: sups.some((x) => x.b2bPass) ? 'Υπάρχουν αποθηκευμένοι κωδικοί B2B. Με PIN κλειδώνονται επιπλέον και το πρόγραμμα κλειδώνει μόνο του μετά από 30 λεπτά χωρίς χρήση.' : 'Το πρόγραμμα κλειδώνει μόνο του μετά από 30 λεπτά χωρίς χρήση και ζητάει PIN στο άνοιγμα.', action: { kind: 'view', view: 'settings', tab: 'security', label: 'Ορισμός PIN' } });
 
+  // fixes the program filled in by itself, waiting for a yes
+  let fx = { pending: 0, sure: 0, approved: 0, products: 0 };
+  if (synced) {
+    fx = require('./fixes').summary();
+    if (fx.pending) tasks.push({ level: fx.sure ? 'high' : 'medium', title: `${pl(fx.pending, 'έτοιμη διόρθωση περιμένει', 'έτοιμες διορθώσεις περιμένουν')} έγκριση`, text: `Για ${pl(fx.products, 'προϊόν', 'προϊόντα')}: περιγραφές και φωτογραφίες από τους αντιπροσώπους, τίτλοι, τιμές, κατηγορίες. ${fx.sure ? fx.sure + ' είναι σίγουρες (ένα κλικ για όλες).' : ''} Τίποτα δεν αλλάζει στα sites χωρίς το αρχείο.`, action: { kind: 'view', view: 'fixes', label: 'Έλεγχος και έγκριση' } });
+    if (fx.approved) tasks.push({ level: 'medium', title: `${pl(fx.approved, 'εγκεκριμένη διόρθωση δεν έχει', 'εγκεκριμένες διορθώσεις δεν έχουν')} περάσει στα sites`, text: 'Φτιάξε το αρχείο ενημέρωσης και ανέβασέ το στο WooCommerce.', action: { kind: 'view', view: 'fixes', tab: 'approved', label: 'Αρχείο' } });
+    if (fx.exported) tasks.push({ level: 'low', title: `${pl(fx.exported, 'διόρθωση είναι', 'διορθώσεις είναι')} στο αρχείο, όχι ακόμα στο site`, text: 'Ανέβασε το αρχείο στο WooCommerce (Προϊόντα → Εισαγωγή, «Ενημέρωση υπαρχόντων») και μετά πάτα «Ανάγνωση από τα sites»: τότε φεύγουν από εδώ.', action: { kind: 'view', view: 'fixes', tab: 'exported', label: 'Δες τα' } });
+  }
+
   const meta = store.read('market-meta', {});
   if (synced && !meta.lastRun) tasks.push({ level: 'start', title: 'Πρώτη έρευνα τιμών αγοράς', text: 'Κατεβαίνουν οι κατάλογοι των ανταγωνιστών και συγκρίνονται όλα τα προϊόντα σας. Μετά γίνεται μόνο του κάθε μέρα.', action: { kind: 'view', view: 'market', label: 'Έρευνα' } });
   const mk = { counts: market.quickCounts('sf') };
@@ -83,8 +103,10 @@ function build() {
   const changes = store.read('market-changes', []).filter((c) => c.at === meta.lastRun);
   const cheaper = changes.filter((c) => c.to < c.from && c.to < c.ours);
   if (cheaper.length) tasks.push({ level: 'medium', title: `${pl(cheaper.length, 'τιμή ανταγωνιστή έπεσε', 'τιμές ανταγωνιστών έπεσαν')} κάτω από τις δικές σας`, text: cheaper.slice(0, 3).map((c) => `${c.shop}: ${c.name}`).join(' · ') + (cheaper.length > 3 ? ' …' : ''), action: { kind: 'view', view: 'market', tab: 'changes', label: 'Αλλαγές' } });
-  if (mk.counts.expensive) tasks.push({ level: 'medium', title: `${pl(mk.counts.expensive, 'προϊόν είναι ακριβότερο', 'προϊόντα είναι ακριβότερα')} από την αγορά`, text: 'Με βάση τον τελευταίο έλεγχο ανταγωνισμού.', action: { kind: 'view', view: 'market', label: 'Τιμές' } });
-  if (mk.counts.cheap) tasks.push({ level: 'medium', title: `${pl(mk.counts.cheap, 'προϊόν πουλιέται πολύ φθηνότερα', 'προϊόντα πουλιούνται πολύ φθηνότερα')} από την αγορά`, text: 'Χάνεις κέρδος χωρίς λόγο — δες την προτεινόμενη τιμή.', action: { kind: 'view', view: 'market', label: 'Τιμές' } });
+  const minShops = s.minShops || 2;
+  if (mk.counts.lower) tasks.push({ level: 'medium', title: `${pl(mk.counts.lower, 'προϊόν είναι ακριβότερο', 'προϊόντα είναι ακριβότερα')} από την αγορά`, text: `Τουλάχιστον ${minShops} καταστήματα με απόθεμα το πουλάνε φθηνότερα. Η πρόταση δεν πέφτει κάτω από το όριο κόστους.`, action: { kind: 'view', view: 'market', f: 'lower', label: 'Δες τις προτάσεις' } });
+  if (mk.counts.raise) tasks.push({ level: 'medium', title: `${pl(mk.counts.raise, 'προϊόν πουλιέται πολύ φθηνότερα', 'προϊόντα πουλιούνται πολύ φθηνότερα')} από την αγορά`, text: `Τουλάχιστον ${minShops} καταστήματα το πουλάνε ακριβότερα: χάνεις κέρδος χωρίς λόγο.`, action: { kind: 'view', view: 'market', f: 'raise', label: 'Δες τις προτάσεις' } });
+  if (mk.counts.suspect) tasks.push({ level: 'low', title: `${pl(mk.counts.suspect, 'προϊόν έχει', 'προϊόντα έχουν')} ύποπτα χαμηλή τιμή σε ανταγωνιστή`, text: 'Κάτω από το κόστος σας ή πολύ κάτω από τους άλλους (παλιό απόθεμα, λάθος). Δεν μετράνε στις προτάσεις — μόνο για να το ξέρεις.', action: { kind: 'view', view: 'market', f: 'watch', label: 'Δες τα' } });
 
   const order = { start: 0, critical: 1, high: 2, medium: 3, low: 4 };
   tasks.sort((a, b) => order[a.level] - order[b.level]);
@@ -96,7 +118,7 @@ function build() {
     kpi: {
       sf: sum.sf.products, st: sum.st.products, both: L.sfToSt.size,
       critical: ck.counts.critical || 0, high: ck.counts.high || 0,
-      drafts: waiting, suppliers: sups.length, orders: ords.filter((o) => o.status === 'sent').length,
+      drafts: waiting, suppliers: sups.length, orders: ords.filter((o) => o.status === 'sent').length, fixes: fx.pending,
     },
     tasks, history,
   };

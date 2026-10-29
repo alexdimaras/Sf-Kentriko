@@ -15,6 +15,7 @@
         main.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Πρώτα διάβασε τα προϊόντα'), h('p', null, 'Οι έλεγχοι γίνονται στα στοιχεία των sites.'), btn('Ανάγνωση τώρα', { cls: 'primary', icon: 'sync' }, () => App.startSync())));
         return;
       }
+      main.appendChild(h('div', { class: 'note ok', style: { marginBottom: '12px', display: 'flex', gap: '12px', alignItems: 'center' } }, h('div', { class: 'grow' }, h('b', null, 'Τα περισσότερα διορθώνονται μόνα τους. '), 'Τίτλοι, περιγραφές και φωτογραφίες (από τους αντιπροσώπους), τιμές, κατηγορίες και διαφημίσεις είναι έτοιμα στις «Διορθώσεις» — εσύ μόνο εγκρίνεις.'), btn('Διορθώσεις', { cls: 'primary sm', icon: 'fixes' }, () => App.go('fixes'))));
       const data = await GET('/api/checks', { limit: 1 });
       let sev = p.sev || '';
       let siteF = p.site || '';

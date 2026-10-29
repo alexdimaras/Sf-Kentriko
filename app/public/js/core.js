@@ -1,7 +1,11 @@
 /* SF Κέντρο — core: DOM helpers, API, router, dialogs, jobs. */
 'use strict';
 const App = window.App = { views: {}, state: null, badges: {} };
-const TOKEN = document.querySelector('meta[name="sfk-token"]').content;
+let TOKEN = document.querySelector('meta[name="sfk-token"]').content;
+// server mode: one program for every PC, each person logs in (local mode: this PC only)
+const MODE = (document.querySelector('meta[name="sfk-mode"]') || {}).content === 'server' ? 'server' : 'local';
+// this browser tab, so it is not told about its own changes
+const CLIENT = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 // ---------- DOM ----------
 function h(tag, attrs, ...kids) {
@@ -61,6 +65,9 @@ const ICONS = {
   lock: 'M6 11h12v9H6zM8 11V8a4 4 0 018 0v3M12 15v2',
   shield: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z',
   alert: 'M12 3l10 18H2zM12 10v5M12 18h.01',
+  fixes: 'M14.7 6.3a4 4 0 00-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
+  user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
+  logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -104,13 +111,14 @@ for (const ev of ['mousedown', 'keydown', 'wheel', 'touchstart']) document.addEv
 
 // ---------- API ----------
 async function api(method, path, body) {
-  const opt = { method, headers: { 'X-SFK': TOKEN, 'X-Active': Date.now() - lastInput < 60000 ? '1' : '0' } };
+  const opt = { method, headers: { 'X-SFK': TOKEN, 'X-Client': CLIENT, 'X-Active': Date.now() - lastInput < 60000 ? '1' : '0' }, credentials: 'same-origin' };
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   let res;
   try { res = await fetch(path, opt); } catch (e) { throw new Error('Το πρόγραμμα δεν απαντά. Μήπως έκλεισε το μαύρο παράθυρο; Άνοιξέ το ξανά.'); }
   let data = null;
   try { data = await res.json(); } catch (_) { data = null; }
   if (res.status === 423) { showLock(); const e = new Error('Το πρόγραμμα είναι κλειδωμένο.'); e.locked = true; throw e; }
+  if (res.status === 401 && data && data.login) { showLogin(); const e = new Error(data.error || 'Χρειάζεται σύνδεση.'); e.locked = true; throw e; }
   if (!res.ok) throw new Error((data && data.error) || ('Σφάλμα ' + res.status));
   return data;
 }
@@ -152,10 +160,114 @@ function showLock(msg) {
   setTimeout(() => pin.focus(), 50);
 }
 function whenUnlocked() { return lockShown ? new Promise((r) => lockWaiters.push(r)) : Promise.resolve(); }
+
+// ---------- login (server mode) ----------
+/** The login card; with setup = true, the very first start: create the administrator with the code from the server window. */
+function showLogin(setup) {
+  if (lockShown) return;
+  lockShown = true;
+  try { drawer.close(); modal.close(); } catch (_) { /* not ready yet */ }
+  const err = h('div', { class: 'lock-err', role: 'alert' });
+  const field = (label, attrs) => { const i = h('input', attrs); return [h('label', { class: 'field' }, label, i), i]; };
+  const [fCode, code] = field('Κωδικός αρχικής ρύθμισης', { type: 'text', autocomplete: 'off', placeholder: 'XXXX-XXXX-XXXX' });
+  const [fName, name] = field('Ονοματεπώνυμο', { type: 'text', autocomplete: 'name' });
+  const [fUser, user] = field('Όνομα χρήστη', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
+  const [fPass, pass] = field('Κωδικός', { type: 'password', autocomplete: setup ? 'new-password' : 'current-password' });
+  const [fPass2, pass2] = field('Ξανά ο κωδικός', { type: 'password', autocomplete: 'new-password' });
+  const go = async () => {
+    err.textContent = '';
+    if (setup && pass.value !== pass2.value) { err.textContent = 'Οι δύο κωδικοί δεν είναι ίδιοι.'; return; }
+    try {
+      const r = await fetch(setup ? '/api/setup' : '/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Client': CLIENT }, body: JSON.stringify(setup ? { code: code.value, name: name.value, user: user.value, password: pass.value } : { user: user.value, password: pass.value }) });
+      const d = await r.json().catch(() => ({}));
+      pass.value = ''; pass2.value = '';
+      if (!r.ok) { err.textContent = d.error || 'Δεν έγινε σύνδεση.'; (setup ? code : pass).focus(); return; }
+      TOKEN = d.csrf; App.me = d.user; lastInput = Date.now();
+      box.remove(); lockShown = false;
+      const w = lockWaiters; lockWaiters = []; w.forEach((f) => f());
+      if (App.state) { refreshState().then(() => App.route()).catch(() => {}); }
+      live.start();
+    } catch (e) { err.textContent = 'Ο διακομιστής δεν απαντά.'; }
+  };
+  for (const i of [code, name, user, pass, pass2]) i.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  const box = h('div', { id: 'lock', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Σύνδεση' },
+    h('form', { class: 'lock-card login', onsubmit: (e) => { e.preventDefault(); go(); } },
+      h('div', { class: 'lock-icon' }, icon(setup ? 'shield' : 'lock')),
+      h('h1', null, 'SF Κέντρο'),
+      h('p', null, setup ? 'Πρώτη ρύθμιση: φτιάξε τον λογαριασμό του διαχειριστή. Ο κωδικός αρχικής ρύθμισης φαίνεται στο παράθυρο / στο log του διακομιστή.' : 'Συνδέσου με τον λογαριασμό σου. Τα δεδομένα είναι κοινά για όλους τους υπολογιστές.'),
+      setup ? fCode : null, setup ? fName : null, fUser, fPass, setup ? fPass2 : null, err,
+      h('button', { type: 'submit', class: 'btn primary block' }, setup ? 'Δημιουργία και σύνδεση' : 'Σύνδεση'),
+      h('p', { class: 'hint' }, setup ? 'Ο κωδικός θέλει τουλάχιστον 10 χαρακτήρες. Μετά, από τις Ρυθμίσεις → Χρήστες, προσθέτεις τους υπόλοιπους.' : 'Η σύνδεση λήγει μόνη της μετά από αδράνεια (Ρυθμίσεις → Ασφάλεια).')));
+  document.body.appendChild(box);
+  setTimeout(() => (setup ? code : user).focus(), 50);
+}
+async function logout() {
+  try { await POST('/api/logout'); } catch (_) { /* already out */ }
+  TOKEN = ''; App.me = null; live.stop();
+  showLogin(false);
+}
+
+// ---------- live updates: what another PC (or the program itself) changes shows up here ----------
+// Each view lists the data it shows; when it changes, the screen refreshes by itself — but never while
+// you type, or while a window is open: then a small bar offers the refresh.
+const VIEW_KEYS = {
+  today: /./, products: /^(catalog-|links$|costs$|market$)/, checks: /^(catalog-|ignored$|links$|settings$)/, new: /^(drafts$|catalog-)/,
+  suppliers: /^(suppliers$|orders$|pricelist-|supplier-)/, market: /^(market$|market-decisions$|competitors$|costs$|catalog-)/, settings: /^(settings$|users$)/, fixes: /^(fixes$|catalog-|enrich$)/,
+};
+const live = {
+  es: null, pendingKeys: new Set(), bar: null, timer: null,
+  start() {
+    if (this.es || typeof EventSource === 'undefined') return;
+    const url = '/api/events?c=' + encodeURIComponent(CLIENT) + (MODE === 'server' ? '' : '&t=' + encodeURIComponent(TOKEN));
+    this.es = new EventSource(url);
+    this.es.onmessage = (ev) => {
+      let d; try { d = JSON.parse(ev.data); } catch (_) { return; }
+      if (d.jobs) { clearTimeout(this.jt); this.jt = setTimeout(() => refreshState().catch(() => {}), 300); }
+      if (d.keys && d.keys.length) { d.keys.forEach((k) => this.pendingKeys.add(k)); clearTimeout(this.timer); this.timer = setTimeout(() => this.apply(), 600); }
+    };
+  },
+  stop() { if (this.es) { this.es.close(); this.es = null; } },
+  busy() {
+    const a = document.activeElement;
+    return drawer.isOpen() || modal.isOpen() || lockShown || (a && a.matches && a.matches('input, textarea, select, [contenteditable]')) || Date.now() - lastInput < 2500 || !!document.querySelector('.bulkbar:not(.hidden)');
+  },
+  apply() {
+    const keys = [...this.pendingKeys];
+    if (!keys.length) return;
+    const view = parseHash().view;
+    const re = VIEW_KEYS[view] || VIEW_KEYS.today;
+    refreshBadges();
+    if (keys.some((k) => /^(settings|catalog-)/.test(k))) refreshState().catch(() => {});
+    if (!keys.some((k) => re.test(k))) { this.pendingKeys.clear(); return; }
+    if (this.busy()) { this.showBar(); clearTimeout(this.timer); this.timer = setTimeout(() => this.apply(), 4000); return; }
+    this.pendingKeys.clear(); this.hideBar();
+    const y = window.scrollY;
+    App.route().then(() => window.scrollTo(0, y));
+  },
+  showBar() {
+    if (this.bar) return;
+    this.bar = h('div', { class: 'livebar', role: 'status' }, icon('sync'), h('span', null, 'Υπάρχουν νέα στοιχεία (από άλλον υπολογιστή ή αυτόματη εργασία).'),
+      h('button', { type: 'button', class: 'btn sm', onclick: () => { this.pendingKeys.clear(); this.hideBar(); const y = window.scrollY; App.route().then(() => window.scrollTo(0, y)); } }, 'Ανανέωση'));
+    document.body.appendChild(this.bar);
+  },
+  hideBar() { if (this.bar) { this.bar.remove(); this.bar = null; } },
+};
+
+/** A web page (shop, supplier, report): in a new tab. Local mode: the program opens it in Chrome. */
+function openUrl(url) {
+  if (!url) return Promise.resolve();
+  if (MODE === 'server') { window.open(url, '_blank', 'noopener,noreferrer'); return Promise.resolve(); }
+  return POST('/api/open', { kind: 'url', url }).catch(fail);
+}
+/** A file the program made: local mode shows it in its folder, server mode downloads it. */
+function openFile(r) {
+  if (MODE === 'server' || !r.file) { const a = h('a', { href: r.url, download: r.name || '' }); document.body.appendChild(a); a.click(); a.remove(); return Promise.resolve(); }
+  return POST('/api/open', { kind: 'file', path: r.file }).catch(fail);
+}
 // lock by itself after the chosen minutes without mouse/keyboard (the program enforces the same limit)
 setInterval(() => {
   const li = App.lockInfo;
-  if (!li || !li.pin || lockShown) return;
+  if (MODE === 'server' || !li || !li.pin || lockShown) return;
   if (Date.now() - lastInput > (li.lockMinutes || 30) * 60000) { POST('/api/lock').catch(() => {}); showLock(); }
 }, 20000);
 const GET = (p, q) => api('GET', p + (q ? '?' + new URLSearchParams(Object.entries(q).filter(([, v]) => v !== '' && v != null)).toString() : ''));
@@ -214,18 +326,18 @@ function fileReady(r, opts) {
   const importUrl = base ? base + '/wp-admin/edit.php?post_type=product&page=product_importer' : '';
   modal.open(h('div', null,
     dlgHead(opts.title || 'Το αρχείο είναι έτοιμο', `${fmt.plural(r.count || 0, 'γραμμή', 'γραμμές')} · για το ${siteName(site)}`),
-    h('div', { class: 'note ok' }, 'Αποθηκεύτηκε: ', h('span', { class: 'mono' }, r.file)),
+    h('div', { class: 'note ok' }, MODE === 'server' ? ['Έτοιμο: ', h('b', null, r.name), ' — πάτα «Λήψη» για να το κατεβάσεις σε αυτόν τον υπολογιστή.'] : ['Αποθηκεύτηκε: ', h('span', { class: 'mono' }, r.file)]),
     opts.report ? null : h('div', { style: { marginTop: '14px' } },
       h('h3', { style: { fontSize: '15px', marginBottom: '8px' } }, 'Ανέβασμα στο WooCommerce'),
       h('ol', { class: 'steps' },
-        h('li', null, 'Άνοιξε ', importUrl ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); POST('/api/open', { kind: 'url', url: importUrl }); } }, 'Προϊόντα → Εισαγωγή') : 'Προϊόντα → Εισαγωγή', ' στο ' + siteName(site) + '.'),
+        h('li', null, 'Άνοιξε ', importUrl ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(importUrl); } }, 'Προϊόντα → Εισαγωγή') : 'Προϊόντα → Εισαγωγή', ' στο ' + siteName(site) + '.'),
         h('li', null, 'Επίλεξε το αρχείο από τον φάκελο που άνοιξε.'),
         update ? h('li', null, h('b', null, 'Τσέκαρε «Ενημέρωση υπαρχόντων προϊόντων»'), ' (αλλιώς θα φτιαχτούν διπλά).') : h('li', null, 'Μην τσεκάρεις «Ενημέρωση υπαρχόντων προϊόντων».'),
         h('li', null, 'Συνέχεια → Εκτέλεση. Μετά πάτα «Ανάγνωση» εδώ για να φανούν οι αλλαγές.'))),
     r.skipped && r.skipped.length ? h('div', { class: 'note warn', style: { marginTop: '14px' } }, h('b', null, `Παραλείφθηκαν ${r.skipped.length}:`), h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px' } }, r.skipped.slice(0, 12).map((s) => h('li', null, s.name + ' — ' + s.why)))) : null,
     r.newCategories && r.newCategories.length ? h('div', { class: 'note', style: { marginTop: '10px' } }, h('b', null, 'Θα δημιουργηθούν νέες κατηγορίες: '), r.newCategories.slice(0, 10).join(', '), r.newCategories.length > 10 ? '…' : '', h('div', { class: 'hint' }, 'Αν υπάρχουν με άλλο όνομα, αντιστοίχισέ τες στις Ρυθμίσεις → Κατηγορίες και φτιάξε ξανά το αρχείο.')) : null,
     h('div', { class: 'dlg-foot' },
-      btn('Άνοιγμα φακέλου', { icon: 'folder' }, () => POST('/api/open', { kind: 'file', path: r.file }).catch(fail)),
+      MODE === 'server' ? null : btn('Άνοιγμα φακέλου', { icon: 'folder' }, () => openFile(r)),
       h('a', { class: 'btn', href: r.url, download: r.name }, icon('download'), 'Λήψη'),
       btn('Κλείσιμο', { cls: 'primary' }, () => modal.close()))), { wide: false });
 }
@@ -311,10 +423,19 @@ function renderJobs() {
 
 /** Report buttons: the interactive page opens in a Chrome tab; Excel for exports. */
 function reportButtons(kind, params, label) {
-  const run = (format) => POST('/api/report', Object.assign({ kind, format, open: true }, params || {})).then((r) => {
-    if (format === 'html') toast(`Η σελίδα άνοιξε σε καρτέλα του browser (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`, { ms: 9000, action: { label: 'Δεν άνοιξε; Πάτα εδώ', fn: () => { const w = window.open(r.view, '_blank', 'noopener'); if (!w) POST('/api/open', { kind: 'url', url: r.view }); } } });
-    else toast(`Το Excel άνοιξε (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`, { action: { label: 'Φάκελος', fn: () => POST('/api/open', { kind: 'file', path: r.file }) } });
-  }).catch(fail);
+  const run = (format) => {
+    // server mode: the tab opens now (on the click), the page goes into it when ready — no popup blocker
+    const win = MODE === 'server' && format === 'html' ? window.open('about:blank', '_blank') : null;
+    return POST('/api/report', Object.assign({ kind, format, open: MODE !== 'server' }, params || {})).then((r) => {
+      if (MODE === 'server') {
+        if (format === 'html') { if (win) { win.opener = null; win.location.href = r.view; } else window.open(r.view, '_blank', 'noopener'); toast(`Η σελίδα άνοιξε σε νέα καρτέλα (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`); }
+        else { openFile(r); toast(`Το Excel κατεβαίνει (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`); }
+        return;
+      }
+      if (format === 'html') toast(`Η σελίδα άνοιξε σε καρτέλα του browser (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`, { ms: 9000, action: { label: 'Δεν άνοιξε; Πάτα εδώ', fn: () => { const w = window.open(r.view, '_blank', 'noopener'); if (!w) App.openUrl(r.view); } } });
+      else toast(`Το Excel άνοιξε (${fmt.plural(r.rows, 'γραμμή', 'γραμμές')}).`, { action: { label: 'Φάκελος', fn: () => openFile(r) } });
+    }).catch((e) => { if (win) win.close(); fail(e); });
+  };
   return h('div', { class: 'repbtns', role: 'group' },
     h('button', { type: 'button', class: 'main', title: (label && label !== 'Λήψη' && label !== 'Λίστα' ? label + ': ' : '') + 'ανοίγει σε καρτέλα του Chrome, με φωτογραφίες, φίλτρα, αναζήτηση και λεπτομέρειες', onclick: () => run('html') }, icon('ext'), 'Άνοιγμα σελίδας'),
     h('button', { type: 'button', title: 'Excel με μορφοποίηση, φίλτρα και συνδέσμους (για εξαγωγή)', onclick: () => run('xlsx') }, 'Excel'));
@@ -339,7 +460,7 @@ function startSync(sites, full) {
 
 // ---------- router & shell ----------
 const NAV = [
-  ['today', 'Σήμερα', 'today'], ['products', 'Προϊόντα', 'products'], ['checks', 'Έλεγχοι καταλόγου', 'checks'], ['new', 'Νέα προϊόντα', 'new'],
+  ['today', 'Σήμερα', 'today'], ['fixes', 'Διορθώσεις', 'fixes'], ['products', 'Προϊόντα', 'products'], ['checks', 'Έλεγχοι καταλόγου', 'checks'], ['new', 'Νέα προϊόντα', 'new'],
   ['suppliers', 'Αντιπρόσωποι', 'suppliers'], ['market', 'Τιμές αγοράς', 'market'], ['settings', 'Ρυθμίσεις', 'settings'],
 ];
 function parseHash() {
@@ -365,15 +486,26 @@ function renderSyncBox() {
   const s = App.state.summary;
   box.appendChild(h('div', { class: 'syncbox' },
     ['sf', 'st'].map((site) => h('div', { class: 'site' }, h('b', null, s[site].name), h('span', { title: fmt.dateTime(s[site].syncedAt) }, s[site].syncedAt ? fmt.ago(s[site].syncedAt) : 'όχι ακόμα'))),
-    App.lockInfo && App.lockInfo.pin ? btn('Κλείδωμα τώρα', { cls: 'sm block', icon: 'lock', title: 'Κλειδώνει το πρόγραμμα· ξεκλειδώνει με το PIN' }, () => POST('/api/lock').then(() => showLock()).catch(() => showLock())) : null,
+    MODE === 'server' && App.state.user ? h('div', { class: 'whoami' }, icon('user'), h('span', null, App.state.user.name, App.state.user.role === 'admin' ? h('small', null, ' · διαχειριστής') : null), h('button', { type: 'button', class: 'x', title: 'Αποσύνδεση', onclick: logout }, icon('logout'))) : null,
+    MODE !== 'server' && App.lockInfo && App.lockInfo.pin ? btn('Κλείδωμα τώρα', { cls: 'sm block', icon: 'lock', title: 'Κλειδώνει το πρόγραμμα· ξεκλειδώνει με το PIN' }, () => POST('/api/lock').then(() => showLock()).catch(() => showLock())) : null,
     btn('Ανάγνωση από τα sites', { cls: 'sm block', icon: 'sync', title: 'Διαβάζει μόνο ό,τι άλλαξε (δευτερόλεπτα). Μία φορά την εβδομάδα γίνεται μόνη της πλήρης ανάγνωση.' }, () => startSync()),
     h('button', { type: 'button', class: 'linkish', title: 'Ξαναδιαβάζει όλα τα προϊόντα και τις παραλλαγές (λίγα λεπτά)', onclick: () => startSync(null, true) }, 'πλήρης ανάγνωση')));
 }
 async function refreshState() {
   App.state = await GET('/api/state');
+  App.me = App.state.user || null;
   renderSyncBox();
+  renderInstanceWarning();
   for (const j of App.state.jobs || []) watchJob(j, j.type === 'sync' ? { done: () => refreshState().then(() => App.route()) } : {});
   return App.state;
+}
+/** Local mode: the same data folder open on another PC right now (e.g. OneDrive) loses changes — say so. */
+function renderInstanceWarning() {
+  const old = $('#instwarn'); if (old) old.remove();
+  const other = (App.state && App.state.instances) || [];
+  if (!other.length) return;
+  document.body.appendChild(h('div', { id: 'instwarn', class: 'livebar warn', role: 'alert' }, icon('alert'),
+    h('span', null, `Ο ίδιος φάκελος δεδομένων είναι ανοιχτός και στον υπολογιστή «${other.map((x) => x.host).join(', ')}». Έτσι χάνονται αλλαγές. Κράτα το πρόγραμμα ανοιχτό σε έναν υπολογιστή ή χρησιμοποίησε τη λειτουργία διακομιστή (κοινή για όλους).`)));
 }
 async function refreshBadges() {
   try {
@@ -382,6 +514,7 @@ async function refreshBadges() {
     if (d.kpi.critical) App.badges.checks = { n: d.kpi.critical, cls: 'crit' };
     else if (d.kpi.high) App.badges.checks = { n: d.kpi.high };
     if (d.kpi.drafts) App.badges.new = { n: d.kpi.drafts };
+    if (d.kpi.fixes) App.badges.fixes = { n: d.kpi.fixes, cls: 'coy' };
     renderNav(parseHash().view);
     return d;
   } catch (_) { return null; }
@@ -392,8 +525,9 @@ App.route = async function () {
   renderNav(view);
   const main = clear($('#main'));
   if (drawer.isOpen()) drawer.close();
+  if (modal.isOpen()) modal.close(); // a dialog of the previous screen never stays over the new one
   try { await v.render(main, params); } catch (e) { main.appendChild(h('div', { class: 'note crit' }, e.message)); console.error(e); }
   main.focus({ preventScroll: true });
 };
 
-Object.assign(App, { showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+Object.assign(App, { MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
