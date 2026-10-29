@@ -262,7 +262,7 @@
     for (const it of items.slice(0, 200)) list.appendChild(card(it));
     main.appendChild(list);
     const onKey = (e) => {
-      if (App.parseHash().params.tab !== 'confirm') { document.removeEventListener('keydown', onKey); return; }
+      if (!list.isConnected || App.parseHash().params.tab !== 'confirm') { document.removeEventListener('keydown', onKey); return; }
       if (e.target.matches('input, textarea, select')) return;
       const first = list.querySelector('.confirm-card:not(.done)');
       if (!first) return;

@@ -46,7 +46,7 @@ const reqCtx = new AsyncLocalStorage(); // which browser tab caused a change (so
 const TOKEN = crypto.randomBytes(18).toString('hex');
 try { process.title = 'SF Kentro'; } catch (_) { /* ignore */ }
 const PUBLIC = path.join(__dirname, 'public');
-const MIME = { '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.csv': 'text/csv; charset=utf-8' };
+const MIME = { '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.csv': 'text/csv; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8' };
 let port = PORT0;
 
 // ---------- helpers ----------
@@ -71,7 +71,7 @@ function saveExport(name, content) {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  const m = String(name).match(/^(.*?)(\.[a-z0-9]+)?$/i);
+  const m = String(name).match(/^(.*?)((?:\.json)?\.[a-z0-9]+)?$/i); // "x.json.gz" keeps both endings
   const base = m[1], ext = m[2] || '.csv';
   let fname = base + '-' + stamp + ext;
   for (let i = 2; fs.existsSync(store.exportPath(fname)); i++) fname = base + '-' + stamp + '-' + i + ext;
@@ -449,18 +449,26 @@ const routes = {
 
   // Users and sessions (server mode)
   'GET /api/session': (q, _, ctx) => ({ mode: MODE, version: VERSION, user: ctx.user || null, csrf: ctx.csrf || '', setup: SERVER && !users.count() }),
-  'POST /api/login': (b, _, ctx) => { const r = users.login(b.user, b.password, ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
+  'POST /api/login': (b, _, ctx) => { const r = users.login(b.user, b.password, ctx.ip, ctx.ua, b.remember === true); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
   'POST /api/setup': (b, _, ctx) => { const r = users.setup(b, ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
   'POST /api/logout': (b, _, ctx) => { if (ctx.sid) users.end(ctx.sid); ctx.setCookie(''); return { ok: true }; },
-  'GET /api/users': () => ({ users: users.list(), sessions: users.active() }),
+  'GET /api/users': (q, _, ctx) => ({ users: users.list(), sessions: users.active(ctx.sessionKey) }),
+  'POST /api/users/session-end': (b) => { users.endById(b.id); return { ok: true }; },
   'POST /api/users': (b) => (b.id ? users.update(b.id, b) : users.create(b)),
   'POST /api/users/delete': (b, _, ctx) => { if (ctx.user && b.id === ctx.user.id) throw new Error('Δεν διαγράφεις τον εαυτό σου.'); users.remove(b.id); return { ok: true }; },
   'POST /api/users/logout-all': (b, _, ctx) => { users.endAll(); ctx.setCookie(''); return { ok: true }; },
+
+  // Phones and other PCs: the addresses to type (or scan) and a QR code for each
+  'GET /api/connect': () => ({ mode: MODE, port, urls: connectUrls() }),
+  'GET /api/qr': (q) => qrMatrix(q.text),
+  // the whole data folder in one file (download / upload): a copy to keep somewhere else
+  'POST /api/backup/make': () => { const r = store.bundle(); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, r.buffer); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.buffer.length }, f); },
+  'POST /api/backup/upload': (b) => { const r = store.unbundle(Buffer.from(String(b.base64 || ''), 'base64')); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return r; },
   'POST /api/me/password': (b, _, ctx) => { users.login(ctx.user.user, b.current, ctx.ip, ctx.ua); users.update(ctx.user.id, { password: b.password }); const r = users.startSession(users.byId(ctx.user.id), ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { csrf: r.csrf }; },
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -519,6 +527,35 @@ function serveEvents(req, res, url) {
   req.on('close', () => { clearInterval(ping); streams.delete(st); });
 }
 
+// ---------- phones: where to connect ----------
+/** Addresses other devices can use: the public name(s) when set, else this PC on the shop network / Tailscale. */
+function connectUrls() {
+  const out = [];
+  for (const host of ALLOWED_HOSTS) out.push({ kind: 'internet', url: `https://${host}/` });
+  if (out.length) return out;
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      const ts = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a.address); // 100.64.0.0/10: Tailscale
+      const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address);
+      if (ts || lan) out.push({ kind: ts ? 'tailscale' : 'lan', url: `http://${a.address}:${port}/`, name });
+    }
+  }
+  return out.sort((x, y) => (x.kind === 'lan' ? 0 : 1) - (y.kind === 'lan' ? 0 : 1));
+}
+/** A QR code as rows of 0/1 (the screen draws it), only for http(s) addresses. */
+function qrMatrix(text) {
+  const t = String(text || '');
+  if (!/^https?:\/\/[^\s]{3,200}$/.test(t)) throw new Error('Λάθος διεύθυνση.');
+  const qrcode = require('qrcode-generator');
+  const qr = (qrcode.default || qrcode)(0, 'M');
+  qr.addData(t); qr.make();
+  const n = qr.getModuleCount();
+  const rows = [];
+  for (let r = 0; r < n; r++) { let line = ''; for (let c = 0; c < n; c++) line += qr.isDark(r, c) ? '1' : '0'; rows.push(line); }
+  return { size: n, rows };
+}
+
 // ---------- the same data folder used by another PC at the same time (e.g. OneDrive) ----------
 // Two copies writing the same files lose each other's changes. Each copy leaves a small "I am here" note
 // in the folder every minute; the screen warns when another PC's note is fresh.
@@ -555,9 +592,12 @@ async function handleApi(req, res, url) {
   const key0 = req.method + ' ' + url.pathname;
   if (key0 === 'GET /api/events') return serveEvents(req, res, url);
   if (req.method === 'GET' && url.pathname.startsWith('/api/export/')) {
-    if (SERVER ? !sessionOf(req, false) : !safeEq(q.t, TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
+    const sess = sessionOf(req, false);
+    if (SERVER ? !sess : !safeEq(q.t, TOKEN)) return send(res, 403, { error: 'Απαγορεύεται.' });
     if (!SERVER && security.isLocked()) return send(res, 423, { error: 'Το πρόγραμμα είναι κλειδωμένο.', locked: true });
     const name = decodeURIComponent(url.pathname.slice('/api/export/'.length));
+    // a copy of all the data only for administrators (it is made only by them, too)
+    if (SERVER && /^sf-kentro-antigrafo/.test(path.basename(name)) && sess.user.role !== 'admin') return send(res, 403, { error: 'Μόνο για διαχειριστές.' });
     const p = store.exportPath(path.basename(name));
     if (!fs.existsSync(p)) return send(res, 404, { error: 'Δεν βρέθηκε το αρχείο.' });
     return send(res, 200, fs.readFileSync(p), MIME[path.extname(p).toLowerCase()] || 'application/octet-stream', { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(p))}` });
@@ -568,7 +608,7 @@ async function handleApi(req, res, url) {
     // every call needs a logged-in user and the session's own token; settings and users only for administrators
     const sid = cookieOf(req, 'sfk_sid');
     const sess = users.session(sid, req.headers['x-active'] === '1');
-    if (sess) Object.assign(ctx, { sid, user: sess.user, csrf: sess.csrf });
+    if (sess) Object.assign(ctx, { sid, sessionKey: sess.key, user: sess.user, csrf: sess.csrf });
     if (!PUBLIC_ROUTES.has(key0)) {
       if (!sess) return send(res, 401, { error: 'Η σύνδεση έληξε. Συνδέσου ξανά.', login: true });
       if (!safeEq(req.headers['x-sfk'], sess.csrf)) return send(res, 403, { error: 'Απαγορεύεται.' });
@@ -661,8 +701,11 @@ function listen(p, tries) {
     if (SERVER) {
       const code = users.ensureAdmin();
       if (code) { console.log(''); console.log('  FIRST START: open the program in a browser and use this setup code: ' + code); console.log('  ΠΡΩΤΗ ΕΚΚΙΝΗΣΗ: άνοιξε το πρόγραμμα στον browser και γράψε τον κωδικό: ' + code); }
-      if (!ALLOWED_HOSTS.length) console.log('  Tip: set SFK_ALLOWED_HOSTS to the address people use (e.g. kentro.example.gr).');
+      const others = connectUrls();
+      if (others.length) { console.log(''); console.log('  Phones and other PCs / Κινητά και άλλοι υπολογιστές:'); for (const u of others) console.log('    ' + u.url + (u.kind === 'lan' ? '   (shop Wi-Fi / Wi-Fi του μαγαζιού)' : '')); console.log('  (QR codes: Settings → Phone / Ρυθμίσεις → Κινητό)'); }
       console.log('');
+      // a shop PC started with SF-Kentro-Server.cmd is also a working PC: open the program on it
+      if (process.platform === 'win32' && !process.env.SFK_NO_OPEN) openDefault(url);
       return afterStart();
     }
     console.log('  Keep this window open while you work. Close it to exit.');

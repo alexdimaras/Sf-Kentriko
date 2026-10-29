@@ -66,6 +66,8 @@ const ICONS = {
   shield: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z',
   alert: 'M12 3l10 18H2zM12 10v5M12 18h.01',
   fixes: 'M14.7 6.3a4 4 0 00-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
+  menu: 'M4 7h16M4 12h16M4 17h16',
+  phone: 'M8 3h8a1 1 0 011 1v16a1 1 0 01-1 1H8a1 1 0 01-1-1V4a1 1 0 011-1zM11 18h2',
   user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
   logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
 };
@@ -174,11 +176,13 @@ function showLogin(setup) {
   const [fUser, user] = field('Όνομα χρήστη', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
   const [fPass, pass] = field('Κωδικός', { type: 'password', autocomplete: setup ? 'new-password' : 'current-password' });
   const [fPass2, pass2] = field('Ξανά ο κωδικός', { type: 'password', autocomplete: 'new-password' });
+  const remember = h('input', { type: 'checkbox' });
+  const fRemember = h('label', { class: 'check', title: 'Για το κινητό σου: η σύνδεση κρατάει 12 ώρες χωρίς χρήση αντί για τα λεπτά της ασφάλειας. Όχι σε κοινόχρηστο υπολογιστή.' }, remember, 'Μείνε συνδεδεμένος σε αυτή τη συσκευή');
   const go = async () => {
     err.textContent = '';
     if (setup && pass.value !== pass2.value) { err.textContent = 'Οι δύο κωδικοί δεν είναι ίδιοι.'; return; }
     try {
-      const r = await fetch(setup ? '/api/setup' : '/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Client': CLIENT }, body: JSON.stringify(setup ? { code: code.value, name: name.value, user: user.value, password: pass.value } : { user: user.value, password: pass.value }) });
+      const r = await fetch(setup ? '/api/setup' : '/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Client': CLIENT }, body: JSON.stringify(setup ? { code: code.value, name: name.value, user: user.value, password: pass.value } : { user: user.value, password: pass.value, remember: remember.checked }) });
       const d = await r.json().catch(() => ({}));
       pass.value = ''; pass2.value = '';
       if (!r.ok) { err.textContent = d.error || 'Δεν έγινε σύνδεση.'; (setup ? code : pass).focus(); return; }
@@ -195,7 +199,7 @@ function showLogin(setup) {
       h('div', { class: 'lock-icon' }, icon(setup ? 'shield' : 'lock')),
       h('h1', null, 'SF Κέντρο'),
       h('p', null, setup ? 'Πρώτη ρύθμιση: φτιάξε τον λογαριασμό του διαχειριστή. Ο κωδικός αρχικής ρύθμισης φαίνεται στο παράθυρο / στο log του διακομιστή.' : 'Συνδέσου με τον λογαριασμό σου. Τα δεδομένα είναι κοινά για όλους τους υπολογιστές.'),
-      setup ? fCode : null, setup ? fName : null, fUser, fPass, setup ? fPass2 : null, err,
+      setup ? fCode : null, setup ? fName : null, fUser, fPass, setup ? fPass2 : null, setup ? null : fRemember, err,
       h('button', { type: 'submit', class: 'btn primary block' }, setup ? 'Δημιουργία και σύνδεση' : 'Σύνδεση'),
       h('p', { class: 'hint' }, setup ? 'Ο κωδικός θέλει τουλάχιστον 10 χαρακτήρες. Μετά, από τις Ρυθμίσεις → Χρήστες, προσθέτεις τους υπόλοιπους.' : 'Η σύνδεση λήγει μόνη της μετά από αδράνεια (Ρυθμίσεις → Ασφάλεια).')));
   document.body.appendChild(box);
@@ -222,6 +226,9 @@ const live = {
     this.es = null;
     const url = '/api/events?c=' + encodeURIComponent(CLIENT) + (MODE === 'server' ? '' : '&t=' + encodeURIComponent(TOKEN));
     this.es = new EventSource(url);
+    // after a gap (phone asleep, Wi-Fi lost, server restarted) changes may have been missed: refresh once
+    let opened = false;
+    this.es.onopen = () => { if (opened) this.catchUp(); opened = true; };
     this.es.onmessage = (ev) => {
       let d; try { d = JSON.parse(ev.data); } catch (_) { return; }
       if (d.jobs) { clearTimeout(this.jt); this.jt = setTimeout(() => refreshState().catch(() => {}), 300); }
@@ -229,6 +236,12 @@ const live = {
     };
   },
   stop() { if (this.es) { this.es.close(); this.es = null; } },
+  /** Bring the screen up to date after a gap: the open view, the menu numbers, the running jobs. */
+  catchUp() {
+    refreshState().catch(() => {});
+    this.pendingKeys.add('*');
+    clearTimeout(this.timer); this.timer = setTimeout(() => this.apply(), 300);
+  },
   busy() {
     const a = document.activeElement;
     return drawer.isOpen() || modal.isOpen() || lockShown || (a && a.matches && a.matches('input, textarea, select, [contenteditable]')) || Date.now() - lastInput < 2500 || !!document.querySelector('.bulkbar:not(.hidden)');
@@ -237,7 +250,7 @@ const live = {
     const keys = [...this.pendingKeys];
     if (!keys.length) return;
     const view = parseHash().view;
-    const re = VIEW_KEYS[view] || VIEW_KEYS.today;
+    const re = keys.includes('*') ? /./ : VIEW_KEYS[view] || VIEW_KEYS.today;
     refreshBadges();
     if (keys.some((k) => /^(settings|catalog-)/.test(k))) refreshState().catch(() => {});
     if (!keys.some((k) => re.test(k))) { this.pendingKeys.clear(); return; }
@@ -254,6 +267,35 @@ const live = {
   },
   hideBar() { if (this.bar) { this.bar.remove(); this.bar = null; } },
 };
+
+// back to the program (phone unlocked, tab shown again): catch up after a pause of 30 s or more, and make
+// sure the live connection is there (phones close it while asleep)
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (!App.state || lockShown) return;
+  live.start();
+  if (hiddenAt && Date.now() - hiddenAt > 30000) live.catchUp();
+});
+
+// Android/Chrome over https offers "install": kept for the button in Settings → Phone
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); App.installPrompt = e; });
+window.addEventListener('appinstalled', () => { App.installPrompt = null; });
+/** Opened from the home screen (installed), not in a browser tab. */
+function installed() { return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; }
+
+/** A QR code (rows of 0/1 from the program) as a crisp SVG, with the white border scanners need. */
+function qrSvg(m, px) {
+  const NS = 'http://www.w3.org/2000/svg', q = 4, n = m.size + q * 2;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${n} ${n}`); svg.setAttribute('width', px || 200); svg.setAttribute('height', px || 200);
+  svg.setAttribute('shape-rendering', 'crispEdges'); svg.setAttribute('class', 'qr'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'QR');
+  const bg = document.createElementNS(NS, 'rect'); bg.setAttribute('width', n); bg.setAttribute('height', n); bg.setAttribute('fill', '#fff'); svg.appendChild(bg);
+  let d = '';
+  m.rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) if (row[x] === '1') d += `M${x + q} ${y + q}h1v1h-1z`; });
+  const path = document.createElementNS(NS, 'path'); path.setAttribute('d', d); path.setAttribute('fill', '#111'); svg.appendChild(path);
+  return svg;
+}
 
 /** A web page (shop, supplier, report): in a new tab. Local mode: the program opens it in Chrome. */
 function openUrl(url) {
@@ -371,7 +413,17 @@ function sandboxPreview(html) {
   f.srcdoc = '<!doctype html><meta charset="utf-8"><style>body{font:14px/1.6 "Segoe UI",system-ui,sans-serif;color:#222;margin:14px;}h2{font-size:18px}ul{padding-left:20px}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}</style>' + (html || '<p style="color:#999">Χωρίς περιγραφή</p>');
   return f;
 }
-function copyText(t) { return navigator.clipboard.writeText(t).then(() => toast('Αντιγράφηκε.'), () => toast('Δεν έγινε αντιγραφή.', { err: true })); }
+function copyText(t) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t).then(() => toast('Αντιγράφηκε.'), () => toast('Δεν έγινε αντιγραφή.', { err: true }));
+  // plain http inside the shop network: the browser has no clipboard API there, so the old way
+  const ta = h('textarea', { readOnly: true, style: { position: 'fixed', top: '0', opacity: '0' } }, t);
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) { /* not allowed */ }
+  ta.remove();
+  toast(ok ? 'Αντιγράφηκε.' : 'Δεν έγινε αντιγραφή.', ok ? null : { err: true });
+  return Promise.resolve();
+}
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 function select(options, value, onchange, attrs) {
   const s = h('select', Object.assign({ onchange: (e) => onchange && onchange(e.target.value) }, attrs || {}), options.map((o) => (Array.isArray(o) ? h('option', { value: o[0] }, o[1]) : h('option', { value: o }, o))));
@@ -414,6 +466,7 @@ function watchJob(job, handlers) {
 function renderJobs() {
   const box = $('#jobs');
   clear(box);
+  try { renderNav(parseHash().view); } catch (_) { /* before start */ }
   for (const { job } of watching.values()) {
     const pct = job.total ? Math.min(100, Math.round(job.done / job.total * 100)) : 0;
     box.appendChild(h('div', { class: 'jobcard' },
@@ -475,13 +528,46 @@ function go(view, params) {
   const target = '#/' + view + (qs ? '?' + qs : '');
   if (location.hash === target) App.route(); else location.hash = target;
 }
+// phone: the four screens used most, at the bottom; everything else in the menu sheet (the sidebar)
+const TABS = ['today', 'fixes', 'market', 'products'];
+const SHORT = { today: 'Σήμερα', fixes: 'Διορθώσεις', market: 'Τιμές', products: 'Προϊόντα' };
 function renderNav(active) {
   const nav = clear($('#nav'));
   for (const [id, label, ic] of NAV) {
     const b = App.badges[id];
     nav.appendChild(h('a', { class: 'nav-item', href: '#/' + id, 'aria-current': id === active ? 'page' : null }, icon(ic), h('span', null, label), b ? h('span', { class: 'badge ' + (b.cls || '') }, b.n) : null));
   }
+  const tb = $('#tabbar');
+  if (tb) {
+    clear(tb);
+    for (const id of TABS) {
+      const item = NAV.find((x) => x[0] === id);
+      const b = App.badges[id];
+      tb.appendChild(h('a', { href: '#/' + id, 'aria-current': id === active ? 'page' : null }, h('span', { class: 'ic' }, icon(item[2]), b ? h('span', { class: 'badge ' + (b.cls || '') }, b.n) : null), h('span', null, SHORT[id])));
+    }
+    const other = NAV.filter(([id]) => !TABS.includes(id)).some(([id]) => id === active);
+    const moreBadge = NAV.filter(([id]) => !TABS.includes(id)).map(([id]) => App.badges[id]).find(Boolean);
+    tb.appendChild(h('button', { type: 'button', 'aria-current': other ? 'page' : null, 'aria-label': 'Όλο το μενού', onclick: () => menu.toggle() }, h('span', { class: 'ic' }, icon('menu'), moreBadge ? h('span', { class: 'badge dot ' + (moreBadge.cls || '') }) : null), h('span', null, 'Μενού')));
+  }
+  const mb = $('#mbar');
+  if (mb) {
+    const item = NAV.find((x) => x[0] === active) || NAV[0];
+    const running = [...watching.values()].length;
+    clear(mb).appendChild(h('div', { class: 'mbar-in' },
+      h('button', { type: 'button', class: 'x', 'aria-label': 'Μενού', onclick: () => menu.toggle() }, icon('menu')),
+      h('b', null, item[1]),
+      running ? h('button', { type: 'button', class: 'mjob', title: 'Εργασίες σε εξέλιξη', onclick: () => menu.open() }, h('i', { class: 'spin' }), String(running)) : null,
+      App.MODE === 'server' && App.state && App.state.user ? h('button', { type: 'button', class: 'mme', title: App.state.user.name, onclick: () => menu.open() }, (App.state.user.name || '?').trim().charAt(0).toUpperCase()) : null));
+  }
 }
+// the sidebar as a sheet on phones
+const menu = {
+  open() { document.body.classList.add('menu-open'); },
+  close() { document.body.classList.remove('menu-open'); },
+  toggle() { document.body.classList.toggle('menu-open'); },
+};
+document.addEventListener('click', (e) => { if (e.target.matches('[data-close-menu]') || e.target.closest('#nav a')) menu.close(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu.close(); });
 function renderSyncBox() {
   const box = clear($('#syncbox'));
   if (!App.state) return;
@@ -524,12 +610,15 @@ async function refreshBadges() {
 App.route = async function () {
   const { view, params } = parseHash();
   const v = App.views[view] || App.views.today;
+  menu.close();
   renderNav(view);
-  const main = clear($('#main'));
+  // a fresh <main> for every screen: a screen still loading (slow call) never draws over the one opened after it
+  const main = h('main', { id: 'main', tabindex: '-1' });
+  $('#main').replaceWith(main);
   if (drawer.isOpen()) drawer.close();
   if (modal.isOpen()) modal.close(); // a dialog of the previous screen never stays over the new one
   try { await v.render(main, params); } catch (e) { main.appendChild(h('div', { class: 'note crit' }, e.message)); console.error(e); }
-  main.focus({ preventScroll: true });
+  if (main.isConnected) main.focus({ preventScroll: true });
 };
 
-Object.assign(App, { MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+Object.assign(App, { qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });

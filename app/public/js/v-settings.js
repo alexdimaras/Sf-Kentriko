@@ -10,11 +10,11 @@
       main.appendChild(pageHead('Ρυθμίσεις', 'Αλλάζουν μόνο τον τρόπο που δουλεύει το πρόγραμμα. Τίποτα δεν αλλάζει στα sites.'));
       const server = App.MODE === 'server';
       const admin = !server || (App.me && App.me.role === 'admin');
-      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], server ? ['users', 'Χρήστες'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
+      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
       main.appendChild(h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { 'aria-selected': String(k === tab), onclick: () => App.go('settings', { tab: k }) }, l))));
       const box = h('div', { class: 'stack' });
       main.appendChild(box);
-      if (!admin && tab !== 'users' && tab !== 'data') box.appendChild(h('div', { class: 'note' }, 'Τις ρυθμίσεις τις αλλάζει μόνο ο διαχειριστής. Εδώ τις βλέπεις.'));
+      if (!admin && tab !== 'users' && tab !== 'data' && tab !== 'phone') box.appendChild(h('div', { class: 'note' }, 'Τις ρυθμίσεις τις αλλάζει μόνο ο διαχειριστής. Εδώ τις βλέπεις.'));
       const saveBtn = (collect) => h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, btn('Αποθήκευση', { cls: 'primary' }, async () => {
         try { await POST('/api/settings', collect()); await App.refreshState(); toast('Αποθηκεύτηκε.'); } catch (e) { fail(e); }
       }));
@@ -162,6 +162,8 @@
         box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value } })));
       }
 
+      if (tab === 'phone') await phoneTab(box, server, admin);
+
       if (tab === 'users' && server) {
         const me = App.me || {};
         const cur = h('input', { type: 'password', autocomplete: 'current-password' });
@@ -175,29 +177,35 @@
           }))));
         if (me.role === 'admin') {
           const data = await GET('/api/users');
-          const tb = h('tbody');
+          const tb = h('div', { class: 'ulist' });
           for (const u of data.users) {
-            tb.appendChild(h('tr', null, h('td', { class: 'title' }, u.name, h('div', { class: 'faint', style: { fontWeight: 400 } }, u.user)),
-              h('td', null, select([['staff', 'Χρήστης'], ['admin', 'Διαχειριστής']], u.role, (v) => POST('/api/users', { id: u.id, role: v }).then(() => toast('Αποθηκεύτηκε.')).catch((e) => { fail(e); App.route(); }))),
-              h('td', null, u.lastLoginAt ? fmt.ago(u.lastLoginAt) : 'ποτέ'),
-              h('td', null, h('div', { class: 'row tight' },
+            tb.appendChild(h('div', { class: 'urow' }, h('div', { class: 'u-main' }, h('b', null, u.name), h('span', { class: 'faint' }, `${u.user} · τελευταία σύνδεση ${u.lastLoginAt ? fmt.ago(u.lastLoginAt) : 'ποτέ'}`)),
+              h('div', { class: 'u-side' },
+                select([['staff', 'Χρήστης'], ['admin', 'Διαχειριστής']], u.role, (v) => POST('/api/users', { id: u.id, role: v }).then(() => toast('Αποθηκεύτηκε.')).catch((e) => { fail(e); App.route(); }), { 'aria-label': 'Ρόλος' }),
                 btn('Νέος κωδικός', { cls: 'sm' }, async () => {
                   const pw = prompt('Νέος κωδικός για ' + u.name + ' (τουλάχιστον 10 χαρακτήρες):');
                   if (pw) POST('/api/users', { id: u.id, password: pw }).then(() => toast('Ο κωδικός άλλαξε· οι συνδέσεις του έκλεισαν.')).catch(fail);
                 }),
-                u.id !== me.id ? btn('Διαγραφή', { cls: 'sm ghost danger' }, async () => { if (await confirmBox('Διαγραφή του ' + u.name + ';', 'Δεν θα μπορεί να συνδεθεί.', 'Διαγραφή', true)) POST('/api/users/delete', { id: u.id }).then(() => App.route()).catch(fail); }) : null))));
+                u.id !== me.id ? btn('Διαγραφή', { cls: 'sm ghost danger' }, async () => { if (await confirmBox('Διαγραφή του ' + u.name + ';', 'Δεν θα μπορεί να συνδεθεί.', 'Διαγραφή', true)) POST('/api/users/delete', { id: u.id }).then(() => App.route()).catch(fail); }) : null)));
           }
           const nu = { name: h('input', { type: 'text' }), user: h('input', { type: 'text', autocapitalize: 'none', spellcheck: 'false' }), pw: h('input', { type: 'password', autocomplete: 'new-password' }), role: select([['staff', 'Χρήστης'], ['admin', 'Διαχειριστής']], 'staff', null) };
           box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Χρήστες'),
             h('p', { class: 'muted' }, 'Κάθε άτομο με δικό του όνομα και κωδικό. Ο «Χρήστης» κάνει όλη τη δουλειά· ο «Διαχειριστής» αλλάζει και ρυθμίσεις, ασφάλεια και χρήστες.'),
-            h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Όνομα'), h('th', null, 'Ρόλος'), h('th', null, 'Τελευταία σύνδεση'), h('th', null, ''))), tb)),
+            tb,
             h('h3', { style: { margin: '16px 0 8px', fontSize: '15px' } }, 'Νέος χρήστης'),
             h('div', { class: 'grid3' }, field('Ονοματεπώνυμο', nu.name), field('Όνομα χρήστη', nu.user, 'Λατινικά, π.χ. maria'), field('Κωδικός', nu.pw, 'Τουλάχιστον 10 χαρακτήρες')),
             h('div', { class: 'row', style: { marginTop: '10px' } }, nu.role, btn('Προσθήκη', { cls: 'primary', icon: 'new' }, () => POST('/api/users', { name: nu.name.value, user: nu.user.value, password: nu.pw.value, role: nu.role.value }).then(() => { toast('Ο χρήστης προστέθηκε.'); App.route(); }).catch(fail)))));
-          const sb = h('tbody');
-          for (const x of data.sessions) sb.appendChild(h('tr', null, h('td', null, x.user), h('td', null, fmt.ago(x.lastSeen)), h('td', { class: 'mono' }, x.ip), h('td', { class: 'faint', style: { fontSize: '12px' } }, x.ua)));
+          const sb = h('div', { class: 'ulist' });
+          for (const x of data.sessions) {
+            sb.appendChild(h('div', { class: 'urow' }, h('div', { class: 'u-main' }, h('b', null, `${x.user} · ${deviceOf(x.ua)}`),
+              h('span', { class: 'faint' }, [fmt.ago(x.lastSeen), x.ip, x.remembered ? 'μένει συνδεδεμένη έως 12 ώρες χωρίς χρήση' : ''].filter(Boolean).join(' · '))),
+              h('div', { class: 'u-side' }, x.current ? h('span', { class: 'pill' }, 'αυτή η συσκευή') : btn('Αποσύνδεση', { cls: 'sm ghost danger', icon: 'logout' }, async () => {
+                if (await confirmBox('Αποσύνδεση αυτής της συσκευής;', `${x.user} · ${deviceOf(x.ua)}. Για να ξαναμπεί θα χρειαστεί τον κωδικό του. Αν χάθηκε το κινητό, άλλαξε και τον κωδικό του χρήστη.`, 'Αποσύνδεση', true)) POST('/api/users/session-end', { id: x.id }).then(() => { toast('Η συσκευή αποσυνδέθηκε.'); App.route(); }).catch(fail);
+              }))));
+          }
           box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Ανοιχτές συνδέσεις'),
-            h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Χρήστης'), h('th', null, 'Τελευταία κίνηση'), h('th', null, 'Διεύθυνση'), h('th', null, 'Browser'))), sb)),
+            h('p', { class: 'muted' }, 'Κάθε υπολογιστής και κινητό που είναι συνδεδεμένο τώρα. Χάθηκε ένα κινητό; «Αποσύνδεση» δίπλα του.'),
+            sb,
             h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Αποσύνδεση όλων', { cls: 'danger sm' }, async () => { if (await confirmBox('Αποσύνδεση όλων των υπολογιστών;', 'Όλοι (και εσύ) θα χρειαστεί να συνδεθούν ξανά.', 'Αποσύνδεση', true)) POST('/api/users/logout-all').then(() => location.reload()).catch(fail); }))));
         }
       }
@@ -275,8 +283,9 @@
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Κοινά δεδομένα'),
           h('p', { class: 'muted' }, 'Το πρόγραμμα τρέχει σε διακομιστή: όλοι οι υπολογιστές βλέπουν και αλλάζουν τα ίδια δεδομένα, την ίδια στιγμή. Οι αυτόματες εργασίες (ανάγνωση sites, τιμοκατάλογοι, έρευνα αγοράς) γίνονται μία φορά, στον διακομιστή, και όχι σε κάθε υπολογιστή.'),
           h('p', { class: 'muted' }, 'Τα αρχεία (CSV για WooCommerce, Excel) κατεβαίνουν στον υπολογιστή που τα ζήτησε.')));
-        if (admin) box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα στον διακομιστή· κρατιούνται 14 μέρες. Κράτα και ένα αντίγραφο του φακέλου δεδομένων εκτός διακομιστή.'),
+        if (admin) box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα στον διακομιστή· κρατιούνται 14 μέρες.'),
           backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Ισχύει για όλους τους υπολογιστές. Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));
+        if (admin) box.appendChild(bundlePanel(true));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Εμφάνιση'), h('div', { style: { maxWidth: '260px' } }, field('Θέμα', theme))));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Πρόγραμμα'), h('p', { class: 'muted' }, 'Έκδοση ' + App.state.version + ' · λειτουργία διακομιστή.')));
       }
@@ -289,17 +298,118 @@
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Φάκελος δεδομένων'),
           h('p', null, h('span', { class: 'mono' }, st.dataDir)),
           h('div', { class: 'row' }, btn('Άνοιγμα φακέλου', { icon: 'folder' }, () => POST('/api/open', { kind: 'data' })), btn('Φάκελος αρχείων', { icon: 'folder' }, () => POST('/api/open', { kind: 'exports' }))),
-          h('div', { class: 'note warn', style: { marginTop: '14px' } }, h('b', null, 'Κοινά δεδομένα σε πολλούς υπολογιστές; '), 'Ένας κοινός φάκελος (OneDrive) δουλεύει μόνο με έναν υπολογιστή ανοιχτό κάθε φορά — αλλιώς χάνονται αλλαγές. Για ταυτόχρονη δουλειά από όλα τα PC (και τα δύο μαγαζιά) χρησιμοποίησε τη λειτουργία διακομιστή: δες το αρχείο DIAKOMISTIS-CLOUD.txt.'),
+          h('div', { class: 'note warn', style: { marginTop: '14px' } }, h('b', null, 'Κοινά δεδομένα σε πολλούς υπολογιστές και κινητά; '), 'Ένας κοινός φάκελος (OneDrive) δουλεύει μόνο με έναν υπολογιστή ανοιχτό κάθε φορά — αλλιώς χάνονται αλλαγές. Για ταυτόχρονη δουλειά από όλα τα PC, τα δύο μαγαζιά και το κινητό: Ρυθμίσεις → Κινητό (δωρεάν).'),
           h('div', { class: 'stack s', style: { marginTop: '14px' } }, h('div', { class: 'muted' }, 'Μετακίνηση σε άλλο φάκελο — π.χ. στο OneDrive (ένας υπολογιστής κάθε φορά).'),
             h('div', { class: 'row' }, target, btn('Μετακίνηση', {}, async () => { try { const r = await POST('/api/datadir', { path: target.value }); toast(r.usedExisting ? 'Συνδέθηκε με τα δεδομένα που υπήρχαν ήδη εκεί.' : 'Τα δεδομένα αντιγράφηκαν στον νέο φάκελο.'); await App.refreshState(); App.route(); } catch (e) { fail(e); } })))));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα που ανοίγει το πρόγραμμα· κρατιούνται 14 μέρες.'),
           backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));
+        box.appendChild(bundlePanel(false));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Εμφάνιση'), h('div', { style: { maxWidth: '260px' } }, field('Θέμα', theme))));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Πρόγραμμα'), h('p', { class: 'muted' }, 'Έκδοση ' + st.version + '. Το πρόγραμμα τρέχει μόνο σε αυτόν τον υπολογιστή και δεν στέλνει δεδομένα πουθενά, εκτός από την ανάγνωση των δημόσιων σελίδων των sites και των ανταγωνιστών.'),
           btn('Κλείσιμο προγράμματος', { cls: 'danger', icon: 'power' }, async () => { if (await confirmBox('Κλείσιμο του προγράμματος;', 'Για να το ξανανοίξεις, τρέξε πάλι το SF-Kentro.exe.', 'Κλείσιμο', true)) { await POST('/api/shutdown').catch(() => {}); document.body.innerHTML = '<div style="padding:60px;font:16px system-ui">Το πρόγραμμα έκλεισε. Μπορείς να κλείσεις αυτό το παράθυρο.</div>'; } })));
       }
     },
   };
+
+  /** "iPhone · Safari", "Windows · Edge": enough to recognise a device in the list. */
+  function deviceOf(ua) {
+    const u = String(ua || '');
+    const os = /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android' : /Windows/.test(u) ? 'Windows' : /Mac OS X/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'Συσκευή';
+    const br = /Edg\//.test(u) ? 'Edge' : /OPR\//.test(u) ? 'Opera' : /Firefox\//.test(u) ? 'Firefox' : /CriOS|Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : '';
+    return br ? os + ' · ' + br : os;
+  }
+
+  /** Settings → Phone: where phones and the other PCs connect, a QR to scan, and the home-screen steps. */
+  async function phoneTab(box, server, admin) {
+    if (!server) {
+      box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('phone'), ' Από κινητό και από τους άλλους υπολογιστές'),
+        h('p', null, 'Τώρα το πρόγραμμα ανοίγει μόνο σε αυτόν τον υπολογιστή (έτσι είναι πιο ασφαλές). Για να μπαίνουν και τα κινητά και τα άλλα PC, με τα ίδια δεδομένα την ίδια στιγμή, το πρόγραμμα τρέχει ως «διακομιστής». Είναι δωρεάν.'),
+        h('ol', { class: 'steps' },
+          h('li', null, 'Κλείσε το πρόγραμμα (Ρυθμίσεις → Δεδομένα → Κλείσιμο προγράμματος).'),
+          h('li', null, 'Άνοιξε το ', h('b', null, 'SF-Kentro-Server.cmd'), ' από τον ίδιο φάκελο. Τα δεδομένα είναι τα ίδια: δεν μεταφέρεις τίποτα.'),
+          h('li', null, 'Τα Windows ρωτάνε για το τείχος προστασίας: «Ιδιωτικά δίκτυα» → «Να επιτρέπεται».'),
+          h('li', null, 'Την πρώτη φορά φτιάχνεις τον λογαριασμό σου με τον κωδικό που γράφει το μαύρο παράθυρο.'),
+          h('li', null, 'Έλα ξανά εδώ (Ρυθμίσεις → Κινητό): θα δεις το QR που σκανάρεις με το κινητό.')),
+        h('div', { class: 'note', style: { marginTop: '12px' } }, h('b', null, 'Έτσι δουλεύει μέσα στο Wi-Fi του μαγαζιού και όσο είναι ανοιχτός αυτός ο υπολογιστής. '), 'Για να ανοίγει από το άλλο μαγαζί και από το σπίτι, με όλα τα PC κλειστά, υπάρχει δωρεάν διακομιστής στο cloud: οδηγίες στο αρχείο DIAKOMISTIS-CLOUD.txt.')));
+      return;
+    }
+    const c = await GET('/api/connect');
+    const kindOf = (u) => (/^https:/.test(u) ? 'internet' : /^http:\/\/100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(u) ? 'tailscale' : 'lan');
+    const KIND = {
+      internet: ['Από παντού', 'Από κάθε κινητό και υπολογιστή, μέσα κι έξω από τα μαγαζιά, κρυπτογραφημένα (https).'],
+      lan: ['Μέσα στο μαγαζί (Wi-Fi)', 'Από κινητά και PC στο ίδιο δίκτυο με τον υπολογιστή-διακομιστή, όσο αυτός είναι ανοιχτός. Όχι από Wi-Fi επισκεπτών ή από τα δεδομένα του κινητού.'],
+      tailscale: ['Μέσω Tailscale', 'Από συσκευές με την εφαρμογή Tailscale ανοιχτή, στον ίδιο λογαριασμό.'],
+    };
+    const seen = new Set(), list = [];
+    const addUrl = (x) => { if (!seen.has(x.url)) { seen.add(x.url); list.push(x); } };
+    if (!/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname)) addUrl({ url: location.origin + '/', kind: kindOf(location.origin), here: true });
+    for (const x of c.urls || []) addUrl(x);
+    const cards = h('div', { class: 'qr-list' });
+    for (const x of list) {
+      const qr = h('div', { class: 'qr-box' });
+      GET('/api/qr?text=' + encodeURIComponent(x.url)).then((m) => qr.appendChild(App.qrSvg(m, 176))).catch(() => qr.appendChild(h('span', { class: 'faint' }, 'Χωρίς QR')));
+      const [title, text] = KIND[x.kind] || KIND.lan;
+      cards.appendChild(h('div', { class: 'qr-card' }, qr, h('div', { class: 'qr-info' },
+        h('div', { class: 'qr-kind' }, title, x.here ? h('span', { class: 'pill' }, 'αυτή που χρησιμοποιείς τώρα') : null),
+        h('div', { class: 'qr-url mono' }, x.url),
+        h('p', { class: 'muted' }, text),
+        h('div', { class: 'row tight' }, btn('Αντιγραφή', { cls: 'sm', icon: 'copy' }, () => App.copyText(x.url)),
+          navigator.share && window.isSecureContext ? btn('Αποστολή', { cls: 'sm', icon: 'mail' }, () => navigator.share({ title: 'SF Κέντρο', url: x.url }).catch(() => {})) : null))));
+    }
+    const onlyShop = list.length && list.every((x) => x.kind !== 'internet');
+    box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('phone'), ' Σύνδεση από κινητό ή άλλον υπολογιστή'),
+      list.length ? cards : h('div', { class: 'note warn' }, 'Δεν βρέθηκε δίκτυο σε αυτόν τον υπολογιστή. Σύνδεσέ τον στο Wi-Fi ή στο καλώδιο του μαγαζιού και άνοιξε ξανά αυτή τη σελίδα.'),
+      onlyShop ? h('div', { class: 'note', style: { marginTop: '12px' } }, h('b', null, 'Μόνο μέσα στο μαγαζί και όσο είναι ανοιχτός ο υπολογιστής-διακομιστής. '), 'Για να ανοίγει από παντού (άλλο μαγαζί, σπίτι) με όλα τα PC κλειστά: δωρεάν διακομιστής στο cloud, οδηγίες στο DIAKOMISTIS-CLOUD.txt.') : null));
+    box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Στο κινητό, μία φορά'),
+      h('ol', { class: 'steps' },
+        h('li', null, h('b', null, 'Σκάναρε το QR'), ' με την κάμερα του κινητού (ή γράψε τη διεύθυνση στον browser).'),
+        h('li', null, h('b', null, 'Συνδέσου'), ' με το όνομα και τον κωδικό σου και τσέκαρε «Μείνε συνδεδεμένος σε αυτή τη συσκευή»: μένεις μέσα ως 12 ώρες χωρίς χρήση. Μόνο στο δικό σου κινητό.'),
+        h('li', null, h('b', null, 'Βάλ’ το στην αρχική οθόνη'), ' για να ανοίγει σαν εφαρμογή:',
+          h('div', { class: 'os-steps' },
+            h('div', null, h('b', null, 'iPhone (Safari): '), 'κουμπί Κοινοποίηση (τετράγωνο με βέλος) → «Προσθήκη στην οθόνη Αφετηρίας».'),
+            h('div', null, h('b', null, 'Android (Chrome): '), 'μενού ⋮ → «Εγκατάσταση εφαρμογής» ή «Προσθήκη στην αρχική οθόνη».')))),
+      App.installPrompt ? h('div', { class: 'row', style: { marginTop: '12px' } }, btn('Εγκατάσταση σε αυτή τη συσκευή', { cls: 'primary', icon: 'download' }, async () => {
+        const e = App.installPrompt; App.installPrompt = null;
+        try { e.prompt(); await e.userChoice; } catch (_) { /* dismissed */ }
+        App.route();
+      })) : null,
+      App.installed() ? h('div', { class: 'note ok', style: { marginTop: '12px' } }, icon('check'), ' Εδώ το έχεις ήδη ανοιχτό σαν εφαρμογή.') : null,
+      h('p', { class: 'muted', style: { marginTop: '12px' } }, 'Όλα είναι συγχρονισμένα: ό,τι αλλάζει από ένα κινητό ή PC φαίνεται αμέσως σε όλα, και όταν ξανανοίγεις την εφαρμογή ενημερώνεται μόνη της.')));
+    box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('shield'), ' Αν χαθεί ένα κινητό'),
+      h('p', { class: 'muted' }, admin ? 'Ρυθμίσεις → Χρήστες → «Ανοιχτές συνδέσεις»: «Αποσύνδεση» δίπλα στη συσκευή, και άλλαξε τον κωδικό του χρήστη.' : 'Πες το αμέσως στον διαχειριστή: αποσυνδέει τη συσκευή από τις Ρυθμίσεις → Χρήστες. Και άλλαξε τον κωδικό σου (Ρυθμίσεις → Χρήστες).'),
+      admin ? h('div', { class: 'row' }, btn('Ανοιχτές συνδέσεις', { cls: 'sm', icon: 'user' }, () => App.go('settings', { tab: 'users' }))) : null));
+  }
+
+  /** All the data in one file: to keep a copy somewhere else, or to move to another PC / to the server. */
+  function bundlePanel(server) {
+    const res = h('div');
+    const file = h('input', { type: 'file', accept: '.gz,application/gzip', style: { display: 'none' }, onchange: async () => {
+      const f = file.files[0];
+      file.value = '';
+      if (!f) return;
+      if (!(await confirmBox('Επαναφορά από αρχείο;', `Αρχείο: ${f.name}. ` + (server ? 'Ισχύει για όλους τους υπολογιστές και τα κινητά. ' : '') + 'Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά. Οι κωδικοί B2B από άλλον υπολογιστή δεν ανοίγουν εδώ: ξαναγράφονται στους αντιπροσώπους.', 'Επαναφορά', true))) return;
+      try {
+        clear(res).appendChild(h('div', { class: 'note' }, 'Ανεβαίνει…'));
+        const r = await POST('/api/backup/upload', { base64: await App.fileToBase64(f) });
+        clear(res).appendChild(h('div', { class: 'note ok' }, `Έγινε επαναφορά: ${r.files} αρχεία${r.at ? ' (αντίγραφο της ' + fmt.dateTime(r.at) + ')' : ''}.`));
+        await App.refreshState();
+        toast('Τα δεδομένα επανήλθαν από το αρχείο.');
+      } catch (e) { clear(res); fail(e); }
+    } });
+    return h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφο σε ένα αρχείο'),
+      h('p', { class: 'muted' }, server ? 'Όλα τα δεδομένα σε ένα αρχείο, στον υπολογιστή σου. Κατέβαζε ένα κάθε εβδομάδα και κράτα το εκτός διακομιστή (π.χ. σε USB ή OneDrive).' : 'Όλα τα δεδομένα σε ένα αρχείο: για ένα αντίγραφο εκτός υπολογιστή (USB, OneDrive) ή για μεταφορά στον διακομιστή.'),
+      h('div', { class: 'row' },
+        btn('Λήψη αντιγράφου', { cls: 'primary', icon: 'download' }, async () => {
+          try {
+            const r = await POST('/api/backup/make');
+            const size = r.size > 1048576 ? (r.size / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(r.size / 1024)) + ' KB';
+            await App.openFile(r);
+            toast(server ? `Κατεβαίνει: ${r.files} αρχεία, ${size}.` : `Έτοιμο (${r.files} αρχεία, ${size}): είναι στον φάκελο αρχείων που άνοιξε. Αντέγραψέ το σε USB ή OneDrive.`, { ms: 7000 });
+          } catch (e) { fail(e); }
+        }),
+        btn('Επαναφορά από αρχείο…', { icon: 'upload' }, () => file.click()), file),
+      res);
+  }
 
   function localStorageGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
   function localStorageSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (_) { /* ignore */ } }

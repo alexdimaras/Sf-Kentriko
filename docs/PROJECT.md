@@ -30,6 +30,9 @@
 - **1.3.0:** ό,τι λείπει συμπληρώνεται **αυτόματα μέσα στην εφαρμογή** (όχι στο site) και περιμένει **έγκριση** —
   η εφαρμογή δεν «δείχνει λάθη», τα διορθώνει, με όσο το δυνατόν λιγότερα λάθη (πηγές + έλεγχος + σιγουριά).
 - **1.3.0:** κοινά δεδομένα για όλους τους υπολογιστές, ακαριαία· πιο ελαφριά.
+- **1.3.0:** πρόσβαση **από κινητό** και από όλα τα PC, συγχρονισμένα — **δωρεάν** («δεν θέλω να πληρώσω») και
+  χωρίς PC ανοιχτό μετά το κλείσιμο του μαγαζιού → δωρεάν διακομιστής στο cloud (Oracle Always Free) ή, χωρίς
+  κάρτα, ένα PC του μαγαζιού ως διακομιστής για τις ώρες λειτουργίας.
 
 ---
 
@@ -40,6 +43,15 @@
 - **Διακομιστή** (`SFK_MODE=server`, `SF-Kentro-Server.cmd` ή Docker): ακούει στο δίκτυο, χρήστες με κωδικό, sessions
   (cookie HttpOnly/SameSite=Strict + CSRF token), ρόλοι, ζωντανές ενημερώσεις (SSE `/api/events`) σε όλες τις οθόνες.
   Οδηγίες: `DIAKOMISTIS-CLOUD.txt`, αρχεία: `app/Dockerfile`, `deploy/docker-compose.yml` (+ Caddy για https).
+- **Δωρεάν εγκατάσταση διακομιστή:** (Α) Oracle Cloud Always Free (Ubuntu, A1.Flex 1 OCPU/6 GB): `SF-Kentro-Cloud.cmd`
+  από τα Windows πακετάρει `app`+`deploy` (tar), τα ανεβάζει (scp) και τρέχει `deploy/install-server.sh <διεύθυνση>`
+  (Docker, swap σε μικρή μνήμη, πόρτες 80/443 στο iptables της Oracle, `.env`, build, κωδικός αρχικής ρύθμισης,
+  έλεγχος https). Διεύθυνση: subdomain σας ή duckdns.org (όχι sslip.io/nip.io: εκτός Public Suffix List → όρια
+  Let's Encrypt). (Β) `SF-Kentro-Server.cmd` σε ένα PC του μαγαζιού: LAN, ανοίγει και τον browser.
+- **Κινητό:** responsive ≤820px (πάνω μπάρα, κάτω μπάρα καρτελών, μενού-φύλλο, κάρτες στη θέση πινάκων), PWA
+  (`manifest.webmanifest`, εικονίδια, «Προσθήκη στην αρχική οθόνη»), συγχρονισμός όταν ξυπνάει/ξαναβρίσκει δίκτυο
+  (catch-up), «Μείνε συνδεδεμένος» (12 ώρες αδράνειας), Ρυθμίσεις → Κινητό με QR (`GET /api/connect`, `/api/qr`).
+- **Router:** κάθε οθόνη αποδίδεται σε καινούργιο `<main>`· μια αργή οθόνη δεν ζωγραφίζει ποτέ πάνω από την επόμενη.
 
 ```
 ┌───────────────────────────── Windows PC ─────────────────────────────┐
@@ -71,7 +83,7 @@ sf-kentro/
 ├─ server.js                 routes, ασφάλεια, αναφορές /r/, daily tick
 ├─ package.json
 ├─ public/
-│  ├─ index.html · app.css · icon.svg · fonts/
+│  ├─ index.html · app.css · icon.svg · fonts/ · manifest.webmanifest · icons/ (PWA)
 │  └─ js/  core.js  boot.js  v-today  v-fixes  v-products  v-checks  v-new
 │          v-suppliers  v-market  v-settings
 └─ lib/
@@ -151,7 +163,9 @@ sf-kentro/
 - **Excel** μόνο για εξαγωγή.
 
 ### 4.7 Ρυθμίσεις
-Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επεξεργάσιμοι) · Νέα προϊόντα · Κατηγορίες · Τοπικό AI · **Ασφάλεια** · Δεδομένα (φάκελος, backups, θέμα).
+Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επεξεργάσιμοι) · Νέα προϊόντα · Κατηγορίες · Τοπικό AI · **Κινητό**
+(διευθύνσεις + QR, βήματα για αρχική οθόνη, χαμένο κινητό) · Χρήστες (λογαριασμοί, ανοιχτές συνδέσεις ανά συσκευή
+με «Αποσύνδεση») · **Ασφάλεια** · Δεδομένα (φάκελος, backups, **αντίγραφο σε ένα αρχείο: λήψη / επαναφορά**, θέμα).
 
 ---
 
@@ -210,6 +224,7 @@ Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επε�
 | Σελίδες αναφοράς | Κλειδί ανά αρχείο + CSP με nonce, χωρίς inline handlers, `connect-src 'none'` |
 | PIN | 6–32 χαρ., όχι τετριμμένα· **scrypt (N=2¹⁵)**· δεν αποθηκεύεται |
 | Διακομιστής (1.3.0) | Χρήστες με scrypt, 5 λάθη → αναμονή (ανά χρήστη & IP), session cookie HttpOnly/SameSite=Strict(/Secure) με hash στον δίσκο, CSRF token ανά session σε κάθε κλήση, έλεγχος Host (`SFK_ALLOWED_HOSTS`) και Origin, ρόλοι admin/staff, λήξη από αδράνεια, HSTS πίσω από https |
+| Κινητό (1.3.0) | «Μείνε συνδεδεμένος» = 12 ώρες αδράνειας (μόνο με επιλογή του χρήστη)· ο admin βλέπει κάθε συσκευή και αποσυνδέει μία (`POST /api/users/session-end`)· αντίγραφο όλων των δεδομένων μόνο από admin, με τυχαίο όνομα, σβήνεται σε 15′ στον διακομιστή, και η λήψη του ελέγχει ξανά τον ρόλο· κωδικός B2B από άλλο PC → καθαρό μήνυμα «γράψε τον ξανά» |
 | Brute force | 5 λάθη → αναμονή 60 s που διπλασιάζεται· **επιμένει μετά από επανεκκίνηση** |
 | Auto-lock | 30′ (ρυθμιζόμενο) — επιβάλλεται **στον server** (HTTP 423), όχι μόνο στην οθόνη. Μετράει μόνο πραγματική δραστηριότητα (`X-Active`) |
 | Κωδικοί B2B | Windows **DPAPI** (ή AES τοπικό κλειδί εκτός Windows) **+ vault AES-GCM με κλειδί από το PIN**· το κλειδί μένει μόνο στη μνήμη μετά το ξεκλείδωμα |
@@ -246,7 +261,8 @@ Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επε�
 | Ασφάλεια | `GET /api/lock` · `POST /api/unlock \| lock` · `/api/security/pin \| remove \| minutes` · `GET /api/security/audit` |
 | Ρυθμίσεις | `/api/settings` · `/api/datadir` · `/api/backups[/restore]` · `/api/open` · `/api/ai/status` |
 | Διορθώσεις (1.3.0) | `GET /api/fixes` · `POST /api/fixes/decide \| approve-sure \| export \| find \| page \| translate` |
-| Χρήστες (1.3.0) | `GET /api/session` · `POST /api/login \| setup \| logout` · `/api/users[/delete\|/logout-all]` · `POST /api/me/password` · `GET /api/events` (SSE) |
+| Χρήστες (1.3.0) | `GET /api/session` · `POST /api/login \| setup \| logout` (`remember`) · `/api/users[/delete\|/session-end\|/logout-all]` · `POST /api/me/password` · `GET /api/events` (SSE) |
+| Κινητό / αντίγραφα (1.3.0) | `GET /api/connect` (διευθύνσεις) · `GET /api/qr?text=` (QR ως 0/1) · `POST /api/backup/make \| upload` (ένα αρχείο `.json.gz`) |
 
 Όσο το πρόγραμμα είναι κλειδωμένο, όλα εκτός από `GET /api/lock`, `POST /api/unlock`, `POST /api/shutdown` επιστρέφουν **423**.
 
@@ -277,6 +293,9 @@ Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επε�
 
 ## 12. Δοκιμές
 
+`npm test` (`app/test/run.js`): 52 έλεγχοι — αποθήκευση, κανόνες τιμών, λεξικό, διορθώσεις, ασφάλεια διακομιστή,
+κινητό (QR, «μείνε συνδεδεμένος», αποσύνδεση συσκευής, αντίγραφο σε αρχείο μόνο για admin, επαναφορά).
+`deploy/install-server.sh` δοκιμάστηκε με ψεύτικα docker/iptables/curl (ροή, `.env`, πόρτες, λάθος διευθύνσεις).
 Βοηθητικά σε scratchpad `tests/`: `up.sh` / `start-m.sh` (mock servers και instance), `api.js`, `sec.js` (ασφάλεια), `matchtest.js` (ακρίβεια matching), `scale.js`, `mocksearch.js`, `mockcomp*.js`, Playwright `ui3–ui6.py`, `app3.py`.
 Mocks: WordPress/Woo (8081/8082, με mu-plugin B2B), προμηθευτής (8090), ανταγωνιστές (8091/8093/8094), μηχανή αναζήτησης (8096).
 
@@ -286,7 +305,8 @@ Mocks: WordPress/Woo (8081/8082, με mu-plugin B2B), προμηθευτής (80
 
 ```bash
 npm install --omit=dev            # + trim: pdf-parse test, pdf.js εκδόσεις, exceljs/dist, *.map, test/docs
-# φάκελος SF-Kentro/{runtime/node.exe, app/, SF-Kentro.cmd, DIAVASE-ME.txt}
+# φάκελος SF-Kentro/{runtime/node.exe, app/, deploy/, SF-Kentro.cmd, SF-Kentro-Server.cmd, SF-Kentro-Cloud.cmd,
+#                    DIAVASE-ME.txt, DIAKOMISTIS-CLOUD.txt}   (.gitattributes: *.sh LF, *.cmd CRLF)
 zip -r -X -9 SF-Kentro-1.2.0.zip SF-Kentro
 ```
 
@@ -301,7 +321,7 @@ zip -r -X -9 SF-Kentro-1.2.0.zip SF-Kentro
 | 1.0.x | Πρώτη εφαρμογή: ανάγνωση sites, έλεγχοι, νέα προϊόντα, αντιπρόσωποι, έρευνα αγοράς |
 | 1.1.0 | Αυξητική ανάγνωση, matching v2, αυτόματοι τιμοκατάλογοι (feed/B2B/PDF), ημερήσια έρευνα, κανόνες διαφημίσεων επεξεργάσιμοι |
 | 1.2.0 | Σελίδες αναφοράς σε καρτέλα Chrome· PIN + vault + auto-lock· αναζήτηση αντιπροσώπων με έγκριση· έρευνα αγοράς χωρίς εξαντλημένα/παλιά/ακραία + confidence + προστασία από μεγάλες πτώσεις |
-| **1.3.0** | «Διορθώσεις» (αυτόματη συμπλήρωση για έγκριση)· έρευνα αγοράς v3 (≥2 καταστήματα, ύποπτες τιμές, ζημιά, σκάλα τιμών)· λειτουργία διακομιστή (cloud) με χρήστες και ζωντανές ενημερώσεις· ελαφρύτερο (λεξικό, μνήμη, αντίγραφα)· διόρθωση store/supplierfind· `npm test` |
+| **1.3.0** | «Διορθώσεις» (αυτόματη συμπλήρωση για έγκριση)· έρευνα αγοράς v3 (≥2 καταστήματα, ύποπτες τιμές, ζημιά, σκάλα τιμών)· λειτουργία διακομιστή (cloud) με χρήστες και ζωντανές ενημερώσεις· **κινητό** (responsive, PWA, QR, μείνε συνδεδεμένος, αποσύνδεση συσκευής)· **δωρεάν διακομιστής** (Oracle Always Free με ένα κλικ, ή PC του μαγαζιού)· αντίγραφο σε ένα αρχείο· ελαφρύτερο (λεξικό, μνήμη, αντίγραφα)· διόρθωση store/supplierfind, router, κουμπιά κινδύνου· `npm test` |
 
 ---
 

@@ -154,9 +154,47 @@ function supplierSite() {
     const c2 = (l2.headers.get('set-cookie') || '').split(';')[0], t2 = (await l2.json()).csrf;
     ok((await fetch(base + '/api/settings', { method: 'POST', headers: { Cookie: c2, 'X-SFK': t2, 'Content-Type': 'application/json' }, body: '{"vat":10}' })).status === 403, 'a staff user cannot change settings');
     ok((await fetch(base + '/api/fixes', { headers: { Cookie: c2, 'X-SFK': t2 } })).status === 200, 'a staff user works normally');
+    const S2 = { Cookie: c2, 'X-SFK': t2, 'Content-Type': 'application/json' };
+
+    section('Κινητό: QR, «μείνε συνδεδεμένος», χαμένο κινητό, αντίγραφο σε αρχείο');
+    const qr = await (await fetch(base + '/api/qr?text=' + encodeURIComponent('http://192.168.1.20:17321/'), { headers: H })).json();
+    ok(qr.size >= 21 && qr.rows.length === qr.size && /^[01]+$/.test(qr.rows[0]), 'QR code for the shop address', JSON.stringify(qr).slice(0, 80));
+    ok((await fetch(base + '/api/qr?text=' + encodeURIComponent('javascript:alert(1)'), { headers: H })).status === 400, 'QR only for http(s) addresses');
+    const l3 = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: 'maria', password: 'Piraeus-shop-1', remember: true }) });
+    const c3 = (l3.headers.get('set-cookie') || '').split(';')[0], t3 = (await l3.json()).csrf;
+    let list = (await (await fetch(base + '/api/users', { headers: H })).json()).sessions;
+    const phone = list.find((x) => x.remembered && x.user === 'Μαρία');
+    ok(phone && !phone.current && list.some((x) => x.current), 'the remembered phone and "this device" are shown');
+    ok((await fetch(base + '/api/users/session-end', { method: 'POST', headers: S2, body: JSON.stringify({ id: phone.id }) })).status === 403, 'only an administrator signs out a device');
+    ok((await fetch(base + '/api/users/session-end', { method: 'POST', headers: H, body: JSON.stringify({ id: phone.id }) })).status === 200, 'administrator signs out the lost phone');
+    ok((await fetch(base + '/api/state', { headers: { Cookie: c3, 'X-SFK': t3 } })).status === 401, 'that phone is out at once');
+    ok((await fetch(base + '/api/state', { headers: { Cookie: c2, 'X-SFK': t2 } })).status === 200, "the user's other devices stay signed in");
+    ok((await fetch(base + '/api/backup/make', { method: 'POST', headers: S2 })).status === 403, 'a staff user cannot take a copy of all the data');
+    const bk = await (await fetch(base + '/api/backup/make', { method: 'POST', headers: H })).json();
+    ok(/^sf-kentro-antigrafo-[0-9a-f]{12}-\d{8}-\d{6}\.json\.gz$/.test(bk.name) && bk.files > 5, 'one-file copy of the data', bk.name + ' ' + bk.files);
+    ok((await fetch(base + bk.url, { headers: { Cookie: c2 } })).status === 403, 'a staff user cannot download the copy even with its name');
+    const gz = Buffer.from(await (await fetch(base + bk.url, { headers: { Cookie: cookie } })).arrayBuffer());
+    const parsed = JSON.parse(require('zlib').gunzipSync(gz).toString('utf8'));
+    ok(parsed.app === 'sf-kentro' && parsed.files.settings && !parsed.files.sessions, 'the copy has the data but not the open sessions');
+    const up = await fetch(base + '/api/backup/upload', { method: 'POST', headers: H, body: JSON.stringify({ base64: gz.toString('base64') }) });
+    ok(up.status === 200 && (await up.json()).files === bk.files, 'restore from the file');
+    const junk = await fetch(base + '/api/backup/upload', { method: 'POST', headers: H, body: JSON.stringify({ base64: Buffer.from('not a copy').toString('base64') }) });
+    ok(junk.status === 400 && /αντίγραφο/.test((await junk.json()).error), 'a wrong file is refused and nothing changes');
+
     await fetch(base + '/api/logout', { method: 'POST', headers: { Cookie: c2, 'X-SFK': t2 } });
     ok((await fetch(base + '/api/state', { headers: { Cookie: c2, 'X-SFK': t2 } })).status === 401, 'after logout the session is gone');
   } finally { child.kill(); }
+
+  // "stay signed in": 2 hours without use end a normal session, not a remembered one (clock moved forward)
+  const users = require(APP + '/lib/users');
+  const adm = users.byId(users.list().find((x) => x.user === 'admin').id);
+  const normal = users.startSession(adm, '127.0.0.1', 'test', false), kept = users.startSession(adm, '127.0.0.1', 'test', true);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 2 * 3600e3;
+  try { ok(!users.session(normal.sid) && !!users.session(kept.sid), '«Μείνε συνδεδεμένος»: 2 hours idle end only the normal session'); } finally { Date.now = realNow; }
+  let msg = '';
+  try { require(APP + '/lib/secrets').reveal('aes:' + Buffer.alloc(40, 7).toString('base64')); } catch (e) { msg = e.message; }
+  ok(/άλλον υπολογιστή/.test(msg), 'a B2B password saved on another PC asks to be typed again (clear message)', msg);
 
   srv.close();
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -79,7 +79,8 @@ function noteFail(key) {
 
 // a fixed hash, so a wrong user name costs the same time as a wrong password (nothing tells which one was wrong)
 const DUMMY = hashPw(crypto.randomBytes(12).toString('hex'));
-function login(userName, password, ip, ua) {
+/** remember: stay signed in on this device (phone): 12 hours without use instead of the idle minutes. */
+function login(userName, password, ip, ua, remember) {
   const user = String(userName || '').trim().toLowerCase();
   const wait = Math.max(blockedFor('u:' + user), blockedFor('ip:' + ip));
   if (wait) throw new Error(`Πολλές λάθος προσπάθειες. Δοκίμασε ξανά σε ${wait} δευτερόλεπτα.`);
@@ -89,7 +90,7 @@ function login(userName, password, ip, ua) {
   if (!ok) { noteFail('u:' + user); noteFail('ip:' + ip); throw new Error('Λάθος όνομα χρήστη ή κωδικός.'); }
   fails.delete('u:' + user); fails.delete('ip:' + ip);
   store.update('users', [], (l) => { const x = l.find((y) => y.id === u.id); if (x) x.lastLoginAt = U.nowIso(); return l; });
-  return startSession(u, ip, ua);
+  return startSession(u, ip, ua, remember);
 }
 
 // ---------- sessions ----------
@@ -104,10 +105,11 @@ function load() {
 function flush() { if (!dirty || !sessions) return; dirty = false; store.write('sessions', Object.fromEntries(sessions)); }
 setInterval(flush, 5 * 60 * 1000).unref();
 
-function startSession(u, ip, ua) {
+const REMEMBER_MINUTES = 12 * 60;
+function startSession(u, ip, ua, remember) {
   load();
   const sid = crypto.randomBytes(32).toString('base64url');
-  const s = { uid: u.id, csrf: crypto.randomBytes(24).toString('base64url'), createdAt: Date.now(), lastSeen: Date.now(), ip: String(ip || ''), ua: String(ua || '').slice(0, 160) };
+  const s = { uid: u.id, csrf: crypto.randomBytes(24).toString('base64url'), createdAt: Date.now(), lastSeen: Date.now(), ip: String(ip || ''), ua: String(ua || '').slice(0, 160), long: !!remember };
   sessions.set(sha(sid), s);
   dirty = true; flush();
   return { sid, csrf: s.csrf, user: publicView(u) };
@@ -122,17 +124,26 @@ function session(sid, touch) {
   if (!s) return null;
   const now = Date.now();
   const u = byId(s.uid);
-  if (!u || now - s.createdAt > MAX_AGE_DAYS * 864e5 || now - s.lastSeen > idleMinutes() * 60000) { sessions.delete(k); dirty = true; return null; }
+  const idle = s.long ? Math.max(idleMinutes(), REMEMBER_MINUTES) : idleMinutes();
+  if (!u || now - s.createdAt > MAX_AGE_DAYS * 864e5 || now - s.lastSeen > idle * 60000) { sessions.delete(k); dirty = true; return null; }
   if (touch) { s.lastSeen = now; dirty = true; }
   return { key: k, csrf: s.csrf, user: publicView(u), uid: u.id };
 }
 function end(sid) { load(); if (sessions.delete(sha(sid))) { dirty = true; flush(); } }
 function endSessionsOf(uid) { load(); for (const [k, s] of sessions) if (s.uid === uid) sessions.delete(k); dirty = true; flush(); }
 function endAll() { load(); sessions.clear(); dirty = true; flush(); }
-function active() {
+/** One device signed out (e.g. a lost phone), by the short id the list shows. */
+function endById(id) {
+  load();
+  const keys = [...sessions.keys()].filter((k) => id && String(id).length === 12 && k.startsWith(String(id)));
+  if (keys.length !== 1) throw new Error('Η σύνδεση δεν βρέθηκε (ίσως έχει ήδη κλείσει).');
+  sessions.delete(keys[0]); dirty = true; flush();
+}
+/** Open sessions; `current` marks the one of the caller ("this device"). */
+function active(currentKey) {
   load();
   const out = [];
-  for (const [k, s] of sessions) { const u = byId(s.uid); if (u) out.push({ id: k.slice(0, 12), user: u.name, since: new Date(s.createdAt).toISOString(), lastSeen: new Date(s.lastSeen).toISOString(), ip: s.ip, ua: s.ua }); }
+  for (const [k, s] of sessions) { const u = byId(s.uid); if (u) out.push({ id: k.slice(0, 12), user: u.name, since: new Date(s.createdAt).toISOString(), lastSeen: new Date(s.lastSeen).toISOString(), ip: s.ip, ua: s.ua, remembered: !!s.long, current: k === currentKey }); }
   return out.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
 }
 
@@ -160,4 +171,4 @@ function setup(input, ip, ua) {
   return startSession(all().find((x) => x.id === u.id), ip, ua);
 }
 
-module.exports = { list, count, create, update, remove, login, session, startSession, end, endAll, endSessionsOf, active, ensureAdmin, setup, flush, publicView, byId };
+module.exports = { list, count, create, update, remove, login, session, startSession, end, endAll, endById, endSessionsOf, active, ensureAdmin, setup, flush, publicView, byId };

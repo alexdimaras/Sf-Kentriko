@@ -40,9 +40,15 @@ function protectWin(text) {
   return 'aes:' + Buffer.concat([iv, c.getAuthTag(), enc]).toString('base64');
 }
 
+/** A password saved on another PC (e.g. before moving to the server) cannot be opened here: it is typed again. */
 function reveal(blob) {
   if (!blob) return '';
   const s = String(require('./security').unwrap(String(blob)));
+  try { return open(s); } catch (_) {
+    throw new Error('Ο κωδικός B2B είχε αποθηκευτεί σε άλλον υπολογιστή και δεν ανοίγει εδώ. Γράψε τον ξανά στον αντιπρόσωπο.');
+  }
+}
+function open(s) {
   if (s.startsWith('dpapi:')) {
     return ps("Add-Type -AssemblyName System.Security; $b=[Console]::In.ReadToEnd().Trim(); [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($b), $null, 'CurrentUser'))", s.slice(6));
   }

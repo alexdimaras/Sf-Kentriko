@@ -164,6 +164,31 @@ function backup(keep) {
   return bdir;
 }
 
+/** Every data file in one compressed file (the same files as the daily backup). */
+function bundle() {
+  const files = {};
+  for (const f of fs.readdirSync(dir())) {
+    if (!f.endsWith('.json') || NO_BACKUP.test(f)) continue;
+    try { files[f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(dir(), f), 'utf8')); } catch (_) { /* a broken file is left out */ }
+  }
+  const buffer = zlib.gzipSync(Buffer.from(JSON.stringify({ app: 'sf-kentro', at: new Date().toISOString(), files })), { level: 6 });
+  return { buffer, files: Object.keys(files).length };
+}
+/** Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle. */
+function unbundle(buf) {
+  let data;
+  try { data = JSON.parse(zlib.gunzipSync(buf).toString('utf8')); } catch (_) { throw new Error('Δεν είναι αντίγραφο του προγράμματος (λάθος αρχείο).'); }
+  if (!data || data.app !== 'sf-kentro' || !data.files || typeof data.files !== 'object') throw new Error('Δεν είναι αντίγραφο του προγράμματος.');
+  const names = Object.keys(data.files).filter((n) => /^[a-z0-9][a-z0-9._-]{0,80}$/i.test(n) && !NO_BACKUP.test(n + '.json'));
+  if (!names.length) throw new Error('Το αντίγραφο είναι άδειο.');
+  const safety = path.join(dir(), 'backups', 'before-restore-' + Date.now());
+  fs.mkdirSync(safety, { recursive: true });
+  for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
+  for (const n of names) write(n, data.files[n]);
+  cache.clear();
+  return { files: names.length, at: data.at || null };
+}
+
 function listBackups() {
   const b = path.join(dir(), 'backups');
   if (!fs.existsSync(b)) return [];
@@ -186,4 +211,4 @@ function restoreBackup(day) {
   cache.clear();
 }
 
-module.exports = { exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
+module.exports = { bundle, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };

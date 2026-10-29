@@ -2,15 +2,23 @@
 <html lang="el">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="sfk-token" content="__SFK_TOKEN__">
 <meta name="sfk-version" content="__SFK_VERSION__">
 <meta name="sfk-mode" content="__SFK_MODE__">
 <title>SF Κέντρο</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#33422E">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SF Κέντρο">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+<header id="mbar" class="mbar"></header>
 <div id="app">
   <aside class="side" aria-label="Μενού">
     <div class="brand">
@@ -25,6 +33,8 @@
   </aside>
   <main id="main" tabindex="-1"></main>
 </div>
+<div class="side-scrim" data-close-menu></div>
+<nav id="tabbar" class="tabbar" aria-label="Γρήγορη πλοήγηση"></nav>
 <div id="drawer" class="drawer" aria-hidden="true"><div class="drawer-scrim" data-close></div><section class="drawer-panel" role="dialog" aria-modal="true"></section></div>
 <div id="modal" class="modal" aria-hidden="true"><div class="modal-scrim" data-close></div><section class="modal-panel" role="dialog" aria-modal="true"></section></div>
 <div id="toasts" aria-live="polite"></div>
