@@ -1,0 +1,19 @@
+{
+  "name": "SF Κέντρο",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "hostRequirements": { "cpus": 2 },
+  "containerEnv": {
+    "SFK_MODE": "server",
+    "SFK_PORT": "17321",
+    "SFK_DATA": "/workspaces/sf-data",
+    "APPDATA": "/workspaces/sf-data/config",
+    "SFK_TRUST_PROXY": "1",
+    "SFK_SECURE_COOKIE": "1",
+    "SFK_NO_OPEN": "1",
+    "TZ": "Europe/Athens"
+  },
+  "postCreateCommand": "cd app && npm ci --omit=dev --silent",
+  "postStartCommand": "bash .devcontainer/start.sh",
+  "forwardPorts": [17321],
+  "portsAttributes": { "17321": { "label": "SF Κέντρο", "onAutoForward": "notify" } }
+}

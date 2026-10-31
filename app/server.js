@@ -17,6 +17,8 @@ const SERVER = MODE === 'server';
 const BIND = process.env.SFK_HOST || (SERVER ? '0.0.0.0' : '127.0.0.1');
 // server mode: the addresses people type (e.g. kentro.example.gr); empty = any (shop network)
 const ALLOWED_HOSTS = String(process.env.SFK_ALLOWED_HOSTS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+// GitHub Codespaces forwards the port under its own https name: that one address is also accepted (and shown for the phone)
+const CODESPACE_HOST = process.env.CODESPACE_NAME ? `${process.env.CODESPACE_NAME}-${PORT0}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev'}`.toLowerCase() : '';
 const TRUST_PROXY = process.env.SFK_TRUST_PROXY === '1'; // behind Caddy / nginx: trust X-Forwarded-For / -Proto
 const LOCAL_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
@@ -533,6 +535,7 @@ function serveEvents(req, res, url) {
 function connectUrls() {
   const out = [];
   for (const host of ALLOWED_HOSTS) out.push({ kind: 'internet', url: `https://${host}/` });
+  if (CODESPACE_HOST) out.push({ kind: 'internet', url: `https://${CODESPACE_HOST}/` });
   if (out.length) return out;
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     for (const a of list || []) {
@@ -664,7 +667,7 @@ const server = http.createServer((req, res) => {
     if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(host.replace(/:\d+$/, '')) && !LOCAL_HOST.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
     // requests from web pages of other sites are refused (protection against cross-site requests)
     const origin = req.headers.origin;
-    if (origin) { let oh = ''; try { oh = new URL(origin).host.toLowerCase(); } catch (_) { /* bad origin */ } if (oh !== host) return send(res, 403, 'Forbidden', 'text/plain'); }
+    if (origin) { let oh = ''; try { oh = new URL(origin).host.toLowerCase(); } catch (_) { /* bad origin */ } if (oh !== host && !(CODESPACE_HOST && oh === CODESPACE_HOST)) return send(res, 403, 'Forbidden', 'text/plain'); }
     if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   } else {
     if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
