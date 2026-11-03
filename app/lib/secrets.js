@@ -15,6 +15,8 @@ function ps(script, input) {
 }
 function keyFile() { return path.join(store.appConfigDir(), 'secret.key'); }
 function localKey() {
+  // a cloud host loses its disk at every restart: the key then comes from the host's settings (SFK_SECRET_KEY)
+  if (process.env.SFK_SECRET_KEY) return crypto.createHash('sha256').update(String(process.env.SFK_SECRET_KEY)).digest();
   try { return Buffer.from(fs.readFileSync(keyFile(), 'utf8').trim(), 'base64'); } catch (_) {
     const k = crypto.randomBytes(32);
     fs.mkdirSync(store.appConfigDir(), { recursive: true });

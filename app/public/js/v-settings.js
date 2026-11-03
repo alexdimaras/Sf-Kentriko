@@ -285,6 +285,11 @@
           h('p', { class: 'muted' }, 'Τα αρχεία (CSV για WooCommerce, Excel) κατεβαίνουν στον υπολογιστή που τα ζήτησε.')));
         if (admin) box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα στον διακομιστή· κρατιούνται 14 μέρες.'),
           backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Ισχύει για όλους τους υπολογιστές. Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));
+        const cl = App.state.cloud;
+        if (cl && cl.enabled) box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('shield'), ' Φύλαξη στο GitHub'),
+          h('p', { class: 'muted' }, `Ο δωρεάν διακομιστής σβήνει τον δίσκο του σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται στο ιδιωτικό αποθετήριο ${cl.repo} λίγα λεπτά μετά από κάθε αλλαγή και όταν σταματά.`),
+          cl.error ? h('div', { class: 'note crit' }, cl.error) : h('div', { class: 'note ok' }, cl.savedAt ? 'Τελευταία φύλαξη: ' + fmt.ago(cl.savedAt) + (cl.pending ? ' · υπάρχουν νεότερες αλλαγές, φυλάγονται σε λίγο.' : ' · όλα φυλαγμένα.') : (cl.loadedAt ? 'Τα δεδομένα διαβάστηκαν ' + fmt.ago(cl.loadedAt) + '.' : 'Περιμένει την πρώτη αλλαγή.')),
+          admin ? h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Φύλαξη τώρα', { cls: 'sm', icon: 'upload' }, () => POST('/api/cloud/save').then(async (r) => { toast(r && r.error ? r.error : r && r.same ? 'Όλα ήταν ήδη φυλαγμένα.' : 'Φυλάχτηκαν.', r && r.error ? { err: true } : null); await App.refreshState(); App.route(); }).catch(fail))) : null));
         if (admin) box.appendChild(bundlePanel(true));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Εμφάνιση'), h('div', { style: { maxWidth: '260px' } }, field('Θέμα', theme))));
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Πρόγραμμα'), h('p', { class: 'muted' }, 'Έκδοση ' + App.state.version + ' · λειτουργία διακομιστή.')));

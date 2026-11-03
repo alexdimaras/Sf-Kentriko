@@ -11,7 +11,8 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const VERSION = '1.3.0';
-const PORT0 = Number(process.env.SFK_PORT) || 17321;
+// Render (free cloud host) tells the program its port in PORT
+const PORT0 = Number(process.env.RENDER && process.env.PORT ? process.env.PORT : process.env.SFK_PORT) || 17321;
 const MODE = process.env.SFK_MODE === 'server' ? 'server' : 'local';
 const SERVER = MODE === 'server';
 const BIND = process.env.SFK_HOST || (SERVER ? '0.0.0.0' : '127.0.0.1');
@@ -19,7 +20,9 @@ const BIND = process.env.SFK_HOST || (SERVER ? '0.0.0.0' : '127.0.0.1');
 const ALLOWED_HOSTS = String(process.env.SFK_ALLOWED_HOSTS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 // GitHub Codespaces forwards the port under its own https name: that one address is also accepted (and shown for the phone)
 const CODESPACE_HOST = process.env.CODESPACE_NAME ? `${process.env.CODESPACE_NAME}-${PORT0}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev'}`.toLowerCase() : '';
-const TRUST_PROXY = process.env.SFK_TRUST_PROXY === '1'; // behind Caddy / nginx: trust X-Forwarded-For / -Proto
+// Render: its own https name (e.g. sf-kentro.onrender.com) is accepted the same way
+const PLATFORM_HOST = CODESPACE_HOST || String(process.env.RENDER_EXTERNAL_HOSTNAME || '').toLowerCase();
+const TRUST_PROXY = process.env.SFK_TRUST_PROXY === '1' || !!process.env.RENDER; // behind Caddy / nginx: trust X-Forwarded-For / -Proto
 const LOCAL_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
 const store = require('./lib/store');
@@ -41,6 +44,7 @@ const security = require('./lib/security');
 const supplierfind = require('./lib/supplierfind');
 const users = require('./lib/users');
 const fixes = require('./lib/fixes');
+const cloudsave = require('./lib/cloudsave');
 const U = require('./lib/util');
 const { AsyncLocalStorage } = require('async_hooks');
 const reqCtx = new AsyncLocalStorage(); // which browser tab caused a change (so it is not told about its own changes)
@@ -143,7 +147,7 @@ const num = (v) => Number(v) || 0;
 
 // ---------- API ----------
 const routes = {
-  'GET /api/state': (q, _, ctx) => ({ version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances() }),
+  'GET /api/state': (q, _, ctx) => ({ version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status() }),
   'GET /api/dashboard': () => dashboard.build(),
 
   // Sync
@@ -466,12 +470,13 @@ const routes = {
   'GET /api/qr': (q) => qrMatrix(q.text),
   // the whole data folder in one file (download / upload): a copy to keep somewhere else
   'POST /api/backup/make': () => { const r = store.bundle(); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, r.buffer); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.buffer.length }, f); },
+  'POST /api/cloud/save': () => cloudsave.save('χειροκίνητα'),
   'POST /api/backup/upload': (b) => { const r = store.unbundle(Buffer.from(String(b.base64 || ''), 'base64')); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return r; },
   'POST /api/me/password': (b, _, ctx) => { users.login(ctx.user.user, b.current, ctx.ip, ctx.ua); users.update(ctx.user.id, { password: b.password }); const r = users.startSession(users.byId(ctx.user.id), ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { csrf: r.csrf }; },
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -535,7 +540,7 @@ function serveEvents(req, res, url) {
 function connectUrls() {
   const out = [];
   for (const host of ALLOWED_HOSTS) out.push({ kind: 'internet', url: `https://${host}/` });
-  if (CODESPACE_HOST) out.push({ kind: 'internet', url: `https://${CODESPACE_HOST}/` });
+  if (PLATFORM_HOST && !ALLOWED_HOSTS.includes(PLATFORM_HOST)) out.push({ kind: 'internet', url: `https://${PLATFORM_HOST}/` });
   if (out.length) return out;
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     for (const a of list || []) {
@@ -667,7 +672,7 @@ const server = http.createServer((req, res) => {
     if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(host.replace(/:\d+$/, '')) && !LOCAL_HOST.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
     // requests from web pages of other sites are refused (protection against cross-site requests)
     const origin = req.headers.origin;
-    if (origin) { let oh = ''; try { oh = new URL(origin).host.toLowerCase(); } catch (_) { /* bad origin */ } if (oh !== host && !(CODESPACE_HOST && oh === CODESPACE_HOST)) return send(res, 403, 'Forbidden', 'text/plain'); }
+    if (origin) { let oh = ''; try { oh = new URL(origin).host.toLowerCase(); } catch (_) { /* bad origin */ } if (oh !== host && !(PLATFORM_HOST && oh === PLATFORM_HOST)) return send(res, 403, 'Forbidden', 'text/plain'); }
     if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   } else {
     if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return send(res, 403, 'Forbidden', 'text/plain');
@@ -728,6 +733,7 @@ function listen(p, tries) {
 
 const STARTED_AT = Date.now();
 function afterStart() {
+  cloudsave.start();
   try { store.backup(14); } catch (e) { console.error('backup:', e.message); }
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
   setInterval(() => { try { store.backup(14); } catch (e) { console.error('backup:', e.message); } }, 3600 * 1000).unref();
@@ -781,7 +787,8 @@ function afterStart() {
 }
 
 process.on('uncaughtException', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { users.flush(); } catch (_) { /* ignore */ } process.exit(0); });
+// on a cloud host the data is saved before it stops (at most 20 seconds)
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { try { users.flush(); } catch (_) { /* ignore */ } try { await Promise.race([cloudsave.save('κλείσιμο'), new Promise((x) => setTimeout(x, 20000))]); } catch (_) { /* ignore */ } process.exit(0); });
 process.on('unhandledRejection', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
 
 void execFile;
@@ -812,6 +819,9 @@ function main() {
   setupLog();
   console.log('Starting SF Kentro ' + VERSION + ' on ' + process.platform + ' ' + process.arch + ', node ' + process.version);
   try { store.init(); } catch (e) { return fatal(e); }
-  listen(PORT0, 5);
+  if (!cloudsave.status().enabled) return listen(PORT0, 5);
+  // free cloud host: first the data saved in the private GitHub repository, then the program
+  cloudsave.restore().then((r) => console.log(r && r.first ? 'Cloud data: first start (nothing saved yet).' : `Cloud data: ${r ? r.files : 0} files restored.`))
+    .catch((e) => console.error('Cloud data could not be read:', e.message)).finally(() => listen(PORT0, 5));
 }
 main();

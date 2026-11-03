@@ -1,0 +1,24 @@
+# SF Κέντρο στο Render (δωρεάν). Οδηγίες: DIAKOMISTIS-CLOUD.txt, επιλογή Α.
+# Ο δίσκος του Render σβήνεται σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται σε ΙΔΙΩΤΙΚΟ αποθετήριο GitHub.
+services:
+  - type: web
+    name: sf-kentro
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: claude/friendly-sagan-bfjrkj
+    dockerfilePath: ./app/Dockerfile
+    dockerContext: ./app
+    healthCheckPath: /ping
+    autoDeploy: true
+    envVars:
+      - key: SFK_GITHUB_DATA          # όνομα/αποθετήριο, π.χ. alexdimaras/sf-kentro-data (ιδιωτικό)
+        sync: false
+      - key: SFK_GITHUB_TOKEN         # fine-grained token: Contents read & write μόνο σε αυτό το αποθετήριο
+        sync: false
+      - key: SFK_ADMIN_USER           # ο πρώτος διαχειριστής (μόνο την πρώτη φορά)
+        sync: false
+      - key: SFK_ADMIN_PASSWORD       # τουλάχιστον 10 χαρακτήρες· άλλαξέ τον μετά από το πρόγραμμα
+        sync: false
+      - key: SFK_SECRET_KEY           # κλειδί για τους κωδικούς B2B (το φτιάχνει μόνο του το Render)
+        generateValue: true

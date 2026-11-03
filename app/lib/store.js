@@ -164,26 +164,40 @@ function backup(keep) {
   return bdir;
 }
 
-/** Every data file in one compressed file (the same files as the daily backup). */
-function bundle() {
+/**
+ * Every data file in one compressed file (the same files as the daily backup). opts.allow: names kept although they
+ * are normally left out (the cloud copy keeps the open sessions, so a restart does not sign everybody out).
+ * `hash` changes only when the data changes (not with the time of the copy).
+ */
+function bundle(opts) {
+  const allow = new Set((opts && opts.allow) || []);
+  const skip = (f) => NO_BACKUP.test(f) && !allow.has(f.slice(0, -5));
   const files = {};
-  for (const f of fs.readdirSync(dir())) {
-    if (!f.endsWith('.json') || NO_BACKUP.test(f)) continue;
+  for (const f of fs.readdirSync(dir()).sort()) {
+    if (!f.endsWith('.json') || skip(f)) continue;
     try { files[f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(dir(), f), 'utf8')); } catch (_) { /* a broken file is left out */ }
   }
-  const buffer = zlib.gzipSync(Buffer.from(JSON.stringify({ app: 'sf-kentro', at: new Date().toISOString(), files })), { level: 6 });
-  return { buffer, files: Object.keys(files).length };
+  const body = JSON.stringify(files);
+  const hash = require('crypto').createHash('sha256').update(body).digest('hex');
+  const buffer = zlib.gzipSync(Buffer.from(`{"app":"sf-kentro","at":${JSON.stringify(new Date().toISOString())},"files":${body}}`), { level: 6 });
+  return { buffer, files: Object.keys(files).length, hash };
 }
-/** Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle. */
-function unbundle(buf) {
+/**
+ * Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle.
+ * opts.allow: the same as for bundle(); opts.fresh: an empty data folder at start (no safety copy needed).
+ */
+function unbundle(buf, opts) {
+  const allow = new Set((opts && opts.allow) || []);
   let data;
   try { data = JSON.parse(zlib.gunzipSync(buf).toString('utf8')); } catch (_) { throw new Error('Δεν είναι αντίγραφο του προγράμματος (λάθος αρχείο).'); }
   if (!data || data.app !== 'sf-kentro' || !data.files || typeof data.files !== 'object') throw new Error('Δεν είναι αντίγραφο του προγράμματος.');
-  const names = Object.keys(data.files).filter((n) => /^[a-z0-9][a-z0-9._-]{0,80}$/i.test(n) && !NO_BACKUP.test(n + '.json'));
+  const names = Object.keys(data.files).filter((n) => /^[a-z0-9][a-z0-9._-]{0,80}$/i.test(n) && (!NO_BACKUP.test(n + '.json') || allow.has(n)));
   if (!names.length) throw new Error('Το αντίγραφο είναι άδειο.');
-  const safety = path.join(dir(), 'backups', 'before-restore-' + Date.now());
-  fs.mkdirSync(safety, { recursive: true });
-  for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
+  if (!(opts && opts.fresh)) {
+    const safety = path.join(dir(), 'backups', 'before-restore-' + Date.now());
+    fs.mkdirSync(safety, { recursive: true });
+    for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
+  }
   for (const n of names) write(n, data.files[n]);
   cache.clear();
   return { files: names.length, at: data.at || null };

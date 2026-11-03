@@ -249,6 +249,64 @@ function supplierSite() {
   try { require(APP + '/lib/secrets').reveal('aes:' + Buffer.alloc(40, 7).toString('base64')); } catch (e) { msg = e.message; }
   ok(/άλλον υπολογιστή/.test(msg), 'a B2B password saved on another PC asks to be typed again (clear message)', msg);
 
+  section('Δωρεάν cloud: τα δεδομένα μένουν σε ιδιωτικό GitHub μετά από κάθε επανεκκίνηση');
+  // a little "GitHub": contents, blobs, trees, commits, refs — only what the program uses
+  const ghState = { file: null, commits: 0, fail: false, puts: 0, blobs: new Map(), trees: new Map(), commitsMap: new Map(), auth: '' };
+  const ghSrv = http.createServer((req, res) => {
+    let body = ''; req.on('data', (c) => { body += c; }); req.on('end', () => {
+      ghState.auth = req.headers.authorization || '';
+      const j = body ? JSON.parse(body) : {};
+      const out = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o || {})); };
+      if (ghState.fail) return out(500, { message: 'down' });
+      const id = () => require('crypto').randomBytes(20).toString('hex');
+      if (req.method === 'GET' && /\/contents\/sf-kentro-data\.json\.gz/.test(req.url)) { if (!ghState.file) return out(404); res.writeHead(200); return res.end(ghState.file); }
+      if (req.method === 'PUT' && /\/contents\//.test(req.url)) { ghState.file = Buffer.from(j.content, 'base64'); ghState.commits = 1; ghState.puts++; return out(201, { content: { sha: id() } }); }
+      if (req.method === 'POST' && /\/git\/blobs$/.test(req.url)) { if (!ghState.commits) return out(409, { message: 'Git Repository is empty.' }); const k = id(); ghState.blobs.set(k, Buffer.from(j.content, 'base64')); return out(201, { sha: k }); }
+      if (req.method === 'POST' && /\/git\/trees$/.test(req.url)) { const k = id(); ghState.trees.set(k, j.tree[0].sha); return out(201, { sha: k }); }
+      if (req.method === 'POST' && /\/git\/commits$/.test(req.url)) { const k = id(); ghState.commitsMap.set(k, j.tree); return out(201, { sha: k, parents: j.parents }); }
+      if (req.method === 'PATCH' && /\/git\/refs\/heads\/main$/.test(req.url)) { ghState.file = ghState.blobs.get(ghState.trees.get(ghState.commitsMap.get(j.sha))); ghState.commits++; return out(200, { object: { sha: j.sha } }); }
+      return out(404, { message: 'not here: ' + req.method + ' ' + req.url });
+    });
+  });
+  await new Promise((r) => ghSrv.listen(0, '127.0.0.1', r));
+  const ghEnv = (dataDir, port2) => Object.assign({}, process.env, { SFK_DATA: dataDir, APPDATA: dataDir + '-cfg', SFK_MODE: 'server', SFK_PORT: String(port2), SFK_NO_AUTOSYNC: '1', SFK_GITHUB_DATA: 'shop/sf-kentro-data', SFK_GITHUB_TOKEN: 'test-token', SFK_GITHUB_API: 'http://127.0.0.1:' + ghSrv.address().port, SFK_ADMIN_USER: 'admin', SFK_ADMIN_PASSWORD: 'Test-pass-123456', SFK_SECRET_KEY: 'a-long-random-key-for-tests' });
+  const startApp = async (dataDir, port2, waitMs) => {
+    const c = spawn(process.execPath, [path.join(APP, 'server.js')], { env: ghEnv(dataDir, port2), stdio: ['ignore', 'pipe', 'pipe'] });
+    let lg = ''; c.stdout.on('data', (b) => { lg += b; }); c.stderr.on('data', (b) => { lg += b; });
+    for (let i = 0; i < (waitMs || 8000) / 100 && !/Running at/.test(lg); i++) await new Promise((x) => setTimeout(x, 100));
+    return { c, log: () => lg };
+  };
+  const stopApp = (a) => new Promise((r) => { a.c.on('exit', r); a.c.kill('SIGTERM'); });
+  const loginTo = async (b2) => { const l = await fetch(b2 + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: 'admin', password: 'Test-pass-123456', remember: true }) }); return { cookie: (l.headers.get('set-cookie') || '').split(';')[0], csrf: (await l.json()).csrf }; };
+  const p1 = 19100 + Math.floor(Math.random() * 400);
+  const a1 = await startApp(path.join(tmp, 'cloud1'), p1);
+  const s1 = await loginTo('http://127.0.0.1:' + p1);
+  ok((await fetch(`http://127.0.0.1:${p1}/api/settings`, { method: 'POST', headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf, 'Content-Type': 'application/json' }, body: JSON.stringify({ minShops: 3 }) })).status === 200, 'first start on an empty cloud: works, a setting is changed');
+  const sv = await (await fetch(`http://127.0.0.1:${p1}/api/cloud/save`, { method: 'POST', headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf } })).json();
+  ok(sv.saved && ghState.file && ghState.puts === 1 && /test-token/.test(ghState.auth), 'saved to the private repository (first time on an empty repository)', JSON.stringify(sv));
+  await fetch(`http://127.0.0.1:${p1}/api/settings`, { method: 'POST', headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf, 'Content-Type': 'application/json' }, body: JSON.stringify({ minShops: 4 }) });
+  await stopApp(a1);
+  ok(ghState.commits >= 2, 'when the host stops the program, the last change is saved (one commit without history)', String(ghState.commits));
+  // a new machine with an empty disk (what Render does at every restart)
+  const p2 = p1 + 1;
+  const a2 = await startApp(path.join(tmp, 'cloud2'), p2);
+  const st2 = await fetch(`http://127.0.0.1:${p2}/api/state`, { headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf } });
+  ok(st2.status === 200, 'after the restart the phone is still signed in (sessions restored)', String(st2.status));
+  ok(st2.status === 200 && (await st2.json()).settings.minShops === 4, 'after the restart on an empty disk every change is back');
+  await stopApp(a2);
+  // GitHub down at start: the program opens, but never saves an empty start over the good data
+  ghState.fail = true;
+  const before = ghState.commits;
+  const p3 = p1 + 2;
+  const a3 = await startApp(path.join(tmp, 'cloud3'), p3, 60000); // it tries 5 times (about 30 s) before giving up
+  ok(/Cloud data could not be read/.test(a3.log()), 'GitHub unreachable at start: said clearly');
+  ghState.fail = false;
+  const s3 = await loginTo('http://127.0.0.1:' + p3);
+  const sv3 = await fetch(`http://127.0.0.1:${p3}/api/cloud/save`, { method: 'POST', headers: { Cookie: s3.cookie, 'X-SFK': s3.csrf } });
+  await stopApp(a3);
+  ok(ghState.commits === before && (await sv3.json()) === null, 'then nothing is saved over the good data (until a restart reads it)');
+  ghSrv.close();
+
   srv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n${passes} ok, ${fails} failed`);
