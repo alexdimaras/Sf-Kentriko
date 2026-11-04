@@ -28,12 +28,23 @@ const GROUPS = { content: 'Περιεχόμενο', titles: 'Τίτλοι', pric
 /** Meta description for Google: the text after the title heading, cut at ~155 characters on a word. */
 function metaOf(html) { return require('./wooexport').metaDescription(String(html || '').replace(/^\s*<(h[1-6]|p)>(?:<strong>)?[^<]*(?:<\/strong>)?<\/\1>/i, ''), ''); }
 const hashOf = (v) => crypto.createHash('sha1').update(JSON.stringify(v)).digest('hex').slice(0, 12);
-const stripText = (html) => U.collapse(U.stripTags(String(html || '')));
+// the same descriptions are read many times in one pass: their plain text is kept (cleared when it grows)
+const textMemo = new Map();
+const stripText = (html) => {
+  const h = String(html || '');
+  if (!h) return '';
+  let t = textMemo.get(h);
+  if (t === undefined) { if (textMemo.size > 20000) textMemo.clear(); t = U.collapse(U.stripTags(h)); textMemo.set(h, t); }
+  return t;
+};
 /** Share of Greek letters among all letters (0..1): below ~0.3 the text is in English (or another language). */
 function greekShare(text) {
   const t = String(text || '');
-  const gr = (t.match(/[Ͱ-Ͽἀ-῿]/g) || []).length;
-  const all = gr + (t.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+  let gr = 0, all = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if ((c >= 0x370 && c <= 0x3ff) || (c >= 0x1f00 && c <= 0x1fff)) { gr++; all++; } else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 0xc0 && c <= 0xff)) all++;
+  }
   return all ? gr / all : 1;
 }
 /** GTIN-8/12/13/14 with a correct check digit. */

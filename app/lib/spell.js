@@ -13,7 +13,18 @@ const plain = (w) => String(w).normalize('NFD').replace(/[\u0300-\u036f]/g, '').
 // JavaScript Sets, with the same answers, and no big temporary list while loading.
 let D = null;
 const FNV = (x, c) => Math.imul(x ^ c, 16777619);
+// The packed dictionary can be written once (at install time, e.g. in the Docker image) and then read in a moment
+// instead of being rebuilt at every start (seconds on a small cloud machine).
+const PACK = path.join(__dirname, 'dict', 'el.pack');
+const PACK_VER = 1;
 function build() {
+  const fromPack = readPack();
+  if (fromPack) return make(fromPack);
+  const parts = parse();
+  try { writePack(parts); } catch (_) { /* a read-only folder: rebuilt at every start, still correct */ }
+  return make(parts);
+}
+function parse() {
   let raw = null;
   try { raw = fs.readFileSync(path.join(__dirname, 'dict', 'el.dic'), 'utf8'); } catch (e) { console.error('dictionary:', e.message); raw = ''; }
   // the alphabet: every letter used (Greek capitals, a few others), one byte each
@@ -81,6 +92,35 @@ function build() {
   }
   raw = null;
   offs[k] = o;
+  return { code: [...code], k, data, offs, words, stems, wmask, smask };
+}
+function writePack(parts) {
+  const head = Buffer.from(JSON.stringify({ v: PACK_VER, code: parts.code, k: parts.k, data: parts.data.length, offs: parts.offs.length, words: parts.words.length, stems: parts.stems.length, wmask: parts.wmask, smask: parts.smask }));
+  const len = Buffer.alloc(4); len.writeUInt32LE(head.length, 0);
+  const tmp = PACK + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, Buffer.concat([len, head, parts.data, Buffer.from(parts.offs.buffer), Buffer.from(parts.words.buffer), Buffer.from(parts.stems.buffer)]));
+  fs.renameSync(tmp, PACK);
+}
+function readPack() {
+  let buf;
+  try { buf = fs.readFileSync(PACK); } catch (_) { return null; }
+  try {
+    const hl = buf.readUInt32LE(0);
+    const h = JSON.parse(buf.slice(4, 4 + hl).toString('utf8'));
+    if (h.v !== PACK_VER) return null;
+    let at = 4 + hl;
+    const take = (bytes) => { const b = Buffer.from(buf.slice(at, at + bytes)); at += bytes; return b; }; // copied: aligned for the typed arrays
+    const data = take(h.data);
+    const offsB = take(h.offs * 4), wordsB = take(h.words * 4), stemsB = take(h.stems * 4);
+    return { code: h.code, k: h.k, data, offs: new Uint32Array(offsB.buffer, offsB.byteOffset, h.offs), words: new Int32Array(wordsB.buffer, wordsB.byteOffset, h.words), stems: new Int32Array(stemsB.buffer, stemsB.byteOffset, h.stems), wmask: h.wmask, smask: h.smask };
+  } catch (_) { return null; }
+}
+/** Written once at install time (Dockerfile): every later start reads it instead of rebuilding. */
+function prebuild() { const parts = parse(); writePack(parts); return { words: parts.k, file: PACK }; }
+function make(parts) {
+  const code = new Map(parts.code);
+  const { k, data, offs, words, stems, wmask, smask } = parts;
+  const stemLen = (e) => offs[(e >> 1) + 1] - offs[e >> 1] - ((e & 1) + 1);
   const q = new Uint8Array(256);
   const enc = (w) => { if (w.length > 255) return -1; for (let j = 0; j < w.length; j++) { const c = code.get(w.charCodeAt(j)); if (!c) return -1; q[j] = c; } return w.length; };
   const hashQ = (len) => { let x = 2166136261 | 0; for (let j = 0; j < len; j++) x = FNV(x, q[j]); return x >>> 0; };
@@ -163,4 +203,4 @@ function check(word, freq) {
 }
 function suggest(word, freq) { const r = check(word, freq); return r ? r.fix : ''; }
 
-module.exports = { dict, isWord, knownStem, check, suggest, plain };
+module.exports = { dict, isWord, knownStem, check, suggest, plain, prebuild };

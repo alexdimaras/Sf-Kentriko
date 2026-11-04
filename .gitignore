@@ -2,3 +2,5 @@ node_modules
 # local settings of the server set-up (never in the repository)
 deploy/.env
 deploy/.diakomistis.cmd
+# the packed spelling dictionary (made at install / first start)
+app/lib/dict/el.pack

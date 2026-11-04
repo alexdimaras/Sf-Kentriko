@@ -23,6 +23,8 @@ const CODESPACE_HOST = process.env.CODESPACE_NAME ? `${process.env.CODESPACE_NAM
 // Render: its own https name (e.g. sf-kentro.onrender.com) is accepted the same way
 const PLATFORM_HOST = CODESPACE_HOST || String(process.env.RENDER_EXTERNAL_HOSTNAME || '').toLowerCase();
 const TRUST_PROXY = process.env.SFK_TRUST_PROXY === '1' || !!process.env.RENDER; // behind Caddy / nginx: trust X-Forwarded-For / -Proto
+// a small machine (free cloud: 512 MB): heavy work one piece at a time
+const SMALL = typeof process.constrainedMemory === 'function' && process.constrainedMemory() > 0 && process.constrainedMemory() < 1.5e9 || process.env.SFK_SMALL === '1';
 const LOCAL_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
 const store = require('./lib/store');
@@ -156,12 +158,18 @@ const routes = {
     return jobs.start('sync', b.full ? 'Πλήρης ανάγνωση προϊόντων' : 'Ανάγνωση προϊόντων', async (job) => {
       const out = {};
       const progress = catalog.makeProgress(job);
-      // both shops at the same time: the total time is that of the bigger shop
-      await Promise.all(sites.map(async (site) => {
+      // both shops at the same time: the total time is that of the bigger shop (one after the other on a small cloud machine: half the memory)
+      const one = async (site) => {
         try { out[site] = await catalog.syncSite(site, job, { full: !!b.full, progress }); if (out[site]) job.log(`${settings.all().sites[site].name}: έτοιμο.`); } catch (e) { out[site] = { error: e.message }; job.log(`${settings.all().sites[site].name}: ${e.message}`); }
-      }));
+      };
+      if (SMALL) { for (const site of sites) await one(site); } else await Promise.all(sites.map(one));
       checks.invalidate(); suppliers.resetIndex(); fixes.invalidate();
       if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => out[s].error).join(' / '));
+      // the heavy work is done here, step by step, so the screens open at once afterwards
+      const pause = () => new Promise((r) => setImmediate(r));
+      job.progress(null, null, 'Έλεγχοι καταλόγου…'); await pause(); checks.cached();
+      job.progress(null, null, 'Έτοιμες διορθώσεις…'); await pause(); fixes.compute();
+      job.progress(null, null, 'Ροή εργασίας και τιμές…'); await pause(); require('./lib/flow').compute(); await pause();
       market.recompute();
       return out;
     });

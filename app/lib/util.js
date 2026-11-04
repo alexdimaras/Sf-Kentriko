@@ -44,13 +44,21 @@ function titleCase(s, accents) {
 }
 
 /** Build/extend an accent map from free text: KEY (caps, no accents) -> most frequent accented lower form. */
+// the same words come back thousands of times in descriptions: lower case and key are worked out once
+const accentWordMemo = new Map();
 function learnAccents(text, counts) {
   counts = counts || new Map();
   const words = String(text || '').match(/[\u0370-\u03ff\u1f00-\u1fff]{3,}/g) || [];
   for (const raw of words) {
-    if (!/[άέήίόύώΐΰ]/.test(raw)) continue;
-    const w = raw.toLocaleLowerCase('el-GR');
-    const key = greekUpper(w);
+    let wk = accentWordMemo.get(raw);
+    if (wk === undefined) {
+      if (accentWordMemo.size > 200000) accentWordMemo.clear();
+      if (!/[άέήίόύώΐΰ]/.test(raw)) wk = null;
+      else { const lw = raw.toLocaleLowerCase('el-GR'); wk = [lw, greekUpper(lw)]; }
+      accentWordMemo.set(raw, wk);
+    }
+    if (!wk) continue;
+    const [w, key] = wk;
     let m = counts.get(key);
     if (!m) { m = new Map(); counts.set(key, m); }
     m.set(w, (m.get(w) || 0) + 1);

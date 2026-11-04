@@ -22,8 +22,16 @@ function setIgnored(checkId, keys, on) {
   invalidate();
 }
 
-/** How often each word appears in the titles of both shops (Greek and Latin). */
+/** How often each word appears in the titles of both shops (Greek and Latin). Kept until a catalog changes. */
+let wordMemo = null;
 function wordStats() {
+  const cats = catalog.SITES.map((s) => catalog.load(s));
+  if (wordMemo && wordMemo.cats.every((c, i) => c === cats[i])) return wordMemo.out;
+  const out = wordStatsNow();
+  wordMemo = { cats, out };
+  return out;
+}
+function wordStatsNow() {
   const freq = new Map(), latin = new Map();
   const seen = new Set();
   for (const site of catalog.SITES) {

@@ -52,7 +52,7 @@ async function restoreOnce() {
   if (!r.ok) throw new Error(`GitHub: δεν διαβάστηκαν τα δεδομένα (${r.status}).`);
   const buf = Buffer.from(await r.arrayBuffer());
   const out = store.unbundle(buf, { allow: KEEP, fresh: true });
-  lastHash = store.bundle({ allow: KEEP }).hash;
+  lastHash = (await store.bundleAsync({ allow: KEEP })).hash;
   state.loadedAt = new Date().toISOString();
   return out;
 }
@@ -64,7 +64,7 @@ function save(reason) {
   const at = changes;
   saving = (async () => {
     check();
-    const b = store.bundle({ allow: KEEP });
+    const b = await store.bundleAsync({ allow: KEEP });
     if (b.hash === lastHash) { state.pending = changes !== at; return { same: true }; }
     const message = `SF Κέντρο: δεδομένα (${reason || 'αλλαγές'}) ${new Date().toISOString()}`;
     // one commit without history: the old copies are not kept in the repository

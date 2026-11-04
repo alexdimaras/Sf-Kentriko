@@ -183,6 +183,25 @@ function bundle(opts) {
   return { buffer, files: Object.keys(files).length, hash };
 }
 /**
+ * The same file as bundle(), made without stopping the program: the files are joined as they are (they are JSON
+ * already, nothing is parsed) and compressed in the background.
+ */
+async function bundleAsync(opts) {
+  const allow = new Set((opts && opts.allow) || []);
+  const parts = [];
+  for (const f of fs.readdirSync(dir()).sort()) {
+    if (!f.endsWith('.json') || (NO_BACKUP.test(f) && !allow.has(f.slice(0, -5)))) continue;
+    let raw;
+    try { raw = fs.readFileSync(path.join(dir(), f), 'utf8'); } catch (_) { continue; }
+    if (!raw || !/^[[{"\dtfn-]/.test(raw)) continue; // an empty or broken file is left out
+    parts.push(JSON.stringify(f.slice(0, -5)) + ':' + raw);
+  }
+  const body = '{' + parts.join(',') + '}';
+  const hash = require('crypto').createHash('sha256').update(body).digest('hex');
+  const buffer = await require('util').promisify(zlib.gzip)(Buffer.from(`{"app":"sf-kentro","at":${JSON.stringify(new Date().toISOString())},"files":${body}}`), { level: 6 });
+  return { buffer, files: parts.length, hash };
+}
+/**
  * Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle.
  * opts.allow: the same as for bundle(); opts.fresh: an empty data folder at start (no safety copy needed).
  */
@@ -225,4 +244,4 @@ function restoreBackup(day) {
   cache.clear();
 }
 
-module.exports = { bundle, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
+module.exports = { bundle, bundleAsync, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
