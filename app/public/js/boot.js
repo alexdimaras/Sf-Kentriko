@@ -5,8 +5,14 @@
   try {
     if (App.MODE === 'server') {
       // shared program: log in first (the very first time: create the administrator)
-      const s = await fetch('/api/session', { credentials: 'same-origin', headers: { 'X-Client': 'boot' } }).then((r) => r.json()).catch(() => null);
-      if (!s) throw new Error('Ο διακομιστής δεν απαντά.');
+      // the program may be waking up (free cloud plan) or restarting: try again for up to ~3 minutes
+      let s = null;
+      for (let i = 0; i < 45 && !s; i++) {
+        s = await fetch('/api/session', { credentials: 'same-origin', headers: { 'X-Client': 'boot' } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        if (!s) { App.waking.show('Το πρόγραμμα ξυπνάει ή ξεκινάει (μπορεί να θέλει 1-2 λεπτά)… περίμενε, ανοίγει μόνο του.'); await new Promise((r) => setTimeout(r, 4000)); }
+      }
+      App.waking.hide();
+      if (!s) throw new Error('Το πρόγραμμα δεν απαντά. Ξαναδοκίμασε σε λίγο.');
       if (!s.user) { App.showLogin(!!s.setup); await App.whenUnlocked(); }
     } else {
       // with a PIN, nothing is shown before it is entered

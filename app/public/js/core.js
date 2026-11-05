@@ -112,11 +112,42 @@ let lastInput = Date.now();
 for (const ev of ['mousedown', 'keydown', 'wheel', 'touchstart']) document.addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true, capture: true });
 
 // ---------- API ----------
+// The program in the cloud sleeps when nobody uses it (free plan) and needs some seconds to wake up; a request may
+// also meet it while it restarts. Then the screen says so and tries again by itself instead of staying blank.
+const waking = {
+  n: 0, el: null, slow: 0,
+  show(text) {
+    if (!this.el) { this.el = h('div', { class: 'wakebar', role: 'status' }); document.body.appendChild(this.el); }
+    this.el.textContent = text;
+  },
+  hide() { if (this.el && !this.n && !this.slow) { this.el.remove(); this.el = null; } },
+};
 async function api(method, path, body) {
   const opt = { method, headers: { 'X-SFK': TOKEN, 'X-Client': CLIENT, 'X-Active': Date.now() - lastInput < 60000 ? '1' : '0' }, credentials: 'same-origin' };
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   let res;
-  try { res = await fetch(path, opt); } catch (e) { throw new Error('Το πρόγραμμα δεν απαντά. Μήπως έκλεισε το μαύρο παράθυρο; Άνοιξέ το ξανά.'); }
+  // a slow answer (the program is busy or waking up) shows a small note after 3 seconds
+  let slowShown = false;
+  const slowTimer = setTimeout(() => { slowShown = true; waking.slow++; if (!waking.n) waking.show('Φορτώνει… το πρόγραμμα δουλεύει, περίμενε λίγο.'); }, 3000);
+  try {
+    for (let tryNo = 0; ; tryNo++) {
+      let netErr = false;
+      try { res = await fetch(path, opt); } catch (_) { netErr = true; }
+      // 502/503/504 = the program is (re)starting: nothing was done yet, so trying again is safe
+      const restarting = netErr || (res && (res.status === 502 || res.status === 503 || (res.status === 504 && method === 'GET')));
+      if (!restarting || MODE !== 'server') break;
+      if (tryNo >= 40) break; // about 3 minutes
+      waking.n++;
+      waking.show(netErr && !navigator.onLine ? 'Δεν υπάρχει internet· ξαναδοκιμάζω…' : 'Το πρόγραμμα ξυπνάει ή ξεκινάει (μπορεί να θέλει 1-2 λεπτά)… ξαναδοκιμάζω μόνο του.');
+      await new Promise((r) => setTimeout(r, Math.min(2000 + tryNo * 1000, 6000)));
+      waking.n--;
+    }
+  } finally {
+    clearTimeout(slowTimer);
+    if (slowShown) waking.slow--;
+    waking.hide();
+  }
+  if (!res) throw new Error(MODE === 'server' ? 'Δεν υπάρχει σύνδεση με το πρόγραμμα. Έλεγξε το internet και ξαναδοκίμασε.' : 'Το πρόγραμμα δεν απαντά. Μήπως έκλεισε το μαύρο παράθυρο; Άνοιξέ το ξανά.');
   let data = null;
   try { data = await res.json(); } catch (_) { data = null; }
   if (res.status === 423) { showLock(); const e = new Error('Το πρόγραμμα είναι κλειδωμένο.'); e.locked = true; throw e; }
@@ -238,6 +269,9 @@ const live = {
   stop() { if (this.es) { this.es.close(); this.es = null; } },
   /** Bring the screen up to date after a gap: the open view, the menu numbers, the running jobs. */
   catchUp() {
+    // once, even when the phone wakes up and the live connection reopens at the same moment
+    if (Date.now() - (this.lastCatch || 0) < 5000) return;
+    this.lastCatch = Date.now();
     refreshState().catch(() => {});
     this.pendingKeys.add('*');
     clearTimeout(this.timer); this.timer = setTimeout(() => this.apply(), 300);
@@ -622,4 +656,4 @@ App.route = async function () {
   if (main.isConnected) main.focus({ preventScroll: true });
 };
 
-Object.assign(App, { qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+Object.assign(App, { waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });

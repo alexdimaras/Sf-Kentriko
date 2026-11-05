@@ -743,8 +743,31 @@ function listen(p, tries) {
 }
 
 const STARTED_AT = Date.now();
+/** Everything the screens need, worked out step by step with pauses (the program keeps answering meanwhile). */
+async function warmUp() {
+  const t0 = Date.now();
+  const pause = () => new Promise((r) => setTimeout(r, 50));
+  for (const site of catalog.SITES) { catalog.load(site); await pause(); }
+  if (!catalog.load('sf').products.length && !catalog.load('st').products.length) return;
+  catalog.links(); await pause();
+  require('./lib/spell').dict(); await pause();
+  await checks.warmWords(); await pause();
+  checks.cached(); await pause();
+  fixes.compute(); await pause();
+  require('./lib/flow').compute(); await pause();
+  dashboard.build();
+  console.log(`Ready: the screens' data prepared in ${Math.round((Date.now() - t0) / 1000)} s.`);
+}
 function afterStart() {
   cloudsave.start();
+  if (SERVER) {
+    // the heavy work of the first screens is done now, in the background, so nobody waits for it
+    setTimeout(() => { warmUp().catch((e) => console.error('warm-up:', e.message)); }, 1500);
+    // free cloud plan (Render): it sleeps after 15 minutes without visits and then needs a minute or more to wake
+    // up — a visit to itself every 10 minutes keeps it awake (one program stays within the free monthly hours)
+    const self = String(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+    if (self && process.env.SFK_KEEP_AWAKE !== '0') setInterval(() => { fetch(self + '/ping').catch(() => {}); }, 10 * 60 * 1000).unref();
+  }
   try { store.backup(14); } catch (e) { console.error('backup:', e.message); }
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
   setInterval(() => { try { store.backup(14); } catch (e) { console.error('backup:', e.message); } }, 3600 * 1000).unref();
