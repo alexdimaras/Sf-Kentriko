@@ -249,8 +249,10 @@ async function pack(opts) {
   const hash = crypto.createHash('sha256');
   const gz = zlib.createGzip({ level: 6 });
   const out = [];
-  gz.on('data', (c) => out.push(c));
-  const done = new Promise((resolve, reject) => { gz.on('end', resolve); gz.on('error', reject); });
+  let done;
+  // opts.file: written straight to a file (the copy never sits in memory; for the cloud upload)
+  if (opts && opts.file) { const ws = fs.createWriteStream(opts.file); gz.pipe(ws); done = new Promise((resolve, reject) => { ws.on('finish', resolve); ws.on('error', reject); gz.on('error', reject); }); }
+  else { gz.on('data', (c) => out.push(c)); done = new Promise((resolve, reject) => { gz.on('end', resolve); gz.on('error', reject); }); }
   const put = (b) => new Promise((resolve) => { if (gz.write(b)) resolve(); else gz.once('drain', resolve); });
   await put(Buffer.from(PACK_MAGIC));
   let files = 0;
@@ -278,6 +280,7 @@ async function pack(opts) {
   }
   gz.end();
   await done;
+  if (opts && opts.file) return { file: opts.file, size: fs.statSync(opts.file).size, files, hash: hash.digest('hex') };
   return { buffer: Buffer.concat(out), files, hash: hash.digest('hex') };
 }
 /** Puts back a pack: each file written as it is (no parsing), atomically. Returns the same hash as pack(). */
@@ -320,7 +323,8 @@ async function unpack(buf, opts) {
   await new Promise((resolve, reject) => {
     gun.on('data', (c) => { try { take(c); } catch (e) { gun.destroy(); reject(e); } });
     gun.on('end', resolve); gun.on('error', () => reject(new Error('Δεν είναι αντίγραφο του προγράμματος (λάθος αρχείο).')));
-    gun.end(buf);
+    // opts.file: read from a file in pieces (a big copy never sits in memory)
+    if (opts && opts.file) fs.createReadStream(opts.file).on('error', reject).pipe(gun); else gun.end(buf);
   });
   if (cur) throw new Error('Το αντίγραφο είναι κομμένο (δεν κατέβηκε ολόκληρο).');
   cache.clear();
@@ -336,7 +340,13 @@ function safetyCopy() {
 /** Is this compressed file a pack (new) or a bundle (older versions)? */
 function isPack(buf) { try { return zlib.gunzipSync(buf.subarray(0, Math.min(buf.length, 4096)), { finishFlush: zlib.constants.Z_SYNC_FLUSH }).subarray(0, PACK_MAGIC.length).toString() === PACK_MAGIC; } catch (_) { return false; } }
 /** Restore from a file of any version. */
-async function restoreFile(buf, opts) { return isPack(buf) ? unpack(buf, opts) : unbundle(buf, opts); }
+async function restoreFile(buf, opts) {
+  if (opts && opts.file) {
+    const fd = fs.openSync(opts.file, 'r'); const head = Buffer.alloc(4096); const n = fs.readSync(fd, head, 0, 4096, 0); fs.closeSync(fd);
+    return isPack(head.subarray(0, n)) ? unpack(null, opts) : unbundle(fs.readFileSync(opts.file), opts);
+  }
+  return isPack(buf) ? unpack(buf, opts) : unbundle(buf, opts);
+}
 
 /**
  * Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle.

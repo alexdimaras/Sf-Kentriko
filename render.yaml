@@ -13,7 +13,7 @@ services:
     # no health check: on the small free machine a long piece of work (first read of the shops) is not a crash
     envVars:
       - key: NODE_OPTIONS             # μνήμη: μένει κάτω από τα 512 MB του δωρεάν μηχανήματος
-        value: --max-old-space-size=360
+        value: --max-old-space-size=280
       - key: SFK_GITHUB_DATA          # όνομα/αποθετήριο, π.χ. alexdimaras/sf-kentro-data (ιδιωτικό)
         sync: false
       - key: SFK_GITHUB_TOKEN         # fine-grained token: Contents read & write μόνο σε αυτό το αποθετήριο

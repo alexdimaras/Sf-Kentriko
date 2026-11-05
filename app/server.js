@@ -84,7 +84,7 @@ function saveExport(name, content) {
   let fname = base + '-' + stamp + ext;
   for (let i = 2; fs.existsSync(store.exportPath(fname)); i++) fname = base + '-' + stamp + '-' + i + ext;
   const p = store.exportPath(fname);
-  fs.writeFileSync(p, content);
+  if (content && content.fromFile) fs.renameSync(content.fromFile, p); else fs.writeFileSync(p, content);
   return { file: SERVER ? '' : p, name: fname, url: `/api/export/${encodeURIComponent(fname)}` + (SERVER ? '' : `?t=${TOKEN}`) };
 }
 function openPath(target, select) {
@@ -169,7 +169,7 @@ const routes = {
       if (cloudsave.status().enabled) { job.progress(null, null, 'Φύλαξη στο GitHub…'); const sv = await cloudsave.save('ανάγνωση sites'); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); else job.log('Φυλάχτηκαν στο GitHub.'); }
       // the heavy work is done here, step by step, so the screens open at once afterwards
       const pause = () => new Promise((r) => setImmediate(r));
-      job.progress(null, null, 'Έλεγχοι καταλόγου…'); await pause(); checks.cached();
+      job.progress(null, null, 'Λέξεις για την ορθογραφία…'); await checks.warmWords(); job.progress(null, null, 'Έλεγχοι καταλόγου…'); await pause(); checks.cached();
       job.progress(null, null, 'Έτοιμες διορθώσεις…'); await pause(); fixes.compute();
       job.progress(null, null, 'Ροή εργασίας και τιμές…'); await pause(); require('./lib/flow').compute(); await pause();
       market.recompute();
@@ -480,7 +480,7 @@ const routes = {
   'GET /api/connect': () => ({ mode: MODE, port, urls: connectUrls() }),
   'GET /api/qr': (q) => qrMatrix(q.text),
   // the whole data folder in one file (download / upload): a copy to keep somewhere else
-  'POST /api/backup/make': async () => { const r = await store.pack(); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, r.buffer); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.buffer.length }, f); },
+  'POST /api/backup/make': async () => { const tmp = store.exportPath('.pack-' + crypto.randomBytes(6).toString('hex')); const r = await store.pack({ file: tmp }); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, { fromFile: tmp }); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.size }, f); },
   'POST /api/cloud/save': () => cloudsave.save('χειροκίνητα'),
   'POST /api/backup/upload': async (b) => { const r = await store.restoreFile(Buffer.from(String(b.base64 || ''), 'base64')); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return r; },
   'POST /api/me/password': (b, _, ctx) => { users.login(ctx.user.user, b.current, ctx.ip, ctx.ua); users.update(ctx.user.id, { password: b.password }); const r = users.startSession(users.byId(ctx.user.id), ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { csrf: r.csrf }; },

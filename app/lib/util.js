@@ -6,6 +6,16 @@ const ACC = { 'ά': 'α', 'έ': 'ε', 'ή': 'η', 'ί': 'ι', 'ό': 'ο', 'ύ': 
 const ACC_RE = /[άέήίόύώΐΰΆΈΉΊΌΎΏ]/g;
 
 function stripTonos(s) { return String(s == null ? '' : s).replace(ACC_RE, (c) => ACC[c]); }
+/** Share of Greek letters among all letters (0..1): below ~0.3 a text is in English (or another language). */
+function greekShare(text) {
+  const t = String(text || '');
+  let gr = 0, all = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if ((c >= 0x370 && c <= 0x3ff) || (c >= 0x1f00 && c <= 0x1fff)) { gr++; all++; } else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 0xc0 && c <= 0xff)) all++;
+  }
+  return all ? gr / all : 1;
+}
 function collapse(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
 
 /** Store title style: capitals without accents, single spaces. */
@@ -375,7 +385,7 @@ function nowIso() { return new Date().toISOString(); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 module.exports = {
-  stripTonos, collapse, greekUpper, foldKey, capsTitle, hasLowercase, spellSuggest, titleCase, learnAccents, accentMapFrom, greeklish, slugify, fixMixedScript, toGreekLetters,
+  greekShare, stripTonos, collapse, greekUpper, foldKey, capsTitle, hasLowercase, spellSuggest, titleCase, learnAccents, accentMapFrom, greeklish, slugify, fixMixedScript, toGreekLetters,
   decodeEntities, untexturize, escapeHtml, stripTags, parseNumber, r2, money, roundPrice, roundDown, median,
   toCSV, parseCSV, decodeText, uid, hostOf, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
 };

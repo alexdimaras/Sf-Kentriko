@@ -62,20 +62,25 @@ function fromShopify(p, base) {
 
 const iso = (ms) => new Date(ms).toISOString().slice(0, 19);
 
-async function wooPages(base, query, gap, onPage, cancelled, headers) {
+// a kept piece of a long answer keeps the whole answer in memory: each product is copied out (see catalog.fromStoreApiPacked)
+const fresh = (o) => JSON.parse(JSON.stringify(o));
+const fromWooFresh = (p) => fresh(fromWoo(p));
+/** map: each page converted as it arrives (the raw answers of a whole shop are never kept together). */
+async function wooPages(base, query, gap, onPage, cancelled, headers, map) {
   const url = (pg) => `${base}/wp-json/wc/store/v1/products?per_page=100&page=${pg}${query ? '&' + query : ''}`;
   const first = await http.getJson(url(1), { gap, timeout: 60000, retries: 2, headers });
   if (!Array.isArray(first.json)) throw new Error('Μη αναμενόμενη απάντηση');
   const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
   const total = parseInt(first.headers.get('x-wp-total') || '0', 10) || first.json.length;
-  const out = first.json.slice();
+  const conv = (list) => (map ? list.map(map) : list);
+  const out = conv(first.json);
   onPage && onPage(first.json.length, total);
   const rest = [];
   for (let p = 2; p <= pages; p++) rest.push(p);
   // two requests at a time per competitor, with a pause between them: polite, never a load on their shop
   await http.pool(rest, 2, async (pg) => {
     const r = await http.getJson(url(pg), { gap, timeout: 60000, retries: 2, headers });
-    if (Array.isArray(r.json)) { out.push(...r.json); onPage && onPage(r.json.length, 0); }
+    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of conv(r.json)) out.push(x); onPage && onPage(n, 0); }
   }, cancelled);
   return { items: out, total };
 }
@@ -91,15 +96,15 @@ async function syncWoo(c, prev, opts) {
   if (full) {
     mode = 'full';
     let r;
-    try { r = await wooPages(c.url, '_fields=' + WOO_FIELDS, gap, onPage, opts.cancelled, H); } catch (e) {
+    try { r = await wooPages(c.url, '_fields=' + WOO_FIELDS, gap, onPage, opts.cancelled, H, fromWooFresh); } catch (e) {
       if (e.status !== 400) throw e;
-      r = await wooPages(c.url, '', gap, onPage, opts.cancelled, H);
+      r = await wooPages(c.url, '', gap, onPage, opts.cancelled, H, fromWooFresh);
     }
-    items = r.items.map(fromWoo);
+    items = r.items;
   } else {
     mode = 'changes';
     const since = iso(new Date(prev.syncStartedAt).getTime() - 2 * 3600e3);
-    const changed = (await wooPages(c.url, `after=${encodeURIComponent(since)}&date_column=modified_gmt&_fields=${WOO_FIELDS}`, gap, onPage, opts.cancelled, H)).items.map(fromWoo);
+    const changed = (await wooPages(c.url, `after=${encodeURIComponent(since)}&date_column=modified_gmt&_fields=${WOO_FIELDS}`, gap, onPage, opts.cancelled, H, fromWooFresh)).items;
     const map = new Map(prev.products.map((p) => [p.id, p]));
     for (const p of changed) map.set(p.id, p);
     const head = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=1&_fields=id`, { gap, timeout: 30000, headers: H });
@@ -111,7 +116,7 @@ async function syncWoo(c, prev, opts) {
       const missing = [...ids].filter((id) => !map.has(id));
       for (let i = 0; i < missing.length; i += 100) {
         const r = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${WOO_FIELDS}`, { gap, timeout: 60000, headers: H });
-        for (const p of r.json || []) map.set(p.id, fromWoo(p));
+        for (const p of r.json || []) map.set(p.id, fromWooFresh(p));
       }
     }
     items = [...map.values()];
@@ -131,7 +136,7 @@ async function syncShopify(c, prev, opts) {
     total += list.length;
     opts.prog.addTotal(list.length);
     opts.prog.add(list.length);
-    for (const p of list) items.push(fromShopify(p, c.url));
+    for (const p of list) items.push(fresh(fromShopify(p, c.url)));
     if (list.length < 250) break;
   }
   void total;

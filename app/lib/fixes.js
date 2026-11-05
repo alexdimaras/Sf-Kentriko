@@ -28,15 +28,7 @@ const GROUPS = { content: 'Περιεχόμενο', titles: 'Τίτλοι', pric
 /** Meta description for Google: the text after the title heading, cut at ~155 characters on a word. */
 function metaOf(html) { return require('./wooexport').metaDescription(String(html || '').replace(/^\s*<(h[1-6]|p)>(?:<strong>)?[^<]*(?:<\/strong>)?<\/\1>/i, ''), ''); }
 const hashOf = (v) => crypto.createHash('sha1').update(JSON.stringify(v)).digest('hex').slice(0, 12);
-// the same descriptions are read many times in one pass: their plain text is kept (cleared when it grows)
-const textMemo = new Map();
-const stripText = (html) => {
-  const h = String(html || '');
-  if (!h) return '';
-  let t = textMemo.get(h);
-  if (t === undefined) { if (textMemo.size > 20000) textMemo.clear(); t = U.collapse(U.stripTags(h)); textMemo.set(h, t); }
-  return t;
-};
+const stripText = (html) => { const h = String(html || ''); return h ? U.collapse(U.stripTags(h)) : ''; };
 /** Share of Greek letters among all letters (0..1): below ~0.3 the text is in English (or another language). */
 function greekShare(text) {
   const t = String(text || '');
@@ -60,20 +52,36 @@ function decisions() { return store.read(KEY, null) || {}; }
 function cache() { const c = store.read(CACHE, null) || {}; c.products = c.products || {}; c.pages = c.pages || {}; return c; }
 
 // ---------- what a product needs ----------
-function contentNeeds(p, s) {
-  const desc = stripText(p.desc);
-  // a "description" that is only the title again (checked only for short texts: it is cheap that way)
+// What the description is like, worked out once per text (the description is kept compressed: opening it for
+// every product at every pass would be slow). Kept on the product, not saved.
+const NEED = Symbol('need');
+function textInfo(p) {
+  const key = (p.descZ || '') + '|' + (p.shortZ || '') + '|' + p.name;
+  const c = p[NEED];
+  if (c && c.key === key) return c;
+  // products packed by this version carry the facts of their description; older ones are opened once
+  let desc, gr;
+  if (p.descHead !== undefined && p.descGr !== undefined) { desc = { length: p.descLen || 0, head: p.descHead }; gr = p.descGr; }
+  else { const t = stripText(p.desc); desc = { length: t.length, head: t.slice(0, 200) }; gr = greekShare(t); }
   let onlyTitle = false;
-  if (desc && desc.length <= p.name.length + 40) {
-    const title = U.foldKey(p.name), fd = U.foldKey(desc);
+  if (desc.length && desc.length <= p.name.length + 40) {
+    const title = U.foldKey(p.name), fd = U.foldKey(desc.head);
     onlyTitle = fd.replace(/[^A-Z0-9Α-Ω ]/g, '').trim().length <= title.length + 12 && fd.includes(title.slice(0, Math.min(20, title.length)));
   }
-  const english = desc.length >= 80 && greekShare(desc) < 0.3;
+  const info = { key, len: desc.length, onlyTitle, english: desc.length >= 80 && gr < 0.3, greek: desc.length ? gr : 0, short: p.shortLen !== undefined ? p.shortLen > 0 : !!stripText(p.short) };
+  Object.defineProperty(p, NEED, { value: info, configurable: true, enumerable: false });
+  return info;
+}
+function contentNeeds(p, s) {
+  const ti = textInfo(p);
+  const desc = { length: ti.len };
+  // a "description" that is only the title again (checked only for short texts: it is cheap that way)
+  const onlyTitle = ti.onlyTitle, english = ti.english;
   return {
-    desc: !desc || desc.length < Math.max(300, s.descMinChars || 150) || onlyTitle || english,
-    descWhy: !desc ? 'Δεν έχει περιγραφή' : onlyTitle ? 'Η περιγραφή επαναλαμβάνει μόνο τον τίτλο' : english ? 'Η περιγραφή είναι στα αγγλικά' : `Πολύ μικρή περιγραφή (${desc.length} χαρακτήρες)`,
+    desc: !desc.length || desc.length < Math.max(300, s.descMinChars || 150) || onlyTitle || english,
+    descWhy: !desc.length ? 'Δεν έχει περιγραφή' : onlyTitle ? 'Η περιγραφή επαναλαμβάνει μόνο τον τίτλο' : english ? 'Η περιγραφή είναι στα αγγλικά' : `Πολύ μικρή περιγραφή (${desc.length} χαρακτήρες)`,
     english, hasOwn: desc.length >= 40 && !onlyTitle && !english,
-    short: !stripText(p.short),
+    short: !ti.short,
     images: (p.images || []).length < 2,
     brand: !p.brand,
   };
@@ -242,7 +250,7 @@ function compute() {
       const found = ec.products[site + ':' + p.id];
       const twin = (() => { const oid = map.get(p.id); return oid ? oById.get(oid) : null; })();
       // our other site already has a good text / more photos: the safest source of all (our own work)
-      const twinDesc = twin && stripText(twin.desc).length >= 300 && greekShare(stripText(twin.desc)) >= 0.3 ? twin.desc : '';
+      const twinDesc = need.desc && !need.hasOwn && twin && textInfo(twin).len >= 300 && textInfo(twin).greek >= 0.3 ? twin.desc : '';
       if (need.desc && twinDesc && !need.hasOwn) {
         add(Object.assign({}, base, { field: 'desc', from: p.desc || '', to: { html: twinDesc, meta: seo ? metaOf(twinDesc) : '' }, why: need.descWhy + `. Το ίδιο προϊόν στο ${s.sites[other].name} έχει πλήρη περιγραφή.`, source: { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, level: 'high' }));
       } else if (need.desc && found && found.data && stripText(scrub(found.data.descHtmlEl || found.data.descHtml, found.data.supplier)).length >= 80) {
@@ -335,7 +343,7 @@ function quality(site) {
   let after = 0;
   for (const p of main) {
     const n = contentNeeds(p, s);
-    const desc = stripText(p.desc).length;
+    const desc = textInfo(p).len;
     const sc = {
       desc: n.desc ? (desc >= 80 && !n.english ? 0.4 : 0) : 1,
       images: (p.images || []).length >= 2 ? 1 : (p.images || []).length === 1 ? 0.5 : 0,

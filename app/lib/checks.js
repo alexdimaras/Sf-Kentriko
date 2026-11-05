@@ -31,24 +31,35 @@ function wordStats() {
   wordMemo = { cats, out };
   return out;
 }
-function wordStatsNow() {
+/** The same, in pieces (the program keeps answering): used right after a read, before the checks. */
+async function warmWords() {
+  const cats = catalog.SITES.map((s) => catalog.load(s));
+  if (wordMemo && wordMemo.cats.every((c, i) => c === cats[i])) return;
+  const out = await wordStatsNow(true);
+  wordMemo = { cats, out };
+}
+function wordStatsNow(pieces) {
   const freq = new Map(), latin = new Map();
   const seen = new Set();
-  for (const site of catalog.SITES) {
-    for (const p of catalog.load(site).products) {
-      if (p.type === 'variation') continue;
+  const all = [];
+  for (const site of catalog.SITES) for (const p of catalog.load(site).products) if (p.type !== 'variation') all.push(p);
+  const one = (p) => {
       // the same product on both shops counts once; titles and descriptions both count
       const key = U.foldKey(p.name);
       const dup = seen.has(key); seen.add(key);
-      if (dup) continue;
-      const text = p.name + ' ' + U.stripTags(String(p.short || '') + ' ' + String(p.desc || '')).slice(0, 4000);
+      if (dup) return;
+      // the first 4000 letters are enough: the description is opened and cut before the slow clean-up
+      const text = p.name + ' ' + U.stripTags((String(p.short || '') + ' ' + String(p.desc || '')).slice(0, 12000)).slice(0, 4000);
       for (const w of new Set(spell.plain(text).split(/[^\u0370-\u03ffA-Z]+/))) {
         if (/^[\u0391-\u03a9]{3,}$/.test(w)) freq.set(w, (freq.get(w) || 0) + 1);
         else if (/^[A-Z]{3,}$/.test(w)) latin.set(w, (latin.get(w) || 0) + 1);
       }
-    }
-  }
-  return { freq, latin };
+  };
+  if (!pieces) { for (const p of all) one(p); return { freq, latin }; }
+  return (async () => {
+    for (let i = 0; i < all.length; i++) { one(all[i]); if (i % 200 === 199) await new Promise((r) => setImmediate(r)); }
+    return { freq, latin };
+  })();
 }
 
 /** Type word for a title that starts with a brand: the most common first word in the same category. */
@@ -376,4 +387,4 @@ function ignoredItems(checkId) {
   return keys.map((k) => { const [site, id] = k.split(':'); const p = catalog.load(site).products.find((x) => x.id === Number(id)); return p ? { site, id: p.id, name: p.name, sku: p.sku } : { site, id: Number(id), name: '(δεν υπάρχει πια)' }; });
 }
 
-module.exports = { run, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };
+module.exports = { warmWords, run, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };

@@ -16,7 +16,42 @@ function siteUrl(site) {
 }
 
 function emptyCatalog() { return { syncedAt: null, source: null, products: [], categories: [], info: {} }; }
-function load(site) { return store.read('catalog-' + site, emptyCatalog); }
+function load(site) {
+  const c = store.read('catalog-' + site, emptyCatalog);
+  if (!c[PACKED]) { for (const p of c.products) if (p.type !== 'variation') packProduct(p); Object.defineProperty(c, PACKED, { value: true }); }
+  return c;
+}
+
+// ---------- descriptions kept compressed ----------
+// A shop of ~10.000 products has ~100 MB of description HTML; Greek text takes 2 bytes a letter in memory, more
+// than a small cloud machine has. Each product keeps its description and short description compressed
+// (descZ / shortZ, about 1/4 of the size) and p.desc / p.short open them only when they are read.
+const zlib = require('zlib');
+const PACKED = Symbol('packed');
+const TEXTS = ['desc', 'short'];
+function packText(s) { s = String(s == null ? '' : s); return s ? zlib.deflateRawSync(Buffer.from(s, 'utf8'), { level: 6 }).toString('base64') : ''; }
+function unpackText(z) { return z ? zlib.inflateRawSync(Buffer.from(z, 'base64')).toString('utf8') : ''; }
+function packProduct(p) {
+  for (const k of TEXTS) {
+    const d = Object.getOwnPropertyDescriptor(p, k);
+    if (d && !('value' in d)) continue; // already packed
+    if (d) { delete p[k]; p[k + 'Z'] = packText(d.value); textFacts(p, k, d.value); }
+    Object.defineProperty(p, k, {
+      configurable: true, enumerable: false,
+      get() { return unpackText(this[k + 'Z']); },
+      set(v) { this[k + 'Z'] = packText(v); textFacts(this, k, v); },
+    });
+  }
+  return p;
+}
+/** Length, Greek share and the start of the plain text: what the checks need, without opening the text again. */
+function textFacts(p, k, html) {
+  const t = U.stripTags(String(html || ''));
+  if (k === 'desc') { p.descLen = t.length; p.descGr = Math.round(U.greekShare(t) * 100) / 100; p.descHead = t.slice(0, 200); }
+  else p.shortLen = t.length;
+}
+/** A product for the screen: the texts opened, the compressed copies left out. */
+function withTexts(p) { const o = Object.assign({}, p, { desc: p.desc, short: p.short }); delete o.descZ; delete o.shortZ; return o; }
 
 // ---------- Normalization ----------
 function money(prices, key) {
@@ -73,6 +108,13 @@ function fromStoreApi(p) {
     status: 'publish',
   };
 }
+/**
+ * fromStoreApi with the texts compressed at once (a whole shop never sits in memory as plain text).
+ * The copy through JSON matters: a short piece of the site's answer (a link, a code) would otherwise keep the WHOLE
+ * answer of 100 products alive in memory (that is how JavaScript keeps parts of long texts).
+ */
+function fromStoreApiPacked(p) { return packProduct(fresh(packProduct(fromStoreApi(p)))); }
+function fresh(o) { return JSON.parse(JSON.stringify(o)); }
 function safeDecode(s) { try { return decodeURIComponent(s); } catch (_) { return s; } }
 
 function catFromStoreApi(c) {
@@ -162,7 +204,7 @@ function makeProgress(job) {
 
 function slimVariation(v) {
   const n = fromStoreApi(v);
-  return { id: n.id, type: 'variation', parent: n.parent, varLabel: n.varLabel, sku: n.sku, price: n.price, regular: n.regular, sale: n.sale, inStock: n.inStock, image: n.images[0] || '', thumb: n.thumb || '' };
+  return fresh({ id: n.id, type: 'variation', parent: n.parent, varLabel: n.varLabel, sku: n.sku, price: n.price, regular: n.regular, sale: n.sale, inStock: n.inStock, image: n.images[0] || '', thumb: n.thumb || '' });
 }
 
 function isoUtc(ms) { return new Date(ms).toISOString().slice(0, 19); }
@@ -194,7 +236,7 @@ async function syncSite(site, job, opts) {
   if (full) {
     mode = 'full';
     let prods;
-    const ph = Object.assign({}, hooks, { map: fromStoreApi, check: (raw) => { if (raw.length && !raw[0].prices) throw new Error('fields'); } });
+    const ph = Object.assign({}, hooks, { map: fromStoreApiPacked, check: (raw) => { if (raw.length && !raw[0].prices) throw new Error('fields'); } });
     try {
       prods = await fetchAll(base, 'products', '_fields=' + FIELDS, ph);
     } catch (e) {
@@ -226,7 +268,7 @@ async function syncSite(site, job, opts) {
     mode = 'changes';
     const since = isoUtc(new Date(prev.syncStartedAt).getTime() - 2 * 3600e3);
     const q = `after=${encodeURIComponent(since)}&date_column=modified_gmt`;
-    const changed = (await fetchAll(base, 'products', q + '&_fields=' + FIELDS, Object.assign({}, hooks, { map: fromStoreApi }))).items;
+    const changed = (await fetchAll(base, 'products', q + '&_fields=' + FIELDS, Object.assign({}, hooks, { map: fromStoreApiPacked }))).items;
     if (cancelled()) return null;
     let changedVars = [];
     if (s.syncVariations) changedVars = (await fetchAll(base, 'products', 'type=variation&' + q + '&_fields=' + VAR_FIELDS, Object.assign({}, hooks, { map: slimVariation }))).items;
@@ -243,7 +285,7 @@ async function syncSite(site, job, opts) {
       const missing = [...ids].filter((id) => !main.has(id));
       for (let i = 0; i < missing.length; i += 100) {
         const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${FIELDS}`, { gap: 120, timeout: 60000 });
-        for (const p of r.json || []) main.set(p.id, fromStoreApi(p));
+        for (const p of r.json || []) main.set(p.id, fromStoreApiPacked(p));
       }
     }
     if (cancelled()) return null;
@@ -289,12 +331,13 @@ function saveCatalog(site, data) {
   const cat = Object.assign({ syncedAt: U.nowIso(), source: data.source, products: data.products, categories: data.categories, info: Object.assign({}, prev.info || {}, data.info || {}) }, data.meta || {});
   const byId = new Map(cat.products.map((p) => [p.id, p]));
   for (const p of cat.products) {
-    if (p.type !== 'variation') continue;
+    if (p.type !== 'variation') { packProduct(p); continue; }
     const par = byId.get(p.parent);
     // WooCommerce shows the parent's code on variations without their own: that is not a real code.
     if (par && p.sku && p.sku === par.sku) { p.sku = ''; p.skuInherited = true; }
     if (!p.thumb && p.image) p.thumb = p.image;
   }
+  Object.defineProperty(cat, PACKED, { value: true });
   inferBrands(cat);
   const diff = diffCatalogs(prev, cat);
   store.write('catalog-' + site, cat);
@@ -756,7 +799,7 @@ function productDetail(site, id) {
   const supp = require('./suppliers');
   const market = require('./market');
   return {
-    site, product: p, variations: vars,
+    site, product: withTexts(p), variations: vars,
     adminUrl: base ? `${base}/wp-admin/post.php?post=${p.id}&action=edit` : '',
     other: o ? { site: other, id: o.id, name: o.name, price: o.price, regular: o.regular, sale: o.sale, url: o.url, adminUrl: `${siteUrl(other)}/wp-admin/post.php?post=${o.id}&action=edit`, how: L.how.get(site === 'sf' ? p.id : oid) || '' } : null,
     supplier: supp.view(supp.forProduct(p)),
