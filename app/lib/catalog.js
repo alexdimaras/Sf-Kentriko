@@ -98,13 +98,16 @@ async function fetchAll(base, path, query, hooks) {
   const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
   const total = parseInt(first.headers.get('x-wp-total') || '0', 10) || first.json.length;
   hooks.onTotal && hooks.onTotal(total);
-  const out = first.json.slice();
+  // each page is converted as it arrives (hooks.map): the raw answers of the whole shop are never kept together
+  if (hooks.check) hooks.check(first.json);
+  const conv = (list) => (hooks.map ? list.map(hooks.map) : list);
+  const out = conv(first.json);
   hooks.onItems && hooks.onItems(first.json.length);
   const rest = [];
   for (let p = 2; p <= pages; p++) rest.push(p);
   await http.pool(rest, CONCURRENCY, async (pg) => {
     const r = await http.getJson(apiUrl(base, path, query, pg), { gap: 120, timeout: 60000 });
-    if (Array.isArray(r.json)) { out.push(...r.json); hooks.onItems && hooks.onItems(r.json.length); }
+    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n); }
   }, hooks.cancelled);
   return { items: out, total };
 }
@@ -191,21 +194,21 @@ async function syncSite(site, job, opts) {
   if (full) {
     mode = 'full';
     let prods;
+    const ph = Object.assign({}, hooks, { map: fromStoreApi, check: (raw) => { if (raw.length && !raw[0].prices) throw new Error('fields'); } });
     try {
-      prods = await fetchAll(base, 'products', '_fields=' + FIELDS, hooks);
-      if (prods.items.length && !prods.items[0].prices) throw new Error('fields');
+      prods = await fetchAll(base, 'products', '_fields=' + FIELDS, ph);
     } catch (e) {
       if (e.message !== 'fields' && e.status !== 400) throw e;
-      prods = await fetchAll(base, 'products', '', hooks);
+      prods = await fetchAll(base, 'products', '', Object.assign({}, ph, { check: null }));
     }
     if (cancelled()) return null;
-    products = prods.items.map(fromStoreApi);
+    products = prods.items;
     job && job.log(`${name}: ${products.length} προϊόντα (${Math.round((Date.now() - t0) / 1000)} δευτ.).`);
     let vars = [];
     if (s.syncVariations && products.some((p) => p.type === 'variable')) {
       try {
         const t1 = Date.now();
-        vars = (await fetchAll(base, 'products', 'type=variation&_fields=' + VAR_FIELDS, hooks)).items.map(slimVariation);
+        vars = (await fetchAll(base, 'products', 'type=variation&_fields=' + VAR_FIELDS, Object.assign({}, hooks, { map: slimVariation }))).items;
         job && job.log(`${name}: ${vars.length} παραλλαγές (${Math.round((Date.now() - t1) / 1000)} δευτ.).`);
       } catch (e) {
         job && job.log(`${name}: οι παραλλαγές δεν διαβάστηκαν (${e.message}). Συνεχίζω χωρίς αυτές.`);
@@ -223,10 +226,10 @@ async function syncSite(site, job, opts) {
     mode = 'changes';
     const since = isoUtc(new Date(prev.syncStartedAt).getTime() - 2 * 3600e3);
     const q = `after=${encodeURIComponent(since)}&date_column=modified_gmt`;
-    const changed = (await fetchAll(base, 'products', q + '&_fields=' + FIELDS, hooks)).items.map(fromStoreApi);
+    const changed = (await fetchAll(base, 'products', q + '&_fields=' + FIELDS, Object.assign({}, hooks, { map: fromStoreApi }))).items;
     if (cancelled()) return null;
     let changedVars = [];
-    if (s.syncVariations) changedVars = (await fetchAll(base, 'products', 'type=variation&' + q + '&_fields=' + VAR_FIELDS, hooks)).items.map(slimVariation);
+    if (s.syncVariations) changedVars = (await fetchAll(base, 'products', 'type=variation&' + q + '&_fields=' + VAR_FIELDS, Object.assign({}, hooks, { map: slimVariation }))).items;
     if (cancelled()) return null;
     const main = new Map(prev.products.filter((p) => p.type !== 'variation').map((p) => [p.id, p]));
     for (const p of changed) main.set(p.id, p);

@@ -227,8 +227,8 @@ function supplierSite() {
     ok(/^sf-kentro-antigrafo-[0-9a-f]{12}-\d{8}-\d{6}\.json\.gz$/.test(bk.name) && bk.files > 5, 'one-file copy of the data', bk.name + ' ' + bk.files);
     ok((await fetch(base + bk.url, { headers: { Cookie: c2 } })).status === 403, 'a staff user cannot download the copy even with its name');
     const gz = Buffer.from(await (await fetch(base + bk.url, { headers: { Cookie: cookie } })).arrayBuffer());
-    const parsed = JSON.parse(require('zlib').gunzipSync(gz).toString('utf8'));
-    ok(parsed.app === 'sf-kentro' && parsed.files.settings && !parsed.files.sessions, 'the copy has the data but not the open sessions');
+    const raw = require('zlib').gunzipSync(gz).toString('utf8');
+    ok(raw.startsWith('SFKPACK2\n') && /settings\n\d+\n\{/.test(raw) && !/sessions\n\d+\n\{/.test(raw), 'the copy has the data but not the open sessions');
     const up = await fetch(base + '/api/backup/upload', { method: 'POST', headers: H, body: JSON.stringify({ base64: gz.toString('base64') }) });
     ok(up.status === 200 && (await up.json()).files === bk.files, 'restore from the file');
     const junk = await fetch(base + '/api/backup/upload', { method: 'POST', headers: H, body: JSON.stringify({ base64: Buffer.from('not a copy').toString('base64') }) });

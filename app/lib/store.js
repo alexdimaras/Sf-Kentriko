@@ -117,10 +117,47 @@ function write(name, value) {
   cache.set(name, value);
   const f = file(name);
   const tmp = f + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(value));
+  if (isBig(value)) writeStreamed(tmp, value); else fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, f);
   for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
   return value;
+}
+
+// A catalog (thousands of products with their descriptions) as ONE string would need hundreds of MB on a small
+// cloud machine (Greek text takes 2 bytes a letter in memory). Big lists are written item by item instead:
+// the file is exactly the same JSON.
+function isBig(v) {
+  if (!v || typeof v !== 'object') return false;
+  if (Array.isArray(v)) return v.length >= 500;
+  for (const k in v) if (Array.isArray(v[k]) && v[k].length >= 500) return true;
+  return false;
+}
+function writeStreamed(target, value) {
+  const fd = fs.openSync(target, 'w');
+  try {
+    let buf = '';
+    const put = (s) => { buf += s; if (buf.length > 1 << 20) { fs.writeSync(fd, buf); buf = ''; } };
+    const list = (arr) => {
+      put('[');
+      for (let i = 0; i < arr.length; i++) { const x = JSON.stringify(arr[i]); put((i ? ',' : '') + (x === undefined ? 'null' : x)); }
+      put(']');
+    };
+    if (Array.isArray(value)) list(value);
+    else {
+      put('{');
+      let first = true;
+      for (const k of Object.keys(value)) {
+        const v = value[k];
+        if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
+        put((first ? '' : ',') + JSON.stringify(k) + ':');
+        first = false;
+        if (Array.isArray(v) && v.length >= 500) list(v);
+        else put(JSON.stringify(v));
+      }
+      put('}');
+    }
+    if (buf) fs.writeSync(fd, buf);
+  } finally { fs.closeSync(fd); }
 }
 
 function update(name, def, fn) {
@@ -201,6 +238,106 @@ async function bundleAsync(opts) {
   const buffer = await require('util').promisify(zlib.gzip)(Buffer.from(`{"app":"sf-kentro","at":${JSON.stringify(new Date().toISOString())},"files":${body}}`), { level: 6 });
   return { buffer, files: parts.length, hash };
 }
+// ---------- the "pack": every data file as it is on disk, one after the other, compressed as a stream ----------
+// Nothing is parsed or joined into one big string, so it works with catalogs of any size on a small machine:
+// SFKPACK2\n, then for each file "name\nsize\n" and its bytes.
+const PACK_MAGIC = 'SFKPACK2\n';
+function packNames(allow) { return fs.readdirSync(dir()).filter((f) => f.endsWith('.json') && (!NO_BACKUP.test(f) || allow.has(f.slice(0, -5)))).sort(); }
+async function pack(opts) {
+  const allow = new Set((opts && opts.allow) || []);
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256');
+  const gz = zlib.createGzip({ level: 6 });
+  const out = [];
+  gz.on('data', (c) => out.push(c));
+  const done = new Promise((resolve, reject) => { gz.on('end', resolve); gz.on('error', reject); });
+  const put = (b) => new Promise((resolve) => { if (gz.write(b)) resolve(); else gz.once('drain', resolve); });
+  await put(Buffer.from(PACK_MAGIC));
+  let files = 0;
+  for (const f of packNames(allow)) {
+    // read in pieces: the program keeps answering while a big catalog is packed
+    let fd, size;
+    try { fd = fs.openSync(path.join(dir(), f), 'r'); size = fs.fstatSync(fd).size; } catch (_) { continue; }
+    try {
+      if (!size) continue;
+      const head = Buffer.from(`${f.slice(0, -5)}\n${size}\n`);
+      hash.update(head);
+      await put(head);
+      for (let at = 0; at < size;) {
+        const chunk = Buffer.allocUnsafe(Math.min(1 << 20, size - at));
+        const n = fs.readSync(fd, chunk, 0, chunk.length, at);
+        if (!n) throw new Error('Το αρχείο ' + f + ' άλλαξε την ώρα της φύλαξης.');
+        const part = chunk.subarray(0, n);
+        hash.update(part);
+        await put(part);
+        at += n;
+        await new Promise((r) => setImmediate(r));
+      }
+      files++;
+    } finally { fs.closeSync(fd); }
+  }
+  gz.end();
+  await done;
+  return { buffer: Buffer.concat(out), files, hash: hash.digest('hex') };
+}
+/** Puts back a pack: each file written as it is (no parsing), atomically. Returns the same hash as pack(). */
+async function unpack(buf, opts) {
+  const allow = new Set((opts && opts.allow) || []);
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256');
+  if (!(opts && opts.fresh)) safetyCopy();
+  const gun = zlib.createGunzip();
+  let pending = Buffer.alloc(0), magic = false, cur = null, fd = null, names = [];
+  const finishFile = () => { fs.closeSync(fd); fd = null; fs.renameSync(cur.tmp, cur.target); names.push(cur.name); cur = null; };
+  const take = (chunk) => {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+    for (;;) {
+      if (!magic) {
+        if (pending.length < PACK_MAGIC.length) return;
+        if (pending.subarray(0, PACK_MAGIC.length).toString() !== PACK_MAGIC) throw new Error('Δεν είναι αντίγραφο του προγράμματος.');
+        pending = pending.subarray(PACK_MAGIC.length); magic = true;
+      }
+      if (!cur) {
+        const a = pending.indexOf(10); if (a < 0) return;
+        const b = pending.indexOf(10, a + 1); if (b < 0) return;
+        const name = pending.subarray(0, a).toString('utf8'), size = Number(pending.subarray(a + 1, b).toString());
+        if (!/^[a-z0-9][a-z0-9._-]{0,80}$/i.test(name) || !(size >= 0)) throw new Error('Το αντίγραφο είναι χαλασμένο.');
+        hash.update(pending.subarray(0, b + 1));
+        pending = pending.subarray(b + 1);
+        const keep = !NO_BACKUP.test(name + '.json') || allow.has(name);
+        const target = file(name);
+        cur = { name, left: size, keep, target, tmp: target + '.tmp-' + process.pid };
+        fd = fs.openSync(keep ? cur.tmp : (process.platform === 'win32' ? 'NUL' : '/dev/null'), 'w');
+        if (!size) { if (keep) finishFile(); else { fs.closeSync(fd); fd = null; cur = null; } continue; }
+      }
+      if (!pending.length) return;
+      const part = pending.subarray(0, Math.min(cur.left, pending.length));
+      hash.update(part); fs.writeSync(fd, part);
+      cur.left -= part.length; pending = pending.subarray(part.length);
+      if (!cur.left) { if (cur.keep) finishFile(); else { fs.closeSync(fd); fd = null; cur = null; } }
+    }
+  };
+  await new Promise((resolve, reject) => {
+    gun.on('data', (c) => { try { take(c); } catch (e) { gun.destroy(); reject(e); } });
+    gun.on('end', resolve); gun.on('error', () => reject(new Error('Δεν είναι αντίγραφο του προγράμματος (λάθος αρχείο).')));
+    gun.end(buf);
+  });
+  if (cur) throw new Error('Το αντίγραφο είναι κομμένο (δεν κατέβηκε ολόκληρο).');
+  cache.clear();
+  if (!names.length) throw new Error('Το αντίγραφο είναι άδειο.');
+  for (const n of names) for (const fn of listeners) { try { fn(n); } catch (_) { /* ignore */ } }
+  return { files: names.length, hash: hash.digest('hex'), at: null };
+}
+function safetyCopy() {
+  const safety = path.join(dir(), 'backups', 'before-restore-' + Date.now());
+  fs.mkdirSync(safety, { recursive: true });
+  for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
+}
+/** Is this compressed file a pack (new) or a bundle (older versions)? */
+function isPack(buf) { try { return zlib.gunzipSync(buf.subarray(0, Math.min(buf.length, 4096)), { finishFlush: zlib.constants.Z_SYNC_FLUSH }).subarray(0, PACK_MAGIC.length).toString() === PACK_MAGIC; } catch (_) { return false; } }
+/** Restore from a file of any version. */
+async function restoreFile(buf, opts) { return isPack(buf) ? unpack(buf, opts) : unbundle(buf, opts); }
+
 /**
  * Put back a bundle made by bundle(): a safety copy of today's state first, then every file of the bundle.
  * opts.allow: the same as for bundle(); opts.fresh: an empty data folder at start (no safety copy needed).
@@ -244,4 +381,4 @@ function restoreBackup(day) {
   cache.clear();
 }
 
-module.exports = { bundle, bundleAsync, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
+module.exports = { pack, unpack, restoreFile, isPack, bundle, bundleAsync, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };

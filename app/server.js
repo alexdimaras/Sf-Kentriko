@@ -165,12 +165,15 @@ const routes = {
       if (SMALL) { for (const site of sites) await one(site); } else await Promise.all(sites.map(one));
       checks.invalidate(); suppliers.resetIndex(); fixes.invalidate();
       if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => out[s].error).join(' / '));
+      // free cloud: what was read is kept in GitHub at once, before anything else can go wrong
+      if (cloudsave.status().enabled) { job.progress(null, null, 'Φύλαξη στο GitHub…'); const sv = await cloudsave.save('ανάγνωση sites'); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); else job.log('Φυλάχτηκαν στο GitHub.'); }
       // the heavy work is done here, step by step, so the screens open at once afterwards
       const pause = () => new Promise((r) => setImmediate(r));
       job.progress(null, null, 'Έλεγχοι καταλόγου…'); await pause(); checks.cached();
       job.progress(null, null, 'Έτοιμες διορθώσεις…'); await pause(); fixes.compute();
       job.progress(null, null, 'Ροή εργασίας και τιμές…'); await pause(); require('./lib/flow').compute(); await pause();
       market.recompute();
+      if (cloudsave.status().enabled) await cloudsave.save('έλεγχοι');
       return out;
     });
   },
@@ -477,9 +480,9 @@ const routes = {
   'GET /api/connect': () => ({ mode: MODE, port, urls: connectUrls() }),
   'GET /api/qr': (q) => qrMatrix(q.text),
   // the whole data folder in one file (download / upload): a copy to keep somewhere else
-  'POST /api/backup/make': () => { const r = store.bundle(); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, r.buffer); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.buffer.length }, f); },
+  'POST /api/backup/make': async () => { const r = await store.pack(); const name = `sf-kentro-antigrafo-${crypto.randomBytes(6).toString('hex')}.json.gz`; const f = saveExport(name, r.buffer); if (SERVER) setTimeout(() => { try { fs.unlinkSync(store.exportPath(f.name)); } catch (_) { /* gone */ } }, 15 * 60 * 1000).unref(); return Object.assign({ files: r.files, size: r.buffer.length }, f); },
   'POST /api/cloud/save': () => cloudsave.save('χειροκίνητα'),
-  'POST /api/backup/upload': (b) => { const r = store.unbundle(Buffer.from(String(b.base64 || ''), 'base64')); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return r; },
+  'POST /api/backup/upload': async (b) => { const r = await store.restoreFile(Buffer.from(String(b.base64 || ''), 'base64')); checks.invalidate(); suppliers.resetIndex(); fixes.invalidate(); return r; },
   'POST /api/me/password': (b, _, ctx) => { users.login(ctx.user.user, b.current, ctx.ip, ctx.ua); users.update(ctx.user.id, { password: b.password }); const r = users.startSession(users.byId(ctx.user.id), ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { csrf: r.csrf }; },
 };
 // server mode: open without a session / only for administrators

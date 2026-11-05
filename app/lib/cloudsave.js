@@ -51,8 +51,9 @@ async function restoreOnce() {
   if (r.status === 404) { state.loadedAt = new Date().toISOString(); return { files: 0, first: true }; }
   if (!r.ok) throw new Error(`GitHub: δεν διαβάστηκαν τα δεδομένα (${r.status}).`);
   const buf = Buffer.from(await r.arrayBuffer());
-  const out = store.unbundle(buf, { allow: KEEP, fresh: true });
-  lastHash = (await store.bundleAsync({ allow: KEEP })).hash;
+  // the pack is written to disk as it is (nothing parsed): any catalog size fits on the small machine
+  const out = await store.restoreFile(buf, { allow: KEEP, fresh: true });
+  lastHash = out.hash || (await store.pack({ allow: KEEP })).hash;
   state.loadedAt = new Date().toISOString();
   return out;
 }
@@ -64,7 +65,7 @@ function save(reason) {
   const at = changes;
   saving = (async () => {
     check();
-    const b = await store.bundleAsync({ allow: KEEP });
+    const b = await store.pack({ allow: KEEP });
     if (b.hash === lastHash) { state.pending = changes !== at; return { same: true }; }
     const message = `SF Κέντρο: δεδομένα (${reason || 'αλλαγές'}) ${new Date().toISOString()}`;
     // one commit without history: the old copies are not kept in the repository
