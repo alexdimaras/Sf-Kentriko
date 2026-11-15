@@ -198,7 +198,7 @@
           const sb = h('div', { class: 'ulist' });
           for (const x of data.sessions) {
             sb.appendChild(h('div', { class: 'urow' }, h('div', { class: 'u-main' }, h('b', null, `${x.user} · ${deviceOf(x.ua)}`),
-              h('span', { class: 'faint' }, [fmt.ago(x.lastSeen), x.ip, x.remembered ? 'μένει συνδεδεμένη έως 12 ώρες χωρίς χρήση' : ''].filter(Boolean).join(' · '))),
+              h('span', { class: 'faint' }, [fmt.ago(x.lastSeen), x.ip, x.remembered ? 'μένει συνδεδεμένη έως 30 μέρες χωρίς χρήση' : ''].filter(Boolean).join(' · '))),
               h('div', { class: 'u-side' }, x.current ? h('span', { class: 'pill' }, 'αυτή η συσκευή') : btn('Αποσύνδεση', { cls: 'sm ghost danger', icon: 'logout' }, async () => {
                 if (await confirmBox('Αποσύνδεση αυτής της συσκευής;', `${x.user} · ${deviceOf(x.ua)}. Για να ξαναμπεί θα χρειαστεί τον κωδικό του. Αν χάθηκε το κινητό, άλλαξε και τον κωδικό του χρήστη.`, 'Αποσύνδεση', true)) POST('/api/users/session-end', { id: x.id }).then(() => { toast('Η συσκευή αποσυνδέθηκε.'); App.route(); }).catch(fail);
               }))));
@@ -368,7 +368,7 @@
     box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Στο κινητό, μία φορά'),
       h('ol', { class: 'steps' },
         h('li', null, h('b', null, 'Σκάναρε το QR'), ' με την κάμερα του κινητού (ή γράψε τη διεύθυνση στον browser).'),
-        h('li', null, h('b', null, 'Συνδέσου'), ' με το όνομα και τον κωδικό σου και τσέκαρε «Μείνε συνδεδεμένος σε αυτή τη συσκευή»: μένεις μέσα ως 12 ώρες χωρίς χρήση. Μόνο στο δικό σου κινητό.'),
+        h('li', null, h('b', null, 'Συνδέσου'), ' με το όνομα και τον κωδικό σου και τσέκαρε «Μείνε συνδεδεμένος σε αυτή τη συσκευή»: μένεις μέσα ως 30 μέρες χωρίς χρήση. Μόνο στο δικό σου κινητό.'),
         h('li', null, h('b', null, 'Βάλ’ το στην αρχική οθόνη'), ' για να ανοίγει σαν εφαρμογή:',
           h('div', { class: 'os-steps' },
             h('div', null, h('b', null, 'iPhone (Safari): '), 'κουμπί Κοινοποίηση (τετράγωνο με βέλος) → «Προσθήκη στην οθόνη Αφετηρίας».'),

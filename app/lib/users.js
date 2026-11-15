@@ -79,7 +79,7 @@ function noteFail(key) {
 
 // a fixed hash, so a wrong user name costs the same time as a wrong password (nothing tells which one was wrong)
 const DUMMY = hashPw(crypto.randomBytes(12).toString('hex'));
-/** remember: stay signed in on this device (phone): 12 hours without use instead of the idle minutes. */
+/** remember: stay signed in on this device (phone): 30 days without use instead of the idle minutes (while the program is being built: one sign-in a month per device). */
 function login(userName, password, ip, ua, remember) {
   const user = String(userName || '').trim().toLowerCase();
   const wait = Math.max(blockedFor('u:' + user), blockedFor('ip:' + ip));
@@ -105,7 +105,7 @@ function load() {
 function flush() { if (!dirty || !sessions) return; dirty = false; store.write('sessions', Object.fromEntries(sessions)); }
 setInterval(flush, 5 * 60 * 1000).unref();
 
-const REMEMBER_MINUTES = 12 * 60;
+const REMEMBER_MINUTES = 30 * 24 * 60;
 function startSession(u, ip, ua, remember) {
   load();
   const sid = crypto.randomBytes(32).toString('base64url');

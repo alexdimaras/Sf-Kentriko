@@ -207,8 +207,8 @@ function showLogin(setup) {
   const [fUser, user] = field('Όνομα χρήστη', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
   const [fPass, pass] = field('Κωδικός', { type: 'password', autocomplete: setup ? 'new-password' : 'current-password' });
   const [fPass2, pass2] = field('Ξανά ο κωδικός', { type: 'password', autocomplete: 'new-password' });
-  const remember = h('input', { type: 'checkbox' });
-  const fRemember = h('label', { class: 'check', title: 'Για το κινητό σου: η σύνδεση κρατάει 12 ώρες χωρίς χρήση αντί για τα λεπτά της ασφάλειας. Όχι σε κοινόχρηστο υπολογιστή.' }, remember, 'Μείνε συνδεδεμένος σε αυτή τη συσκευή');
+  const remember = h('input', { type: 'checkbox', checked: true });
+  const fRemember = h('label', { class: 'check', title: 'Για το κινητό σου: η σύνδεση κρατάει 30 μέρες χωρίς χρήση αντί για τα λεπτά της ασφάλειας. Όχι σε κοινόχρηστο υπολογιστή.' }, remember, 'Μείνε συνδεδεμένος σε αυτή τη συσκευή');
   const go = async () => {
     err.textContent = '';
     if (setup && pass.value !== pass2.value) { err.textContent = 'Οι δύο κωδικοί δεν είναι ίδιοι.'; return; }
