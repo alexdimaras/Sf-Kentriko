@@ -12,7 +12,16 @@ const store = require('./store');
 const pl = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 function hoursSince(iso) { return iso ? (Date.now() - new Date(iso).getTime()) / 36e5 : Infinity; }
 
+let memo = null;
+/** The Today screen. Worked out again only when something was saved, the checks were rebuilt, or the hour changed. */
 function build() {
+  const key = store.stamp() + '|' + require('./engine').status().gen + '|' + new Date().toISOString().slice(0, 13);
+  if (memo && memo.key === key) return memo.out;
+  const out = buildNow();
+  memo = { key, out };
+  return out;
+}
+function buildNow() {
   const s = settings.all();
   const sum = catalog.summary();
   const tasks = [];

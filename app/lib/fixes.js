@@ -54,11 +54,12 @@ function cache() { const c = store.read(CACHE, null) || {}; c.products = c.produ
 // ---------- what a product needs ----------
 // What the description is like, worked out once per text (the description is kept compressed: opening it for
 // every product at every pass would be slow). Kept on the product, not saved.
-const NEED = Symbol('need');
+const NEED = new WeakMap(); // beside the products, not on them (an extra field on each product changes its shape: 1 KB each)
 function textInfo(p) {
-  const key = (p.descZ || '') + '|' + (p.shortZ || '') + '|' + p.name;
-  const c = p[NEED];
-  if (c && c.key === key) return c;
+  // still about the same texts? (the texts themselves are compared, never copied: a copy of every compressed
+  // description as a "key" cost 35 MB)
+  const c = NEED.get(p);
+  if (c && c.dz === p.descZ && c.sz === p.shortZ && c.name === p.name) return c;
   // products packed by this version carry the facts of their description; older ones are opened once
   let desc, gr;
   if (p.descHead !== undefined && p.descGr !== undefined) { desc = { length: p.descLen || 0, head: p.descHead }; gr = p.descGr; }
@@ -68,8 +69,8 @@ function textInfo(p) {
     const title = U.foldKey(p.name), fd = U.foldKey(desc.head);
     onlyTitle = fd.replace(/[^A-Z0-9Α-Ω ]/g, '').trim().length <= title.length + 12 && fd.includes(title.slice(0, Math.min(20, title.length)));
   }
-  const info = { key, len: desc.length, onlyTitle, english: desc.length >= 80 && gr < 0.3, greek: desc.length ? gr : 0, short: p.shortLen !== undefined ? p.shortLen > 0 : !!stripText(p.short) };
-  Object.defineProperty(p, NEED, { value: info, configurable: true, enumerable: false });
+  const info = { dz: p.descZ, sz: p.shortZ, name: p.name, len: desc.length, onlyTitle, english: desc.length >= 80 && gr < 0.3, greek: desc.length ? gr : 0, short: p.shortLen !== undefined ? p.shortLen > 0 : !!stripText(p.short) };
+  NEED.set(p, info);
   return info;
 }
 function contentNeeds(p, s) {
@@ -161,13 +162,17 @@ function sameImage(a, b) { const k = (u) => String(u || '').replace(/\?.*$/, '')
 function categoryGuesser(site, isDefault) {
   const catalog = require('./catalog');
   const idx = catalog.categoryIndex(site);
-  const keyed = catalog.load(site).products.filter((p) => p.type !== 'variation' && (p.cats || []).some((c) => !isDefault(c))).map((p) => ({ t: U.foldKey(p.name), b: U.foldKey(p.brand || ''), cats: p.cats.filter((c) => !isDefault(c)) }));
-  const catWords = idx.cats.filter((c) => !isDefault(c.id)).map((c) => ({ id: c.id, words: U.foldKey(c.name).split(/[\s\-–/,]+/) }));
+  let keyed = null, catWords = null;
+  const prepare = () => {
+    keyed = catalog.load(site).products.filter((p) => p.type !== 'variation' && (p.cats || []).some((c) => !isDefault(c))).map((p) => ({ t: U.foldKey(p.name), b: U.foldKey(p.brand || ''), cats: p.cats.filter((c) => !isDefault(c)) }));
+    catWords = idx.cats.filter((c) => !isDefault(c.id)).map((c) => ({ id: c.id, words: U.foldKey(c.name).split(/[\s\-–/,]+/) }));
+  };
   const memo = new Map();
   return (typeRaw, brandRaw) => {
     const type = U.foldKey(typeRaw), brand = U.foldKey(brandRaw || '');
     const mk = type + '|' + brand;
     if (memo.has(mk)) return memo.get(mk);
+    if (!keyed) prepare();
     const score = new Map();
     for (const k of keyed) {
       if (k.t !== type && !k.t.startsWith(type + ' ')) continue;
@@ -182,194 +187,314 @@ function categoryGuesser(site, isDefault) {
   };
 }
 
-// ---------- compute every proposal (fast: only local data; the job below reads the suppliers) ----------
-let memo = null;
-function invalidate() { memo = null; }
+// ---------- proposals ----------
+// The heavy part: what the program proposes for every product, from the catalogs, the checks and the sources.
+// It knows nothing about decisions (yes / no): those, and the "ignore" marks, are laid over it by compute(). So a
+// yes never recalculates anything here — on a small cloud machine that used to take half a minute per approval.
+const bg = require('./bg');
+const TITLE_CHECKS = ['mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'];
+const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin'];
+const QK = ['desc', 'images', 'brand', 'short', 'title', 'sku'];
+const QW = [30, 25, 10, 10, 15, 10];
 
-function compute() {
-  if (memo) return memo;
+let prop = null;      // { at, cacheAt, byProduct: Map('site:pid' → items), tw, q, qv, rev }
+let dirty = false;    // the data changed: build again
+let lazy = false;     // server: keep answering from the last result while the new one is built in the background
+let onDirty = null;
+let ctx = null;       // what the proposals of one product need (kept to refresh single products)
+let memo = null;      // the proposals with the decisions laid over them
+function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
+function invalidate() { dirty = true; ctx = null; if (onDirty) onDirty('fixes'); }
+function isDirty() { return dirty || !prop; }
+
+const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); return c; };
+
+function buildCtx() {
   const catalog = require('./catalog');
   const checks = require('./checks');
   const wx = require('./wooexport');
-  const s = settings.all();
-  const out = [];
-  const add = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); out.push(c); };
-  const ec = cache();
   const L = catalog.links();
-  const ign = checks.ignored();
-  const ignoredIn = (id, site, pid) => (ign[id] || []).includes(site + ':' + pid);
-  const bannedSt = new Set(); // ads-site products that must not be there
+  const C = { s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map() };
   for (const site of catalog.SITES) {
     const cat = catalog.load(site);
     if (!cat.syncedAt) continue;
     const other = site === 'sf' ? 'st' : 'sf';
-    const oById = new Map(catalog.load(other).products.map((p) => [p.id, p]));
-    const map = site === 'sf' ? L.sfToSt : L.stToSf;
-    const main = cat.products.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private');
-    const ctx = checks.titleContext(site);
     const idx = catalog.categoryIndex(site);
     const isDefault = (id) => { const cc = idx.byId.get(id); return !cc || /^(uncategorized|default|xoris-katigoria|χωρις-κατηγορια|genika)$/i.test(String(cc.slug || '')) || /^(uncategorized|χωρις κατηγορια)$/i.test(U.stripTonos(cc.name).toLowerCase()); };
-    const attrBrands = !wx.usesBrandTaxonomy(site);
-    const guessCat = categoryGuesser(site, isDefault);
-    const seo = wx.seoColumns(wx.seoMode(site));
-    for (const p of main) {
-      const base = { site, pid: p.id, name: p.name, img: p.thumb || (p.images || [])[0] || '', url: p.url, sku: p.sku, type: p.type };
-      // ads site: what Google / Meta do not allow. A product that is not allowed there only gets "take it off the site":
-      // no text, photo, price or title is ever asked for it.
-      let adLevel = '', adWhy = '';
-      if (site === 'st') {
-        const oid = map.get(p.id);
-        const ad = catalog.adStatus(site, p, oid ? oById.get(oid) : null, other);
-        adLevel = ad.level; adWhy = ad.why;
-        if (ad.level === 'banned') {
-          bannedSt.add(p.id);
-          if (!ignoredIn('st-ads-banned', site, p.id)) add(Object.assign({}, base, { field: 'published', from: 'Δημοσιευμένο', to: -1, why: `Απαγορεύεται σε Google και Meta (${ad.why}): γίνεται «Πρόχειρο» στο ${s.sites.st.name}, δεν διαγράφεται. Στο ${s.sites.sf.name} μένει κανονικά.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google / Meta' }, level: 'high' }));
-          continue;
-        }
-      }
-      // titles: every rule of the checks, combined into one corrected title
-      let fixedName = '';
-      if (!['mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'].some((k) => ignoredIn(site + '-' + k, site, p.id))) {
-        const tf = checks.titleFix(p, ctx);
-        if (tf.fix && tf.fix !== p.name && tf.steps.length) {
-          fixedName = tf.fix;
-          add(Object.assign({}, base, { field: 'name', from: p.name, to: tf.fix, why: tf.steps.map((x) => x.why).join(' · '), source: { kind: 'rule', label: 'Κανόνες τίτλων του καταστήματος' }, level: tf.steps.some((x) => x.level === 'medium') ? 'medium' : 'high' }));
-        }
-      }
-      // category: only in the general category → the category of similar products (same type word)
-      if ((!p.cats.length || p.cats.every(isDefault)) && !ignoredIn(site + '-nocat', site, p.id)) {
-        // the type word: the first Greek word of the title (5.11 TACTICAL ΜΠΟΥΦΑΝ … → ΜΠΟΥΦΑΝ)
-        const type = (U.greekUpper(fixedName || p.name).match(/[Α-Ω]{3,}(?:\s[Α-Ω]{3,})?/) || [''])[0];
-        const sug = type ? guessCat(type, p.brand) : null;
-        if (sug && sug.score >= 6) add(Object.assign({}, base, { field: 'cats', from: (p.catNames || []).join(', ') || '—', to: { id: sug.id, path: sug.path }, why: `Είναι μόνο στη γενική κατηγορία. Προϊόντα «${type}» είναι στην «${sug.path}».`, source: { kind: 'rule', label: 'Από παρόμοια προϊόντα του καταστήματος' }, level: 'medium' }));
-      }
-      // ads site, Google Shopping only
-      if (adLevel === 'google' && !ignoredIn('st-ads-google', site, p.id)) add(Object.assign({}, base, { field: 'gla', from: 'Στο Google Shopping', to: 'dont-sync-and-show', why: `Το Google δεν το δέχεται (${adWhy}): μένει στο site, βγαίνει από το Google Shopping.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google' }, level: 'high' }));
-      // content: description, short description, photos, brand, EAN — only from a real source
-      const need = contentNeeds(p, s);
-      const found = ec.products[site + ':' + p.id];
-      const twin = (() => { const oid = map.get(p.id); return oid ? oById.get(oid) : null; })();
-      // our other site already has a good text / more photos: the safest source of all (our own work)
-      const twinDesc = need.desc && !need.hasOwn && twin && textInfo(twin).len >= 300 && textInfo(twin).greek >= 0.3 ? twin.desc : '';
-      if (need.desc && twinDesc && !need.hasOwn) {
-        add(Object.assign({}, base, { field: 'desc', from: p.desc || '', to: { html: twinDesc, meta: seo ? metaOf(twinDesc) : '' }, why: need.descWhy + `. Το ίδιο προϊόν στο ${s.sites[other].name} έχει πλήρη περιγραφή.`, source: { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, level: 'high' }));
-      } else if (need.desc && found && found.data && stripText(scrub(found.data.descHtmlEl || found.data.descHtml, found.data.supplier)).length >= 80) {
-        const html = buildDesc(p, Object.assign({}, found.data, found.data.descHtmlEl ? { descHtml: found.data.descHtmlEl } : {}), need.hasOwn, fixedName);
-        const englishSrc = !found.data.descHtmlEl && greekShare(stripText(found.data.descHtml)) < 0.3;
-        add(Object.assign({}, base, { field: 'desc', from: p.desc || '', to: { html, meta: seo ? metaOf(html) : '' }, why: need.descWhy + '.' + (englishSrc ? ' Το κείμενο του αντιπροσώπου είναι στα αγγλικά: μετάφρασέ το (AI) ή κράτα το.' : '') + (found.data.descHtmlEl ? ' Μετάφραση με AI: διάβασέ τη πριν την έγκριση.' : ''), source: found.src, level: found.src.level === 'high' && !englishSrc && !found.data.descHtmlEl ? 'high' : 'medium', english: englishSrc }));
-      }
-      if (need.short && found && found.data) {
-        const sh = buildShort(p, found.data, sizesOf(site, p));
-        if (sh) add(Object.assign({}, base, { field: 'short', from: p.short || '', to: sh, why: 'Δεν έχει σύντομη περιγραφή: τα βασικά δίπλα στην τιμή βοηθούν τον πελάτη να αποφασίσει.', source: found.src, level: found.src.level }));
-      }
-      // photos from ONE source: our other site first (our own photos), else the supplier's
-      const extraImgs = [];
-      let fromTwin = false;
-      if (need.images) {
-        const twinMore = twin && (twin.images || []).length > (p.images || []).length;
-        fromTwin = !!twinMore;
-        const cand = twinMore ? twin.images : found && found.data ? found.data.images || [] : [];
-        for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u))) extraImgs.push(u);
-      }
-      if (extraImgs.length) {
-        add(Object.assign({}, base, { field: 'images', from: p.images || [], to: (p.images || []).concat(extraImgs).slice(0, 6), why: (p.images || []).length ? 'Μόνο μία φωτογραφία: περισσότερες όψεις = περισσότερες πωλήσεις.' : 'Δεν έχει φωτογραφία: χωρίς αυτή δεν πουλάει και το Google Shopping το απορρίπτει.', source: fromTwin ? { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url } : found.src, level: fromTwin ? 'high' : found.src.level }));
-      }
-      if (need.brand && found && found.data && found.data.brand && U.foldKey(found.data.brand).length >= 2) {
-        const exportable = attrBrands && p.type === 'simple' && !(p.attrs || []).length;
-        add(Object.assign({}, base, { field: 'brand', from: '', to: U.collapse(found.data.brand), why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: found.src, level: found.src.level, exportable }));
-      }
-      if (found && found.data && found.src.level === 'high' && p.type === 'simple') {
-        const g = validGtin(found.data.ean);
-        if (g && !p.ean) add(Object.assign({}, base, { field: 'gtin', from: '', to: g, why: 'Το EAN βοηθά το Google Shopping να δείξει το προϊόν (σωστό ψηφίο ελέγχου).', source: found.src, level: 'high' }));
-      }
-    }
+    C.sites[site] = { cat, other, oById: catalog.byId(other), map: site === 'sf' ? L.sfToSt : L.stToSf, title: checks.titleContext(site), idx, isDefault, attrBrands: !wx.usesBrandTaxonomy(site), guessCat: categoryGuesser(site, isDefault), seo: wx.seoColumns(wx.seoMode(site)) };
   }
   // prices: the two sites must agree (the reference site wins)
-  for (const it of (checks.cached().checks.find((c) => c.id === 'x-price') || { items: [] }).items) {
-    if (!it.fix || !(Number(it.fix.regular) > 0) || (it.site === 'st' && bannedSt.has(it.id))) continue;
-    add({ site: it.site, pid: it.id, name: it.name, img: it.img, url: it.url, sku: it.sku, type: it.type, field: 'price', from: { price: it.site === 'st' ? it.stPrice : it.sfPrice }, to: { regular: Number(it.fix.regular), sale: Number(it.fix.sale) || 0, srcId: it.srcId }, why: `Διαφορετική τιμή στα δύο sites (${it.why}). Σωστή είναι του ${settings.all().sites[settings.all().master === 'st' ? 'st' : 'sf'].name}.`, source: { kind: 'rule', label: 'Η τιμή του κεντρικού site' }, level: 'high' });
+  for (const it of (checks.raw().checks.find((c) => c.id === 'x-price') || { items: [] }).items) C.price.set(it.site + ':' + it.id, it);
+  return C;
+}
+
+/** Every proposal for one product (no status yet). */
+function proposalsFor(site, p, C) {
+  const catalog = require('./catalog');
+  const checks = require('./checks');
+  const S = C.sites[site];
+  const { title: ctx, isDefault, guessCat, map, oById, seo, attrBrands, other } = S; // eslint-disable-line no-shadow
+  const s = C.s, ec = C.ec;
+  const key = site + ':' + p.id;
+  const list = [];
+  const add = (c) => { list.push(finish(c)); };
+  const ignoredIn = (id) => { const arr = C.ign[id]; return !!arr && arr.includes(key); };
+  const base = { site, pid: p.id, name: p.name, img: p.thumb || (p.images || [])[0] || '', url: p.url, sku: p.sku, type: p.type };
+  // ads site: what Google / Meta do not allow. A product that is not allowed there only gets "take it off the site":
+  // no text, photo, price or title is ever asked for it.
+  let adLevel = '', adWhy = '';
+  if (site === 'st') {
+    const oid = map.get(p.id);
+    const ad = catalog.adStatus(site, p, oid ? oById.get(oid) : null, other);
+    adLevel = ad.level; adWhy = ad.why;
+    if (ad.level === 'banned') {
+      if (!ignoredIn('st-ads-banned')) add(Object.assign({}, base, { field: 'published', ign: ['st-ads-banned'], from: 'Δημοσιευμένο', to: -1, why: `Απαγορεύεται σε Google και Meta (${ad.why}): γίνεται «Πρόχειρο» στο ${s.sites.st.name}, δεν διαγράφεται. Στο ${s.sites.sf.name} μένει κανονικά.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google / Meta' }, level: 'high' }));
+      return list;
+    }
   }
-  // the user's decisions
+    // titles: every rule of the checks, combined into one corrected title
+    let fixedName = '';
+    if (!TITLE_CHECKS.some((k) => ignoredIn(site + '-' + k))) {
+      const tf = checks.titleFix(p, ctx);
+      if (tf.fix && tf.fix !== p.name && tf.steps.length) {
+        fixedName = tf.fix;
+        add(Object.assign({}, base, { field: 'name', ign: TITLE_CHECKS.map((k) => site + '-' + k), from: p.name, to: tf.fix, why: tf.steps.map((x) => x.why).join(' · '), source: { kind: 'rule', label: 'Κανόνες τίτλων του καταστήματος' }, level: tf.steps.some((x) => x.level === 'medium') ? 'medium' : 'high' }));
+      }
+    }
+    // category: only in the general category → the category of similar products (same type word)
+    if ((!p.cats.length || p.cats.every(isDefault)) && !ignoredIn(site + '-nocat')) {
+      // the type word: the first Greek word of the title (5.11 TACTICAL ΜΠΟΥΦΑΝ … → ΜΠΟΥΦΑΝ)
+      const type = (U.greekUpper(fixedName || p.name).match(/[Α-Ω]{3,}(?:\s[Α-Ω]{3,})?/) || [''])[0];
+      const sug = type ? guessCat(type, p.brand) : null;
+      if (sug && sug.score >= 6) add(Object.assign({}, base, { field: 'cats', ign: [site + '-nocat'], from: (p.catNames || []).join(', ') || '—', to: { id: sug.id, path: sug.path }, why: `Είναι μόνο στη γενική κατηγορία. Προϊόντα «${type}» είναι στην «${sug.path}».`, source: { kind: 'rule', label: 'Από παρόμοια προϊόντα του καταστήματος' }, level: 'medium' }));
+    }
+    // ads site, Google Shopping only
+    if (adLevel === 'google' && !ignoredIn('st-ads-google')) add(Object.assign({}, base, { field: 'gla', ign: ['st-ads-google'], from: 'Στο Google Shopping', to: 'dont-sync-and-show', why: `Το Google δεν το δέχεται (${adWhy}): μένει στο site, βγαίνει από το Google Shopping.`, source: { kind: 'rule', label: 'Κανόνες διαφημίσεων Google' }, level: 'high' }));
+    // content: description, short description, photos, brand, EAN — only from a real source
+    const need = contentNeeds(p, s);
+    const found = ec.products[site + ':' + p.id];
+    const twin = (() => { const oid = map.get(p.id); return oid ? oById.get(oid) : null; })();
+    // our other site already has a good text / more photos: the safest source of all (our own work)
+    const twinDesc = need.desc && !need.hasOwn && twin && textInfo(twin).len >= 300 && textInfo(twin).greek >= 0.3 ? twin.desc : '';
+    if (need.desc && twinDesc && !need.hasOwn) {
+      add(Object.assign({}, base, { field: 'desc', lazyFrom: true, to: { html: twinDesc, meta: seo ? metaOf(twinDesc) : '' }, why: need.descWhy + `. Το ίδιο προϊόν στο ${s.sites[other].name} έχει πλήρη περιγραφή.`, source: { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, level: 'high' }));
+    } else if (need.desc && found && found.data && stripText(scrub(found.data.descHtmlEl || found.data.descHtml, found.data.supplier)).length >= 80) {
+      const html = buildDesc(p, Object.assign({}, found.data, found.data.descHtmlEl ? { descHtml: found.data.descHtmlEl } : {}), need.hasOwn, fixedName);
+      const englishSrc = !found.data.descHtmlEl && greekShare(stripText(found.data.descHtml)) < 0.3;
+      add(Object.assign({}, base, { field: 'desc', lazyFrom: true, to: { html, meta: seo ? metaOf(html) : '' }, why: need.descWhy + '.' + (englishSrc ? ' Το κείμενο του αντιπροσώπου είναι στα αγγλικά: μετάφρασέ το (AI) ή κράτα το.' : '') + (found.data.descHtmlEl ? ' Μετάφραση με AI: διάβασέ τη πριν την έγκριση.' : ''), source: found.src, level: found.src.level === 'high' && !englishSrc && !found.data.descHtmlEl ? 'high' : 'medium', english: englishSrc }));
+    }
+    if (need.short && found && found.data) {
+      const sh = buildShort(p, found.data, sizesOf(site, p));
+      if (sh) add(Object.assign({}, base, { field: 'short', lazyFrom: true, to: sh, why: 'Δεν έχει σύντομη περιγραφή: τα βασικά δίπλα στην τιμή βοηθούν τον πελάτη να αποφασίσει.', source: found.src, level: found.src.level }));
+    }
+    // photos from ONE source: our other site first (our own photos), else the supplier's
+    const extraImgs = [];
+    let fromTwin = false;
+    if (need.images) {
+      const twinMore = twin && (twin.images || []).length > (p.images || []).length;
+      fromTwin = !!twinMore;
+      const cand = twinMore ? twin.images : found && found.data ? found.data.images || [] : [];
+      for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u))) extraImgs.push(u);
+    }
+    if (extraImgs.length) {
+      add(Object.assign({}, base, { field: 'images', from: p.images || [], to: (p.images || []).concat(extraImgs).slice(0, 6), why: (p.images || []).length ? 'Μόνο μία φωτογραφία: περισσότερες όψεις = περισσότερες πωλήσεις.' : 'Δεν έχει φωτογραφία: χωρίς αυτή δεν πουλάει και το Google Shopping το απορρίπτει.', source: fromTwin ? { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url } : found.src, level: fromTwin ? 'high' : found.src.level }));
+    }
+    if (need.brand && found && found.data && found.data.brand && U.foldKey(found.data.brand).length >= 2) {
+      const exportable = attrBrands && p.type === 'simple' && !(p.attrs || []).length;
+      add(Object.assign({}, base, { field: 'brand', from: '', to: U.collapse(found.data.brand), why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: found.src, level: found.src.level, exportable }));
+    }
+    if (found && found.data && found.src.level === 'high' && p.type === 'simple') {
+      const g = validGtin(found.data.ean);
+      if (g && !p.ean) add(Object.assign({}, base, { field: 'gtin', from: '', to: g, why: 'Το EAN βοηθά το Google Shopping να δείξει το προϊόν (σωστό ψηφίο ελέγχου).', source: found.src, level: 'high' }));
+    }
+  // prices: the two sites must agree (the reference site wins)
+  const it = C.price.get(key);
+  if (it && it.fix && Number(it.fix.regular) > 0 && !ignoredIn('x-price')) {
+    add({ site: it.site, pid: it.id, name: it.name, img: it.img, url: it.url, sku: it.sku, type: it.type, field: 'price', ign: ['x-price'], from: { price: it.site === 'st' ? it.stPrice : it.sfPrice }, to: { regular: Number(it.fix.regular), sale: Number(it.fix.sale) || 0, srcId: it.srcId }, why: `Διαφορετική τιμή στα δύο sites (${it.why}). Σωστή είναι του ${settings.all().sites[settings.all().master === 'st' ? 'st' : 'sf'].name}.`, source: { kind: 'rule', label: 'Η τιμή του κεντρικού site' }, level: 'high' });
+  }
+  // The ads site follows the main site: the same product there (if it may be there) gets the approved change by itself
+  if (site === 'sf' && list.length) {
+    const sid = C.L.sfToSt.get(p.id);
+    const sp = sid != null ? oById.get(sid) : null;
+    if (sp && sp.type !== 'variation' && sp.status !== 'draft' && sp.status !== 'private' && !C.banned.has(sid)) {
+      let any = false;
+      for (const c of list) if (MIRROR.includes(c.field)) { c.twin = sid; any = true; }
+      if (any) C.tw.set(sid, { name: sp.name, img: sp.thumb || (sp.images || [])[0] || '', url: sp.url, sku: sp.sku, type: sp.type });
+    }
+  }
+  return list;
+}
+
+/** How complete a product is, 0..1 for each of: description, photos, brand, short description, title, code. */
+function qualityVec(p, s) {
+  const n = contentNeeds(p, s);
+  const desc = textInfo(p).len;
+  const imgs = (p.images || []).length;
+  return [
+    n.desc ? (desc >= 80 && !n.english ? 0.4 : 0) : 1,
+    imgs >= 2 ? 1 : imgs === 1 ? 0.5 : 0,
+    p.brand ? 1 : 0, n.short ? 0 : 1,
+    /^[Α-Ω]/.test(U.greekUpper(p.name)) && p.name.length <= (s.longTitle || 110) && !/[a-zά-ώ]/.test(p.name) ? 1 : 0,
+    p.sku ? 1 : 0,
+  ];
+}
+
+/** All the proposals, in slices (a generator: run in one go by proposals(), in the background by rebuild()). */
+function* proposalsGen() {
+  const catalog = require('./catalog');
+  const C = buildCtx();
+  yield;
+  const byProduct = new Map(), qv = new Map(), q = {};
+  for (const site of catalog.SITES) {
+    const S = C.sites[site];
+    if (!S) continue;
+    const acc = q[site] = { n: 0, total: 0, parts: [0, 0, 0, 0, 0, 0] };
+    for (const p of S.cat.products) {
+      if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
+      yield;
+      const key = site + ':' + p.id;
+      const list = proposalsFor(site, p, C);
+      if (list.length) byProduct.set(key, list);
+      if (site === 'st' && C.banned.has(p.id)) continue; // not counted in the quality of the ads site
+      const v = qualityVec(p, C.s);
+      qv.set(key, v);
+      acc.n++;
+      for (let i = 0; i < 6; i++) { acc.parts[i] += v[i]; acc.total += v[i] * QW[i]; }
+    }
+  }
+  return { at: U.nowIso(), cacheAt: C.ec.at || null, byProduct, tw: C.tw, q, qv, rev: 0, C };
+}
+function proposals() {
+  if (prop && (!dirty || lazy)) return prop;
+  dirty = false;
+  const P = bg.drainSync(proposalsGen());
+  delete P.C; ctx = null; // the working context points into the catalogs: not kept
+  prop = P;
+  return prop;
+}
+/** Build again in slices (the program keeps answering); the old result is used until the new one is whole. */
+async function rebuild() {
+  dirty = false;
+  const P = await bg.drain(proposalsGen());
+  delete P.C; ctx = null;
+  prop = P;
+  return P;
+}
+/** One product again (a new source page, a translation): the rest stays as it is. */
+function refreshProduct(site, pid) {
+  const catalog = require('./catalog');
+  if (!prop || dirty) { if (!lazy) proposals(); return; }
+  const C = buildCtx(); // made for this one product and let go (a rare action of a person: a new source page, a translation)
+  const p = C.sites[site] && catalog.byId(site).get(Number(pid));
+  const key = site + ':' + Number(pid);
+  if (!p || p.type === 'variation') return;
+  const list = proposalsFor(site, p, C);
+  if (list.length) prop.byProduct.set(key, list); else prop.byProduct.delete(key);
+  for (const [k, v] of C.tw) prop.tw.set(k, v);
+  prop.rev++;
+}
+/** For keeping the result over a restart (it is only calculated again when the data changes). */
+function forSave() {
+  if (!prop) return null;
+  const items = [];
+  for (const l of prop.byProduct.values()) for (const c of l) items.push(c);
+  return { v: 2, at: prop.at, cacheAt: prop.cacheAt, items, tw: [...prop.tw], q: prop.q, qv: [...prop.qv].map(([k, v]) => [k].concat(v)) };
+}
+function setSaved(o) {
+  if (!o || o.v !== 2 || !Array.isArray(o.items) || !o.q) return false;
+  const byProduct = new Map();
+  for (const c of o.items) { const k = c.site + ':' + c.pid; const l = byProduct.get(k); if (l) l.push(c); else byProduct.set(k, [c]); }
+  prop = { at: o.at, cacheAt: o.cacheAt || null, byProduct, tw: new Map(o.tw || []), q: o.q, qv: new Map((o.qv || []).map((r) => [r[0], r.slice(1)])), rev: 0 };
+  memo = null; ctx = null;
+  return true;
+}
+
+/**
+ * The proposals with the decisions (and the "ignore" marks) laid over them: what every screen and file uses.
+ * Light: a pass over the proposals, done again only after a decision.
+ */
+function compute() {
+  const P = proposals();
+  const dv = store.ver(KEY), iv = store.ver('ignored');
+  if (memo && memo.P === P && memo.rev === P.rev && memo.dv === dv && memo.iv === iv) return memo;
   const dec = decisions();
-  for (const c of out) {
-    const d = dec[c.id];
-    c.status = 'pending';
-    if (d && (d.hash === c.hash || d.edited !== undefined)) {
-      c.status = d.status; c.at = d.at; c.by = d.by || '';
-      if (d.edited !== undefined) { c.edited = true; c.to = d.edited; }
+  const ign = require('./checks').ignored();
+  const sets = new Map();
+  const ignored = (id, key) => { let st = sets.get(id); if (st === undefined) { st = ign[id] && ign[id].length ? new Set(ign[id]) : null; sets.set(id, st); } return !!st && st.has(key); };
+  let out = [];
+  const lead = [], leadKey = new Set();
+  for (const [key, list] of P.byProduct) {
+    for (const c0 of list) {
+      if (c0.ign && c0.ign.some((id) => ignored(id, key))) continue;
+      const c = Object.assign({}, c0);
+      const d = dec[c.id];
+      c.status = 'pending';
+      if (d && (d.hash === c.hash || d.edited !== undefined)) {
+        c.status = d.status; c.at = d.at; c.by = d.by || '';
+        if (d.edited !== undefined) { c.edited = true; c.to = d.edited; }
+      }
+      out.push(c);
+      if (c.twin != null && c.status !== 'rejected') { lead.push(c); leadKey.add(c.twin + ':' + c.field); }
     }
   }
   // The ads site follows the main site: what is approved for a product on SpecialForces is made, by itself, on the same
   // product of the ads site (no second approval, no second proposal). Not for what differs between the sites
   // (categories, prices), and never for products that are not allowed there.
-  const sfC = catalog.load('sf'), stC = catalog.load('st');
-  if (sfC.syncedAt && stC.syncedAt) {
-    const stBy = new Map(stC.products.map((p) => [p.id, p]));
-    const twinOf = (c) => { const sid = L.sfToSt.get(c.pid); const sp = sid != null ? stBy.get(sid) : null; return sp && sp.type !== 'variation' && sp.status !== 'draft' && sp.status !== 'private' && !bannedSt.has(sid) ? sp : null; };
-    const lead = out.filter((c) => c.site === 'sf' && MIRROR.includes(c.field) && c.status !== 'rejected' && twinOf(c));
-    const leadKey = new Set(lead.map((c) => `${L.sfToSt.get(c.pid)}:${c.field}`));
+  if (leadKey.size) {
     // the ads site's own proposal for the same field is dropped: the main site's change is the only one
-    for (let i = out.length - 1; i >= 0; i--) if (out[i].site === 'st' && leadKey.has(`${out[i].pid}:${out[i].field}`)) out.splice(i, 1);
+    out = out.filter((c) => !(c.site === 'st' && leadKey.has(c.pid + ':' + c.field)));
+    const sfName = settings.all().sites.sf.name;
     for (const c of lead) {
       if (c.status !== 'approved' && c.status !== 'exported') continue; // waits for the yes on the main site
-      const sp = twinOf(c);
-      const cur = { name: sp.name, desc: sp.desc || '', short: sp.short || '', images: sp.images || [], brand: sp.brand || '', gtin: '' }[c.field];
-      const m = { site: 'st', pid: sp.id, name: sp.name, img: sp.thumb || (sp.images || [])[0] || '', url: sp.url, sku: sp.sku, type: sp.type, field: c.field, from: cur, to: c.to,
-        why: `Ίδια αλλαγή με το ${s.sites.sf.name}: έγινε δεκτή εκεί, γίνεται αυτόματα και εδώ.`, source: { kind: 'mirror', label: 'Από το ' + s.sites.sf.name + ' (εγκεκριμένο)', url: c.url, level: 'high' }, level: 'high', mirrorOf: c.id };
-      add(m);
+      const sp = P.tw.get(c.twin);
+      if (!sp) continue;
+      const m = { site: 'st', pid: c.twin, name: sp.name, img: sp.img, url: sp.url, sku: sp.sku, type: sp.type, field: c.field, lazyFrom: true, to: c.to,
+        why: `Ίδια αλλαγή με το ${sfName}: έγινε δεκτή εκεί, γίνεται αυτόματα και εδώ.`, source: { kind: 'mirror', label: 'Από το ' + sfName + ' (εγκεκριμένο)', url: c.url, level: 'high' }, level: 'high', mirrorOf: c.id };
+      finish(m);
       const d = dec[m.id];
       m.status = d && d.hash === m.hash && (d.status === 'exported' || d.status === 'rejected') ? d.status : 'approved';
       if (d && d.hash === m.hash) { m.at = d.at; m.by = d.by || ''; }
       else { m.by = c.by || ''; m.at = c.at; }
+      out.push(m);
     }
   }
-  memo = { at: U.nowIso(), items: out, cacheAt: ec.at || null };
+  memo = { at: P.at, items: out, cacheAt: P.cacheAt, P, rev: P.rev, dv, iv };
   return memo;
 }
-const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin'];
+/** The value on the site now, for showing "before → after" (looked up only for what is shown). */
+function withFrom(c) {
+  if (!c.lazyFrom || c.from !== undefined) return c;
+  const p = require('./catalog').byId(c.site).get(c.pid);
+  const cur = p ? { name: p.name, desc: p.desc || '', short: p.short || '', images: p.images || [], brand: p.brand || '', gtin: '' }[c.field] : '';
+  return Object.assign({}, c, { from: cur === undefined ? '' : cur });
+}
 
 // ---------- quality score of the catalog (0–100 per product) ----------
+// "Now" comes with the proposals (one pass over the catalog); "after" adds what the waiting fixes would complete.
 function quality(site) {
-  const catalog = require('./catalog');
-  const cat = catalog.load(site);
-  const s = settings.all();
-  const bannedAds = site === 'st' ? catalog.bannedOnAds() : new Set();
-  const main = cat.products.filter((p) => p.type !== 'variation' && p.status !== 'draft' && p.status !== 'private' && !bannedAds.has(p.id));
-  const parts = { desc: 0, images: 0, brand: 0, short: 0, title: 0, sku: 0 };
-  const W = { desc: 30, images: 25, brand: 10, short: 10, title: 15, sku: 10 };
-  let total = 0;
-  const pending = new Map();
-  for (const c of compute().items) if (c.site === site && c.status !== 'rejected') { if (!pending.has(c.pid)) pending.set(c.pid, new Set()); pending.get(c.pid).add(c.field); }
-  let after = 0;
-  for (const p of main) {
-    const n = contentNeeds(p, s);
-    const desc = textInfo(p).len;
-    const sc = {
-      desc: n.desc ? (desc >= 80 && !n.english ? 0.4 : 0) : 1,
-      images: (p.images || []).length >= 2 ? 1 : (p.images || []).length === 1 ? 0.5 : 0,
-      brand: p.brand ? 1 : 0, short: n.short ? 0 : 1,
-      title: /^[Α-Ω]/.test(U.greekUpper(p.name)) && p.name.length <= (s.longTitle || 110) && !/[a-zά-ώ]/.test(p.name) ? 1 : 0,
-      sku: p.sku ? 1 : 0,
-    };
-    let v = 0;
-    for (const k of Object.keys(W)) { v += sc[k] * W[k]; parts[k] += sc[k]; }
-    total += v;
-    // after the waiting fixes
-    const f = pending.get(p.id);
-    if (f) { if (f.has('desc')) sc.desc = 1; if (f.has('images')) sc.images = 1; if (f.has('brand')) sc.brand = 1; if (f.has('short')) sc.short = 1; if (f.has('name')) sc.title = 1; }
-    let a = 0; for (const k of Object.keys(W)) a += sc[k] * W[k];
-    after += a;
+  const m = compute();
+  if (m.quality && m.quality[site]) return m.quality[site];
+  const P = m.P, q = P.q[site] || { n: 0, total: 0, parts: [0, 0, 0, 0, 0, 0] };
+  const fields = new Map();
+  for (const c of m.items) if (c.site === site && c.status !== 'rejected') { let f = fields.get(c.pid); if (!f) fields.set(c.pid, f = new Set()); f.add(c.field === 'name' ? 'title' : c.field); }
+  let gain = 0;
+  for (const [pid, f] of fields) {
+    const v = P.qv.get(site + ':' + pid);
+    if (!v) continue;
+    for (let i = 0; i < 5; i++) if (f.has(QK[i])) gain += (1 - v[i]) * QW[i];
   }
-  const n = main.length || 1;
-  const pct = (x) => Math.round((x / n) * 100);
-  return {
-    site, products: main.length, score: Math.round(total / n), after: Math.round(after / n),
+  const n = q.n || 1;
+  const pct = (i) => Math.round((q.parts[i] / n) * 100);
+  const res = {
+    site, products: q.n, score: Math.round(q.total / n), after: Math.round((q.total + gain) / n),
     parts: [
-      { key: 'desc', label: 'Περιγραφή', pct: pct(parts.desc), weight: W.desc }, { key: 'images', label: 'Φωτογραφίες (2+)', pct: pct(parts.images), weight: W.images },
-      { key: 'title', label: 'Τίτλος σωστός', pct: pct(parts.title), weight: W.title }, { key: 'brand', label: 'Μάρκα', pct: pct(parts.brand), weight: W.brand },
-      { key: 'short', label: 'Σύντομη περιγραφή', pct: pct(parts.short), weight: W.short }, { key: 'sku', label: 'Κωδικός (SKU)', pct: pct(parts.sku), weight: W.sku },
+      { key: 'desc', label: 'Περιγραφή', pct: pct(0), weight: QW[0] }, { key: 'images', label: 'Φωτογραφίες (2+)', pct: pct(1), weight: QW[1] },
+      { key: 'title', label: 'Τίτλος σωστός', pct: pct(4), weight: QW[4] }, { key: 'brand', label: 'Μάρκα', pct: pct(2), weight: QW[2] },
+      { key: 'short', label: 'Σύντομη περιγραφή', pct: pct(3), weight: QW[3] }, { key: 'sku', label: 'Κωδικός (SKU)', pct: pct(5), weight: QW[5] },
     ],
   };
+  (m.quality = m.quality || {})[site] = res;
+  return res;
 }
 
 // ---------- the screen ----------
@@ -398,8 +523,8 @@ function view(q) {
   cards.sort((a, b) => b.changes.filter((c) => c.level === 'high').length - a.changes.filter((c) => c.level === 'high').length || b.changes.length - a.changes.length);
   const per = Math.min(100, Number(q.per) || 30), page = Math.max(1, Number(q.page) || 1);
   return {
-    at: compute().at, cacheAt: compute().cacheAt, counts, total: cards.length, cards: cards.slice((page - 1) * per, page * per), groups: GROUPS, fields: FIELD,
-    quality: ['sf', 'st'].filter((x) => require('./catalog').load(x).syncedAt).map((x) => quality(x)),
+    at: compute().at, cacheAt: compute().cacheAt, counts, total: cards.length, cards: cards.slice((page - 1) * per, page * per).map((cd) => Object.assign({}, cd, { changes: cd.changes.map(withFrom) })), groups: GROUPS, fields: FIELD,
+    quality: ['sf', 'st'].filter((x) => compute().P.q[x]).map((x) => quality(x)),
     ai: !!(settings.all().localAI || {}).enabled,
   };
 }
@@ -421,7 +546,6 @@ function decide(ids, status, by, edited) {
     }
     return d;
   });
-  invalidate();
   return { count: n };
 }
 function editedValue(c, v) {
@@ -486,7 +610,6 @@ function exportFile(site, by) {
   const csv = wx.updateFile(all, columns);
   const at = U.nowIso();
   store.update(KEY, {}, (d) => { for (const c of items) d[c.id] = Object.assign({}, d[c.id] || { hash: c.hash }, { status: 'exported', at, by: by || '', exportedAt: at }); return d; });
-  invalidate();
   return { csv, count: all.length, products: rows.size, changes: items.length, site, name: `diorthoseis-${site}.csv`, gtin: cols.has('GTIN, UPC, EAN, or ISBN') };
 }
 
@@ -635,13 +758,13 @@ async function findSources(job, opts) {
   }
   // pages not needed any more are forgotten after 30 days
   for (const [u, pg] of Object.entries(ec.pages)) if (now - new Date(pg.at).getTime() > PAGE_DAYS * 864e5) delete ec.pages[u];
-  // decisions about changes that no longer exist (fixed on the site, product gone) are forgotten after 2 weeks
-  invalidate();
-  const alive = new Set(compute().items.map((c) => c.id));
-  store.update(KEY, {}, (d) => { for (const [id, x] of Object.entries(d)) if (!alive.has(id) && now - new Date(x.at).getTime() > 14 * 864e5) delete d[id]; return d; });
   ec.at = U.nowIso();
   store.write(CACHE, ec);
   invalidate();
+  await rebuild();
+  // decisions about changes that no longer exist (fixed on the site, product gone) are forgotten after 2 weeks
+  const alive = new Set(compute().items.map((c) => c.id));
+  store.update(KEY, {}, (d) => { for (const [id, x] of Object.entries(d)) if (!alive.has(id) && now - new Date(x.at).getTime() > 14 * 864e5) delete d[id]; return d; });
   job && job.progress(needs.length, needs.length, `Έτοιμο: πηγές για ${found.toLocaleString('el-GR')} προϊόντα · ${pages} σελίδες αντιπροσώπων διαβάστηκαν`);
   return { needs: needs.length, found, pages, errors, researched };
 }
@@ -658,7 +781,7 @@ async function fromPage(site, id, url) {
   const ec = cache();
   ec.products[site + ':' + p.id] = { at: U.nowIso(), src: { kind: 'manual', label: 'Σελίδα που έδωσες · ' + U.hostOf(x.url || url), url: x.url || url, level: chk.match === 'none' ? 'medium' : 'high' }, data: { name: x.name, brand: x.brand, ean: x.ean, code: x.code, descHtml: String(x.descHtml || '').slice(0, 20000), shortHtml: x.shortHtml || '', features: (x.features || []).slice(0, 25), specs: (x.specs || []).slice(0, 20), images: (x.images || []).slice(0, 12) } };
   store.write(CACHE, ec);
-  invalidate();
+  refreshProduct(site, p.id);
   return { ok: true, sameProduct: chk.match !== 'none', name: x.name };
 }
 
@@ -670,17 +793,19 @@ async function translate(site, id) {
   if (!e || !e.data || !e.data.descHtml) throw new Error('Δεν υπάρχει κείμενο αντιπροσώπου για μετάφραση.');
   e.data.descHtmlEl = await localai.translate(e.data.descHtml);
   store.write(CACHE, ec);
-  invalidate();
+  refreshProduct(site, Number(id));
   return { ok: true };
 }
 
 /** For the "Today" screen and the menu badge. */
 function summary() {
   try {
-    const items = compute().items;
+    const m = compute();
+    if (m.summary) return m.summary;
+    const items = m.items;
     const pending = items.filter((c) => c.status === 'pending');
-    return { pending: pending.length, sure: pending.filter((c) => c.level === 'high').length, approved: items.filter((c) => c.status === 'approved').length, exported: items.filter((c) => c.status === 'exported').length, products: new Set(pending.map((c) => c.site + ':' + c.pid)).size };
+    return m.summary = { pending: pending.length, sure: pending.filter((c) => c.level === 'high').length, approved: items.filter((c) => c.status === 'approved').length, exported: items.filter((c) => c.status === 'exported').length, products: new Set(pending.map((c) => c.site + ':' + c.pid)).size };
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

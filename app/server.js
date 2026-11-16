@@ -47,6 +47,8 @@ const supplierfind = require('./lib/supplierfind');
 const users = require('./lib/users');
 const fixes = require('./lib/fixes');
 const cloudsave = require('./lib/cloudsave');
+const engine = require('./lib/engine');
+const bg = require('./lib/bg');
 const U = require('./lib/util');
 const { AsyncLocalStorage } = require('async_hooks');
 const reqCtx = new AsyncLocalStorage(); // which browser tab caused a change (so it is not told about its own changes)
@@ -146,10 +148,25 @@ function openApp(url) {
   else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
 }
 const num = (v) => Number(v) || 0;
+// how many products each supplier has: 17.000 products are matched once per change of the catalogs or the suppliers
+let supCounts = null;
+function supplierCounts() {
+  const key = [catalog.bothVer(), store.ver('suppliers')];
+  if (supCounts && supCounts.key.every((x, i) => x === key[i])) return supCounts.counts;
+  const counts = {};
+  for (const site of ['sf', 'st']) for (const p of catalog.load(site).products) {
+    if (p.type === 'variation') continue;
+    const s = suppliers.forProduct(p);
+    if (s) { counts[s.id] = counts[s.id] || { sf: 0, st: 0 }; counts[s.id][site]++; }
+  }
+  supCounts = { key, counts };
+  return counts;
+}
+function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
 
 // ---------- API ----------
 const routes = {
-  'GET /api/state': (q, _, ctx) => ({ version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status() }),
+  'GET /api/state': async (q, _, ctx) => { if (!store.read('catalog-meta', null)) await engine.loaded(); return stateView(ctx); },
   'GET /api/dashboard': () => dashboard.build(),
 
   // Sync
@@ -157,22 +174,27 @@ const routes = {
     const sites = (b.sites && b.sites.length ? b.sites : ['sf', 'st']).filter((x) => catalog.SITES.includes(x));
     return jobs.start('sync', b.full ? 'Πλήρης ανάγνωση προϊόντων' : 'Ανάγνωση προϊόντων', async (job) => {
       const out = {};
+      await engine.ready();
       const progress = catalog.makeProgress(job);
       // both shops at the same time: the total time is that of the bigger shop (one after the other on a small cloud machine: half the memory)
       const one = async (site) => {
-        try { out[site] = await catalog.syncSite(site, job, { full: !!b.full, progress }); if (out[site]) job.log(`${settings.all().sites[site].name}: έτοιμο.`); } catch (e) { out[site] = { error: e.message }; job.log(`${settings.all().sites[site].name}: ${e.message}`); }
+        try {
+          out[site] = await catalog.syncSite(site, job, { full: !!b.full, progress });
+          if (out[site]) job.log(`${settings.all().sites[site].name}: έτοιμο.`);
+          // free cloud: each shop is kept in GitHub as soon as it is read (whatever happens next, it is not read again)
+          if (out[site] && cloudsave.status().enabled) { const sv = await cloudsave.save('ανάγνωση ' + site); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); }
+        } catch (e) { out[site] = { error: e.message }; job.log(`${settings.all().sites[site].name}: ${e.message}`); }
       };
-      if (SMALL) { for (const site of sites) await one(site); } else await Promise.all(sites.map(one));
+      engine.hold(); // nothing is rebuilt while the shops are being read; once, at the end
+      try { if (SMALL) { for (const site of sites) await one(site); } else await Promise.all(sites.map(one)); } finally { engine.release(); }
       checks.invalidate(); suppliers.resetIndex(); fixes.invalidate();
       if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => out[s].error).join(' / '));
       // free cloud: what was read is kept in GitHub at once, before anything else can go wrong
       if (cloudsave.status().enabled) { job.progress(null, null, 'Φύλαξη στο GitHub…'); const sv = await cloudsave.save('ανάγνωση sites'); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); else job.log('Φυλάχτηκαν στο GitHub.'); }
-      // the heavy work is done here, step by step, so the screens open at once afterwards
-      const pause = () => new Promise((r) => setImmediate(r));
-      job.progress(null, null, 'Λέξεις για την ορθογραφία…'); await checks.warmWords(); job.progress(null, null, 'Έλεγχοι καταλόγου…'); await pause(); checks.cached();
-      job.progress(null, null, 'Έτοιμες διορθώσεις…'); await pause(); fixes.compute();
-      job.progress(null, null, 'Ροή εργασίας και τιμές…'); await pause(); require('./lib/flow').compute(); await pause();
-      market.recompute();
+      // checks, fixes and the work flow are built again in the background, in slices; the job ends when they are ready
+      await engine.settle((stepText) => job.progress(null, null, stepText));
+      job.progress(null, null, 'Τιμές αγοράς…');
+      await market.recomputeAsync();
       if (cloudsave.status().enabled) await cloudsave.save('έλεγχοι');
       return out;
     });
@@ -200,7 +222,7 @@ const routes = {
   'GET /api/checks': (q) => { const r = checks.cached(q.force === '1'); return { counts: r.counts, at: r.at, checks: r.checks.map((c) => Object.assign({}, c, { items: c.items.slice(0, Number(q.limit) || 400), total: c.items.length })) }; },
   'GET /api/check': (q) => { const r = checks.cached(); const c = r.checks.find((x) => x.id === q.id); if (!c) throw new Error('Δεν βρέθηκε ο έλεγχος.'); return c; },
   'POST /api/checks/fix': (b) => { const r = checks.fixFile(b.id, b.ids, b.overrides); const f = saveExport(r.name, r.csv); return Object.assign({ count: r.count, site: r.site, skipped: r.skipped || [], newCategories: r.newCategories || [], note: r.note || '' }, f); },
-  'POST /api/checks/ignore': (b) => { checks.setIgnored(b.id, (b.keys || []).map(String), b.on !== false); checks.invalidate(); fixes.invalidate(); return { ok: true }; },
+  'POST /api/checks/ignore': (b) => { checks.setIgnored(b.id, (b.keys || []).map(String), b.on !== false); return { ok: true }; },
 
   // Fixes waiting for approval: everything the program can correct by itself, filled in here (never on the sites)
   'GET /api/fixes': (q) => fixes.view(q),
@@ -231,12 +253,7 @@ const routes = {
   // Suppliers
   'GET /api/suppliers': () => {
     const list = suppliers.list();
-    const counts = {};
-    for (const site of ['sf', 'st']) for (const p of catalog.load(site).products) {
-      if (p.type === 'variation') continue;
-      const s = suppliers.forProduct(p);
-      if (s) { counts[s.id] = counts[s.id] || { sf: 0, st: 0 }; counts[s.id][site]++; }
-    }
+    const counts = supplierCounts();
     const updates = store.read('supplier-updates', []);
     return { suppliers: list.map((s) => Object.assign(suppliers.view(s), { products: counts[s.id] || { sf: 0, st: 0 }, pricelist: pricelist.info(s.id), lastUpdate: updates.find((u) => u.supplierId === s.id) || null })), clashes: suppliers.brandClashes(list), brands: catalog.brandsList() };
   },
@@ -512,7 +529,7 @@ function sessionOf(req, touch) { return SERVER ? users.session(cookieOf(req, 'sf
 const streams = new Set(); // { res, client }
 let pendingKeys = new Map(); // store key -> Set of tabs that caused it ('' = the program itself)
 let flushTimer = null;
-const QUIET_KEYS = /^(sessions|security|accents|types|market-meta|competitors-meta)$|^comp-/;
+const QUIET_KEYS = /^(sessions|security|accents|types|market-meta|competitors-meta|catalog-meta|derived-checks|derived-fixes|derived-words|derived-meta)$|^comp-/;
 store.onWrite((name) => {
   if (QUIET_KEYS.test(name) || !streams.size) return;
   const by = (reqCtx.getStore() || {}).client || '';
@@ -608,6 +625,7 @@ function serveReport(req, res, url) {
 }
 
 async function handleApi(req, res, url) {
+  if (starting) return send(res, 503, { error: 'Το πρόγραμμα ξεκινάει (φέρνει τα δεδομένα)… δοκίμασε σε λίγο.', starting: true }, null, { 'Retry-After': '3' });
   const q = Object.fromEntries(url.searchParams);
   const key0 = req.method + ' ' + url.pathname;
   if (key0 === 'GET /api/events') return serveEvents(req, res, url);
@@ -648,17 +666,24 @@ async function handleApi(req, res, url) {
   }
   const fn = routes[key0];
   if (!fn) return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
+  const done = bg.request(); // the background work steps aside while somebody waits for an answer
+  const cpu0 = process.cpuUsage();
+  const timing = () => { const c = process.cpuUsage(cpu0); return { 'Server-Timing': `cpu;dur=${((c.user + c.system) / 1000).toFixed(1)}` }; };
   try {
+    // the data of the screens is loaded once at start, in the background: the first requests wait for it (seconds)
+    if (!NO_DATA.test(url.pathname)) await engine.ready();
     // before login only small bodies are read
     const limit = SERVER && !ctx.user ? 64 * 1024 : 120 * 1024 * 1024;
     const body = req.method === 'POST' ? await readBody(req, limit) : {};
     const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx));
-    send(res, 200, out === undefined ? { ok: true } : out, null, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null);
+    send(res, 200, out === undefined ? { ok: true } : out, null, Object.assign(timing(), ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null));
   } catch (e) {
     if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key0, e);
     send(res, 400, { error: e && e.message ? e.message : String(e) }, null, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null);
-  }
+  } finally { done(); }
 }
+// what never needs the products in memory (sign-in, settings, jobs, phones)
+const NO_DATA = /^\/api\/(session|login|logout|setup|state|jobs|users|me\/|connect|qr|lock|unlock|security|settings$|events|cloud)/;
 
 function serveStatic(req, res, url) {
   let p = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -691,7 +716,7 @@ const server = http.createServer((req, res) => {
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
   }
   const url = new URL(req.url, 'http://127.0.0.1');
-  if (url.pathname === '/ping') return send(res, 200, { app: 'sf-kentro', version: VERSION });
+  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), lag: lagMax() }); }
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
   if (url.pathname.startsWith('/api/')) { uiSeen = true; return handleApi(req, res, url); }
   if (url.pathname === '/') uiSeen = true;
@@ -718,7 +743,7 @@ function listen(p, tries) {
     console.log('  SF Kentro ' + VERSION + (SERVER ? ' — server mode (shared by every PC)' : ''));
     console.log('  Running at ' + url + (SERVER ? '  (listening on ' + BIND + ':' + p + ')' : ''));
     console.log('  Data folder: ' + store.dir());
-    if (SERVER) {
+    if (SERVER) return cloudData().then(() => {
       const code = users.ensureAdmin();
       if (code) { console.log(''); console.log('  FIRST START: open the program in a browser and use this setup code: ' + code); console.log('  ΠΡΩΤΗ ΕΚΚΙΝΗΣΗ: άνοιξε το πρόγραμμα στον browser και γράψε τον κωδικό: ' + code); }
       const others = connectUrls();
@@ -727,7 +752,7 @@ function listen(p, tries) {
       // a shop PC started with SF-Kentro-Server.cmd is also a working PC: open the program on it
       if (process.platform === 'win32' && !process.env.SFK_NO_OPEN) openDefault(url);
       return afterStart();
-    }
+    }).catch(fatal);
     console.log('  Keep this window open while you work. Close it to exit.');
     console.log('  If no window appears, open this address in your browser: ' + url);
     console.log('');
@@ -743,47 +768,46 @@ function listen(p, tries) {
 }
 
 const STARTED_AT = Date.now();
-/** Everything the screens need, worked out step by step with pauses (the program keeps answering meanwhile). */
-async function warmUp() {
-  const t0 = Date.now();
-  const pause = () => new Promise((r) => setTimeout(r, 50));
-  for (const site of catalog.SITES) { catalog.load(site); await pause(); }
-  if (!catalog.load('sf').products.length && !catalog.load('st').products.length) return;
-  catalog.links(); await pause();
-  require('./lib/spell').dict(); await pause();
-  await checks.warmWords(); await pause();
-  checks.cached(); await pause();
-  fixes.compute(); await pause();
-  require('./lib/flow').compute(); await pause();
-  dashboard.build();
-  console.log(`Ready: the screens' data prepared in ${Math.round((Date.now() - t0) / 1000)} s.`);
-}
+// how long the program could not answer, at worst, in the last minute (a small cloud machine shows its limits here)
+const lags = [];
+let lagAt = Date.now();
+setInterval(() => { const now = Date.now(); lags.push([now, Math.max(0, now - lagAt - 500)]); lagAt = now; while (lags.length && now - lags[0][0] > 60000) lags.shift(); }, 500).unref();
+function lagMax() { let m = 0; for (const [, v] of lags) if (v > m) m = v; return m; }
+
 function afterStart() {
   cloudsave.start();
+  // everything the screens need is loaded (or calculated) now, in the background, in slices
+  const t0 = Date.now();
+  engine.start().then(() => console.log(`Ready: the screens' data prepared in ${Math.round((Date.now() - t0) / 1000)} s.`));
+  engine.onChange(() => { for (const st of [...streams]) if (alive(st)) sse(st.res, { keys: ['derived-meta'] }); });
   if (SERVER) {
-    // the heavy work of the first screens is done now, in the background, so nobody waits for it
-    setTimeout(() => { warmUp().catch((e) => console.error('warm-up:', e.message)); }, 1500);
     // free cloud plan (Render): it sleeps after 15 minutes without visits and then needs a minute or more to wake
     // up — a visit to itself every 10 minutes keeps it awake (one program stays within the free monthly hours)
     const self = String(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
     if (self && process.env.SFK_KEEP_AWAKE !== '0') setInterval(() => { fetch(self + '/ping').catch(() => {}); }, 10 * 60 * 1000).unref();
   }
-  try { store.backup(14); } catch (e) { console.error('backup:', e.message); }
+  // the daily copy of the data — not on a free cloud host: its disk is erased at every restart, the copy that counts
+  // is the one in the private GitHub repository (and compressing 60 MB there would take all the processor for a minute)
+  const dailyCopy = () => { if (!cloudsave.status().enabled) store.backupAsync(14).catch((e) => console.error('backup:', e.message)); };
+  engine.ready().then(dailyCopy);
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
-  setInterval(() => { try { store.backup(14); } catch (e) { console.error('backup:', e.message); } }, 3600 * 1000).unref();
-  // after an update with new market rules (e.g. out-of-stock offers no longer count): recalculate the saved results once
-  try {
-    const meta = store.read('market-meta', {});
-    if ((meta.logic || 0) < market.LOGIC_VERSION) { market.recompute(); store.write('market-meta', Object.assign({}, store.read('market-meta', {}), { logic: market.LOGIC_VERSION })); }
-  } catch (e) { console.error('market recompute:', e.message); }
-  const s = settings.all();
-  const sum = catalog.summary();
-  const stale = ['sf', 'st'].filter((site) => sum[site].source === 'api' && s.autoSyncHours && (!sum[site].syncedAt || (Date.now() - new Date(sum[site].syncedAt)) / 36e5 > s.autoSyncHours));
-  if (stale.length && !process.env.SFK_NO_AUTOSYNC) routes['POST /api/sync']({ sites: stale });
+  setInterval(dailyCopy, 3600 * 1000).unref();
+  engine.ready().then(async () => {
+    // after an update with new market rules (e.g. out-of-stock offers no longer count): recalculate the saved results once
+    try {
+      const meta = store.read('market-meta', {});
+      if ((meta.logic || 0) < market.LOGIC_VERSION) { await market.recomputeAsync(); store.write('market-meta', Object.assign({}, store.read('market-meta', {}), { logic: market.LOGIC_VERSION })); }
+    } catch (e) { console.error('market recompute:', e.message); }
+    const s = settings.all();
+    const sum = catalog.summary();
+    const stale = ['sf', 'st'].filter((site) => sum[site].source === 'api' && s.autoSyncHours && (!sum[site].syncedAt || (Date.now() - new Date(sum[site].syncedAt)) / 36e5 > s.autoSyncHours));
+    if (stale.length && !process.env.SFK_NO_AUTOSYNC) routes['POST /api/sync']({ sites: stale });
+  });
   // daily competitor research: the first time the program is open each day, after the products are read
   if (!process.env.SFK_NO_AUTOSYNC) {
     const tick = () => {
       try {
+        if (!engine.status().ready) return;
         const busy = jobs.running().some((j) => j.type === 'sync' || j.type === 'market' || j.type === 'supplierfind');
         if (busy) return;
         // once a week, after the daily research: look for suppliers of brands without one (for approval)
@@ -853,9 +877,16 @@ function main() {
   setupLog();
   console.log('Starting SF Kentro ' + VERSION + ' on ' + process.platform + ' ' + process.arch + ', node ' + process.version);
   try { store.init(); } catch (e) { return fatal(e); }
-  if (!cloudsave.status().enabled) return listen(PORT0, 5);
-  // free cloud host: first the data saved in the private GitHub repository, then the program
-  cloudsave.restore().then((r) => console.log(r && r.first ? 'Cloud data: first start (nothing saved yet).' : `Cloud data: ${r ? r.files : 0} files restored.`))
-    .catch((e) => console.error('Cloud data could not be read:', e.message)).finally(() => listen(PORT0, 5));
+  listen(PORT0, 5);
+}
+/**
+ * Free cloud host: the data saved in the private GitHub repository is read right after the program opens its door.
+ * Until it is back nothing is answered from the (empty) disk: the screens say "starting" and try again by themselves.
+ */
+let starting = cloudsave.status().enabled;
+function cloudData() {
+  if (!cloudsave.status().enabled) return Promise.resolve();
+  return cloudsave.restore().then((r) => console.log(r && r.first ? 'Cloud data: first start (nothing saved yet).' : `Cloud data: ${r ? r.files : 0} files restored${r && r.ms ? ' in ' + Math.round(r.ms / 1000) + ' s' : ''}.`))
+    .catch((e) => console.error('Cloud data could not be read:', e.message)).finally(() => { starting = false; });
 }
 main();

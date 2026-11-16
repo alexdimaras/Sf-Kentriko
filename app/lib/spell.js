@@ -150,6 +150,8 @@ function make(parts) {
   return { size: k, has, stem: (w) => stemHas(w.slice(0, -1)) || stemHas(w.slice(0, -2)), bytes: data.length + offs.byteLength + words.byteLength + stems.byteLength };
 }
 function dict() { if (!D) D = build(); return D; }
+/** Let the 38 MB of the dictionary go (a small cloud machine): it is read again, in a moment, when next needed. */
+function release() { D = null; }
 function isWord(w) { return dict().has(plain(w)); }
 /** Another form of a known word (different ending): ΑΝΤΙΟΞΕΙΔΩΤΙΚΟ next to ΑΝΤΙΟΞΕΙΔΩΤΙΚΗ. */
 function knownStem(w) { return w.length >= 6 && dict().stem(w); }
@@ -203,4 +205,4 @@ function check(word, freq) {
 }
 function suggest(word, freq) { const r = check(word, freq); return r ? r.fix : ''; }
 
-module.exports = { dict, isWord, knownStem, check, suggest, plain, prebuild };
+module.exports = { release, dict, isWord, knownStem, check, suggest, plain, prebuild };

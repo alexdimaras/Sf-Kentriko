@@ -44,18 +44,25 @@ async function get(url, opts) {
   for (let attempt = 0; attempt <= o.retries; attempt++) {
     await pace(host, o.gap);
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), o.timeout);
+    let t = null;
     try {
-      const res = await fetch(url, {
-        redirect: 'follow',
-        signal: ctl.signal,
-        headers: Object.assign({
-          'User-Agent': UA,
-          'Accept': o.accept || (o.json ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
-          'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
-        }, o.headers || {}),
-      });
-      const buf = Buffer.from(await res.arrayBuffer());
+      // A hard deadline for the whole answer (headers AND body). The abort signal alone is not enough: after a
+      // connection dies quietly, reading the body can wait for ever, and a whole job would hang with it.
+      const work = (async () => {
+        const r = await fetch(url, {
+          redirect: 'follow',
+          signal: ctl.signal,
+          headers: Object.assign({
+            'User-Agent': UA,
+            'Accept': o.accept || (o.json ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
+            'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
+          }, o.headers || {}),
+        });
+        return { res: r, buf: Buffer.from(await r.arrayBuffer()) };
+      })();
+      work.catch(() => {}); // if the deadline wins, a late failure of the abandoned request is nobody's problem
+      const deadline = new Promise((_, reject) => { t = setTimeout(() => { try { ctl.abort(); } catch (_) { /* ignore */ } const e = new Error('deadline'); e.name = 'AbortError'; reject(e); }, o.timeout); });
+      const { res, buf } = await Promise.race([work, deadline]);
       clearTimeout(t);
       const text = o.raw ? '' : buf.toString('utf8');
       if (res.status === 429 || res.status === 503) {

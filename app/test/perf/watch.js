@@ -19,8 +19,9 @@ const cmd = boxed ? ['bash', [path.join(__dirname, 'box.sh'), process.execPath, 
 let srv, starts = 0, log = '', peak = 0, worst = 0, timeouts = 0, lastLine = 0;
 const t0 = Date.now();
 const at = () => String(Math.round((Date.now() - t0) / 1000)).padStart(4) + 's';
+let startedAt = 0;
 function start() {
-  starts++;
+  starts++; startedAt = Date.now();
   srv = spawn(cmd[0], cmd[1], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const on = (b) => { log += b; for (const l of String(b).split('\n')) if (l.trim() && !/^\s+at |^\s*$|node:internal|\[UNDICI|trace-warnings/.test(l)) console.log(at(), ' LOG', l.slice(0, 150)); };
   srv.stdout.on('data', on); srv.stderr.on('data', on);
@@ -35,18 +36,19 @@ async function tick() {
   try {
     const r = await fetch(`http://127.0.0.1:${port}/ping`, { signal: AbortSignal.timeout(30000) });
     await r.text(); ms = Date.now() - t;
-  } catch (_) { timeouts++; }
+  } catch (e) { if (srv && srv.exitCode == null && Date.now() - startedAt > 5000) timeouts++; else ms = -2; }
   if (ms >= 0) {
     worst = Math.max(worst, ms);
     try {
       if (!H) { const l = await fetch(`http://127.0.0.1:${port}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: 'alex', password: 'Kentro-Test-12345', remember: true }), signal: AbortSignal.timeout(30000) }); H = { Cookie: (l.headers.get('set-cookie') || '').split(';')[0], 'X-SFK': (await l.json()).csrf }; }
       const j = await (await fetch(`http://127.0.0.1:${port}/api/jobs`, { headers: H, signal: AbortSignal.timeout(30000) })).json();
+      if (!Array.isArray(j)) H = null; // signed in before the data was back: sign in again
       const run = (Array.isArray(j) ? j : []).filter((x) => x.status === 'running').map((x) => `${x.type}: ${(x.msg || '').slice(0, 60)}`);
       job = run.join(' | ');
     } catch (_) { H = null; }
-  } else worst = Math.max(worst, 30000);
+  } else if (ms === -1) worst = Math.max(worst, 30000);
   const m = rss(); peak = Math.max(peak, m);
-  if (Date.now() - lastLine > 9000 || ms < 0 || ms > 2000) { lastLine = Date.now(); console.log(at(), ms < 0 ? 'ping TIMEOUT(30s)' : `ping ${String(ms).padStart(5)}ms`, `${m}MB`, job); }
+  if (Date.now() - lastLine > 9000 || ms < 0 || ms > 2000) { lastLine = Date.now(); console.log(at(), ms === -2 ? 'starting…       ' : ms < 0 ? 'ping NO ANSWER  ' : `ping ${String(ms).padStart(5)}ms`, `${m}MB`, job); }
   busy = false;
 }
 start();

@@ -81,7 +81,7 @@ function setDataDir(target) {
     }
   }
   const cfg = readConfig(); cfg.dataDir = target; writeConfig(cfg);
-  cache.clear();
+  forgetAll();
   dataDir = target;
   fs.mkdirSync(path.join(dataDir, 'exports'), { recursive: true });
   return { dataDir, usedExisting: targetHasData };
@@ -113,11 +113,40 @@ function read(name, def) {
 const listeners = new Set();
 function onWrite(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+// Every file has a version that grows with each save: what was calculated from a file is still good while the
+// version is the same (the object in memory can be changed in place, so comparing objects is not enough).
+const versions = new Map();
+let epoch = 1;
+function ver(name) { return epoch * 1e9 + (versions.get(name) || 0); }
+let writes = 0;
+function bump(name) { versions.set(name, (versions.get(name) || 0) + 1); if (name !== 'sessions') writes++; }
+/** Grows with every save of any file (the open sessions aside): one number for "is this answer still good?". */
+function stamp() { return epoch * 1e9 + writes; }
+/** Everything was replaced from outside (restore): every version changes. */
+function forgetAll() { cache.clear(); epoch++; }
+
 function write(name, value) {
   cache.set(name, value);
+  bump(name);
   const f = file(name);
   const tmp = f + '.tmp-' + process.pid;
   if (isBig(value)) writeStreamed(tmp, value); else fs.writeFileSync(tmp, JSON.stringify(value));
+  fs.renameSync(tmp, f);
+  for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
+  return value;
+}
+/**
+ * The same save for a big file, in pieces with pauses (`rest`: an async function called between pieces), so the
+ * program keeps answering while 30 MB are written. The new value is used at once; the file follows.
+ */
+async function writeAsync(name, value, rest) {
+  cache.set(name, value);
+  bump(name);
+  const f = file(name);
+  const tmp = f + '.tmp-' + process.pid + '-a';
+  const g = streamGen(tmp, value);
+  let t = Date.now();
+  for (;;) { const r = g.next(); if (r.done) break; if (rest && Date.now() - t >= 12) { await rest(); t = Date.now(); } }
   fs.renameSync(tmp, f);
   for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
   return value;
@@ -132,32 +161,93 @@ function isBig(v) {
   for (const k in v) if (Array.isArray(v[k]) && v[k].length >= 500) return true;
   return false;
 }
-function writeStreamed(target, value) {
+// Each item of a big list goes on its own line (",item" after the first): the file is still plain JSON, and it
+// can also be read back line by line, in pieces (readAsync).
+function* streamGen(target, value) {
   const fd = fs.openSync(target, 'w');
   try {
     let buf = '';
-    const put = (s) => { buf += s; if (buf.length > 1 << 20) { fs.writeSync(fd, buf); buf = ''; } };
-    const list = (arr) => {
-      put('[');
-      for (let i = 0; i < arr.length; i++) { const x = JSON.stringify(arr[i]); put((i ? ',' : '') + (x === undefined ? 'null' : x)); }
-      put(']');
-    };
-    if (Array.isArray(value)) list(value);
+    const flush = () => { if (buf) { fs.writeSync(fd, buf); buf = ''; } };
+    const big = (v) => Array.isArray(v) && v.length >= 500;
+    function* list(arr) {
+      buf += '[\n';
+      for (let i = 0; i < arr.length; i++) {
+        const x = JSON.stringify(arr[i]);
+        buf += (i ? ',' : '') + (x === undefined ? 'null' : x) + '\n';
+        if (buf.length > 1 << 19) { flush(); yield; }
+      }
+      buf += ']';
+    }
+    if (big(value)) yield* list(value);
     else {
-      put('{');
+      buf += '{';
       let first = true;
       for (const k of Object.keys(value)) {
         const v = value[k];
         if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
-        put((first ? '' : ',') + JSON.stringify(k) + ':');
+        buf += (first ? '' : ',') + JSON.stringify(k) + ':';
         first = false;
-        if (Array.isArray(v) && v.length >= 500) list(v);
-        else put(JSON.stringify(v));
+        if (big(v)) yield* list(v);
+        else buf += JSON.stringify(v);
       }
-      put('}');
+      buf += '}';
     }
-    if (buf) fs.writeSync(fd, buf);
+    flush();
   } finally { fs.closeSync(fd); }
+}
+function writeStreamed(target, value) { const g = streamGen(target, value); while (!g.next().done); }
+
+/**
+ * Read a big file in pieces with pauses (`rest`), list items line by line: the program keeps answering while a
+ * 30 MB catalog is loaded. Files of older versions (everything on one line) are read in one go, as before.
+ */
+async function readAsync(name, def, rest) {
+  if (cache.has(name)) { const c = cache.get(name); return c === MISSING ? fresh(def) : c; }
+  let fd;
+  try { fd = fs.openSync(file(name), 'r'); } catch (_) { return read(name, def); }
+  let skeleton = '', cur = null, n = 0, size = 0;
+  let parts = []; // the pieces of the line being read (a file saved by an older version is one line of 30 MB)
+  const lists = [];
+  const { StringDecoder } = require('string_decoder');
+  const dec = new StringDecoder('utf8');
+  const line = (l) => {
+    if (cur) {
+      if (l[0] === ']') { cur = null; skeleton += l; } else { cur.push(JSON.parse(l[0] === ',' ? l.slice(1) : l)); n++; }
+    } else if (l.endsWith('[')) { cur = []; lists.push({ key: (l.match(/"((?:[^"\\]|\\.)*)":\[$/) || [])[1], items: cur }); skeleton += l; } else skeleton += l;
+  };
+  try {
+    const chunk = Buffer.allocUnsafe(1 << 18);
+    let t = Date.now();
+    for (;;) {
+      const got = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (!got) break;
+      const text = dec.write(chunk.subarray(0, got));
+      let from = 0;
+      for (;;) {
+        const i = text.indexOf('\n', from);
+        if (i < 0) break;
+        const l = text.slice(from, i);
+        if (parts.length) { parts.push(l); line(parts.join('')); parts = []; } else line(l);
+        from = i + 1;
+      }
+      if (from < text.length) parts.push(from ? text.slice(from) : text);
+      size += got;
+      // no line breaks at all: a file of an older version, read the plain way (once; the next save writes it in lines)
+      if (!n && !skeleton && size > (1 << 21)) { fs.closeSync(fd); fd = null; if (rest) await rest(); return read(name, def); }
+      if (rest && Date.now() - t >= 12) { await rest(); t = Date.now(); if (cache.has(name)) return cache.get(name) === MISSING ? fresh(def) : cache.get(name); }
+    }
+    parts.push(dec.end());
+    const last = parts.join('');
+    if (last) line(last);
+    let v = JSON.parse(skeleton);
+    if (Array.isArray(v) && lists.length === 1 && lists[0].key === undefined) v = lists[0].items;
+    else for (const l of lists) if (l.key !== undefined) v[JSON.parse('"' + l.key + '"')] = l.items;
+    if (v === null) return read(name, def);
+    if (!cache.has(name)) cache.set(name, v);
+    return cache.get(name) === MISSING ? fresh(def) : cache.get(name);
+  } catch (_) {
+    return read(name, def); // anything odd: the plain way decides (and keeps a copy of a broken file)
+  } finally { if (fd != null) { try { fs.closeSync(fd); } catch (_) { /* closed */ } } }
 }
 
 function update(name, def, fn) {
@@ -169,6 +259,9 @@ function update(name, def, fn) {
 /** Does the file exist (saved at least once)? */
 function exists(name) { read(name); return cache.get(name) !== MISSING; }
 
+/** Is the file in memory already (reading it costs nothing)? */
+function loaded(name) { return cache.has(name); }
+
 /** Drop a big file from memory (it is read again from disk when needed). */
 function forget(name) { cache.delete(name); }
 
@@ -179,7 +272,7 @@ function exportPath(fname) {
 
 // Files that are only copies of something that can be read again (competitors' catalogs, supplier pages,
 // learned words, sessions) are not backed up; the rest is compressed (JSON shrinks about 10×).
-const NO_BACKUP = /^(comp-.+|enrich-cache|accents|types|sessions)\.json$/;
+const NO_BACKUP = /^(comp-.+|enrich-cache|accents|types|sessions|derived-.+|catalog-meta)\.json$/;
 function backup(keep) {
   const day = new Date().toISOString().slice(0, 10);
   const root = path.join(dir(), 'backups');
@@ -190,6 +283,29 @@ function backup(keep) {
     if (!f.endsWith('.json') || NO_BACKUP.test(f)) continue;
     fs.writeFileSync(path.join(bdir, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f)), { level: 6 }));
   }
+  return prune(root, keep, bdir);
+}
+/**
+ * The same daily copy without stopping the program: one file at a time, compressed as a stream (60 MB of products
+ * compressed in one go froze everything for a second on a PC — ten on a small cloud machine).
+ */
+async function backupAsync(keep) {
+  const day = new Date().toISOString().slice(0, 10);
+  const root = path.join(dir(), 'backups');
+  const bdir = path.join(root, day);
+  if (fs.existsSync(bdir)) return null;
+  const tmp = bdir + '.part';
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.mkdirSync(tmp, { recursive: true });
+  const { pipeline } = require('stream/promises');
+  for (const f of fs.readdirSync(dir())) {
+    if (!f.endsWith('.json') || NO_BACKUP.test(f)) continue;
+    try { await pipeline(fs.createReadStream(path.join(dir(), f)), zlib.createGzip({ level: 6 }), fs.createWriteStream(path.join(tmp, f + '.gz'))); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+  fs.renameSync(tmp, bdir); // whole or not at all
+  return prune(root, keep, bdir);
+}
+function prune(root, keep, bdir) {
   const all = fs.readdirSync(root).filter((d) => /^\d{4}-\d\d-\d\d$/.test(d)).sort();
   while (all.length > (keep || 14)) {
     const old = all.shift();
@@ -242,6 +358,10 @@ async function bundleAsync(opts) {
 // Nothing is parsed or joined into one big string, so it works with catalogs of any size on a small machine:
 // SFKPACK2\n, then for each file "name\nsize\n" and its bytes.
 const PACK_MAGIC = 'SFKPACK2\n';
+/** The data files that are kept (names with .json); `allow`: names kept although the daily copies leave them out. */
+function dataFiles(allow) { return packNames(new Set(allow || [])); }
+/** Is this file one of those that are kept? */
+function kept(file, allow) { return file.endsWith('.json') && (!NO_BACKUP.test(file) || (allow || []).includes(file.slice(0, -5))); }
 function packNames(allow) { return fs.readdirSync(dir()).filter((f) => f.endsWith('.json') && (!NO_BACKUP.test(f) || allow.has(f.slice(0, -5)))).sort(); }
 async function pack(opts) {
   const allow = new Set((opts && opts.allow) || []);
@@ -327,7 +447,7 @@ async function unpack(buf, opts) {
     if (opts && opts.file) fs.createReadStream(opts.file).on('error', reject).pipe(gun); else gun.end(buf);
   });
   if (cur) throw new Error('Το αντίγραφο είναι κομμένο (δεν κατέβηκε ολόκληρο).');
-  cache.clear();
+  forgetAll();
   if (!names.length) throw new Error('Το αντίγραφο είναι άδειο.');
   for (const n of names) for (const fn of listeners) { try { fn(n); } catch (_) { /* ignore */ } }
   return { files: names.length, hash: hash.digest('hex'), at: null };
@@ -365,7 +485,7 @@ function unbundle(buf, opts) {
     for (const f of fs.readdirSync(dir())) if (f.endsWith('.json') && !NO_BACKUP.test(f)) fs.writeFileSync(path.join(safety, f + '.gz'), zlib.gzipSync(fs.readFileSync(path.join(dir(), f))));
   }
   for (const n of names) write(n, data.files[n]);
-  cache.clear();
+  forgetAll();
   return { files: names.length, at: data.at || null };
 }
 
@@ -388,7 +508,7 @@ function restoreBackup(day) {
     if (f.endsWith('.json.gz')) fs.writeFileSync(path.join(dir(), f.slice(0, -3)), zlib.gunzipSync(fs.readFileSync(path.join(bdir, f))));
     else if (f.endsWith('.json')) fs.copyFileSync(path.join(bdir, f), path.join(dir(), f));
   }
-  cache.clear();
+  forgetAll();
 }
 
-module.exports = { pack, unpack, restoreFile, isPack, bundle, bundleAsync, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, listBackups, restoreBackup, appConfigDir };
+module.exports = { ver, stamp, loaded, dataFiles, kept, forgetAll, writeAsync, readAsync, pack, unpack, restoreFile, isPack, bundle, bundleAsync, unbundle, exists, onWrite, forget, init, dir, setDataDir, read, write, update, exportPath, backup, backupAsync, listBackups, restoreBackup, appConfigDir };

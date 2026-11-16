@@ -7,6 +7,7 @@ const store = require('./store');
 const adrules = require('./adrules');
 const spell = require('./spell');
 const U = require('./util');
+const bg = require('./bg');
 
 const SEV = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const DEFAULT_CAT = /^(uncategorized|default|xoris-katigoria|χωρις-κατηγορια|genika)$/i;
@@ -19,47 +20,53 @@ function setIgnored(checkId, keys, on) {
     if (set.size) m[checkId] = [...set]; else delete m[checkId];
     return m;
   });
-  invalidate();
+  // nothing is recalculated: the marks are laid over the results (cached), like the decisions of the fixes
 }
 
 /** How often each word appears in the titles of both shops (Greek and Latin). Kept until a catalog changes. */
 let wordMemo = null;
+function wordsFresh() { return wordMemo && wordMemo.v === catalog.bothVer() ? wordMemo.out : null; }
 function wordStats() {
-  const cats = catalog.SITES.map((s) => catalog.load(s));
-  if (wordMemo && wordMemo.cats.every((c, i) => c === cats[i])) return wordMemo.out;
-  const out = wordStatsNow();
-  wordMemo = { cats, out };
+  const hit = wordsFresh();
+  if (hit) return hit;
+  const v = catalog.bothVer();
+  const out = bg.drainSync(wordsGen());
+  wordMemo = { v, out };
   return out;
 }
-/** The same, in pieces (the program keeps answering): used right after a read, before the checks. */
+/** The same, in slices (the program keeps answering): used before the checks are built in the background. */
 async function warmWords() {
-  const cats = catalog.SITES.map((s) => catalog.load(s));
-  if (wordMemo && wordMemo.cats.every((c, i) => c === cats[i])) return;
-  const out = await wordStatsNow(true);
-  wordMemo = { cats, out };
+  if (wordsFresh()) return;
+  const v = catalog.bothVer();
+  const out = await bg.drain(wordsGen());
+  wordMemo = { v, out };
 }
-function wordStatsNow(pieces) {
+/** Words kept from the last run (after a restart), valid for the catalogs loaded now. */
+function setWords(pairs) {
+  if (!pairs || !Array.isArray(pairs.freq)) return;
+  wordMemo = { v: catalog.bothVer(), out: { freq: new Map(pairs.freq), latin: new Map(pairs.latin || []) } };
+}
+function wordsForSave() { const w = wordsFresh(); return w ? { freq: [...w.freq], latin: [...w.latin] } : null; }
+function* wordsGen() {
   const freq = new Map(), latin = new Map();
   const seen = new Set();
-  const all = [];
-  for (const site of catalog.SITES) for (const p of catalog.load(site).products) if (p.type !== 'variation') all.push(p);
-  const one = (p) => {
+  for (const site of catalog.SITES) {
+    for (const p of catalog.load(site).products) {
+      if (p.type === 'variation') continue;
+      yield;
       // the same product on both shops counts once; titles and descriptions both count
       const key = U.foldKey(p.name);
       const dup = seen.has(key); seen.add(key);
-      if (dup) return;
+      if (dup) continue;
       // the first 4000 letters are enough: the description is opened and cut before the slow clean-up
       const text = p.name + ' ' + U.stripTags((String(p.short || '') + ' ' + String(p.desc || '')).slice(0, 12000)).slice(0, 4000);
       for (const w of new Set(spell.plain(text).split(/[^\u0370-\u03ffA-Z]+/))) {
         if (/^[\u0391-\u03a9]{3,}$/.test(w)) freq.set(w, (freq.get(w) || 0) + 1);
         else if (/^[A-Z]{3,}$/.test(w)) latin.set(w, (latin.get(w) || 0) + 1);
       }
-  };
-  if (!pieces) { for (const p of all) one(p); return { freq, latin }; }
-  return (async () => {
-    for (let i = 0; i < all.length; i++) { one(all[i]); if (i % 200 === 199) await new Promise((r) => setImmediate(r)); }
-    return { freq, latin };
-  })();
+    }
+  }
+  return { freq, latin };
 }
 
 /** Type word for a title that starts with a brand: the most common first word in the same category. */
@@ -100,24 +107,18 @@ function typeSuggester(site) {
   };
 }
 
-function run() {
+function* runGen() {
   const s = settings.all();
   const names = { sf: s.sites.sf.name, st: s.sites.st.name };
   const checks = [];
   const L = catalog.links();
   const brands = new Set([...catalog.knownBrands().keys()].map((k) => k.replace(/[^A-Z0-9]/g, '')));
-  const ign = ignored();
   const { freq, latin } = wordStats();
   const dict = spell.dict();
   const latinCommon = new Set([...latin].filter(([, n]) => n >= 3).map(([w]) => w));
   for (const b of brands) latinCommon.add(b);
-  const add = (c) => {
-    const skip = new Set(ign[c.id] || []);
-    const before = c.items.length;
-    if (skip.size) c.items = c.items.filter((i) => !skip.has(i.site + ':' + i.id));
-    c.ignoredCount = before - c.items.length;
-    if (c.items.length || c.ignoredCount) checks.push(c);
-  };
+  // every item is kept here; the "ignore" marks are laid over the result afterwards (cached)
+  const add = (c) => { if (c.items.length) checks.push(c); };
 
   for (const site of catalog.SITES) {
     const c = catalog.load(site);
@@ -136,6 +137,7 @@ function run() {
     if (site === 'st') {
       const lv = { banned: [], google: [], caution: [], meta18: [] };
       for (const p of main) {
+        yield;
         const oid = map.get(p.id);
         const r = catalog.adStatus(site, p, oid ? oById.get(oid) : null, other);
         if (lv[r.level]) lv[r.level].push(item(p, { why: r.why }));
@@ -169,7 +171,9 @@ function run() {
     // Titles
     const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [];
     const suggestType = typeSuggester(site);
+    yield;
     for (const p of main) {
+      yield;
       const name = p.name;
       const fm = U.fixMixedScript(name, latinCommon, dict, freq);
       if (fm.changed) mixed.push(item(p, { fix: U.capsTitle(fm.text), why: 'Ελληνικά και λατινικά γράμματα μαζί' }));
@@ -217,6 +221,7 @@ function run() {
 
     // Duplicates (variations of one product may share codes; only whole products count)
     const byTitle = new Map(), bySku = new Map();
+    yield;
     for (const p of main) {
       const k = U.foldKey(p.name);
       if (!byTitle.has(k)) byTitle.set(k, []);
@@ -229,6 +234,7 @@ function run() {
     add({ id: site + '-duptitle', site, severity: 'medium', title: 'Διπλά προϊόντα (ίδιος τίτλος)', help: 'Το ίδιο προϊόν δύο φορές μοιράζει τις πωλήσεις και μπερδεύει το Google.', items: dupT });
     add({ id: site + '-dupsku', site, severity: 'medium', title: 'Ίδιος κωδικός σε διαφορετικά προϊόντα', help: 'Το WooCommerce και οι τιμοκατάλογοι χρειάζονται μοναδικό κωδικό ανά προϊόν.', items: dupS });
     void byId;
+    yield;
   }
 
   // Cross-site
@@ -240,6 +246,7 @@ function run() {
     const diff = [], zero = [], missing = [], onlySt = [];
     for (const p of sfc.products) {
       if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
+      yield;
       const oid = L.sfToSt.get(p.id);
       if (!oid) {
         const r = catalog.adStatus('sf', p, null, null);
@@ -269,10 +276,7 @@ function run() {
     add({ id: 'x-onlyst', site: 'st', severity: 'low', title: 'Υπάρχουν μόνο στο ' + names.st, help: 'Ίσως λείπουν από το κεντρικό site ή έχουν άλλο όνομα/κωδικό.', items: onlySt });
   }
 
-  checks.sort((a, b) => SEV[a.severity] - SEV[b.severity] || b.items.length - a.items.length);
-  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-  for (const c of checks) counts[c.severity] += c.items.length;
-  return { checks, counts, at: U.nowIso() };
+  return { checks, at: U.nowIso() };
 }
 
 // ---------- One combined title correction (for the fixes waiting for approval) ----------
@@ -319,9 +323,50 @@ function titleFix(p, ctx) {
   return { fix: U.collapse(t), steps };
 }
 
-let last = null;
-function cached(force) { if (!last || force) last = run(); return last; }
-function invalidate() { last = null; }
+// ---------- results: the heavy raw list, and the "ignore" marks laid over it ----------
+let rawMemo = null;     // { checks, at } — every item, before the "ignore" marks
+let dirty = false;      // the data changed: build again
+let lazy = false;       // server: keep answering from the last result while the new one is built in the background
+let onDirty = null;
+let filtered = null;
+function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
+function invalidate() { dirty = true; if (onDirty) onDirty('checks'); }
+function isDirty() { return dirty || !rawMemo; }
+function raw() {
+  if (rawMemo && (!dirty || lazy)) return rawMemo;
+  dirty = false;
+  rawMemo = bg.drainSync(runGen());
+  return rawMemo;
+}
+/** Build again in slices (the program keeps answering); the old result is used until the new one is whole. */
+async function rebuild() {
+  dirty = false;
+  const r = await bg.drain(runGen());
+  rawMemo = r;
+  return r;
+}
+function setRaw(r) { if (r && Array.isArray(r.checks)) { rawMemo = r; filtered = null; } }
+/** What the screens use: the raw list without the ignored items, the most serious first. */
+function cached(force) {
+  if (force && !lazy) dirty = true;
+  const R = raw();
+  const iv = store.ver('ignored');
+  if (filtered && filtered.R === R && filtered.iv === iv) return filtered.out;
+  const ign = ignored();
+  const checks = [];
+  for (const c0 of R.checks) {
+    const skip = ign[c0.id] && ign[c0.id].length ? new Set(ign[c0.id]) : null;
+    const items = skip ? c0.items.filter((i) => !skip.has(i.site + ':' + i.id)) : c0.items;
+    checks.push(Object.assign({}, c0, { items, ignoredCount: c0.items.length - items.length }));
+  }
+  checks.sort((a, b) => SEV[a.severity] - SEV[b.severity] || b.items.length - a.items.length);
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const c of checks) counts[c.severity] += c.items.length;
+  filtered = { R, iv, out: { checks, counts, at: R.at } };
+  return filtered.out;
+}
+/** A fresh result now (tests, "check again"). */
+function run() { dirty = true; const was = lazy; lazy = false; try { return cached(); } finally { lazy = was; } }
 
 /** Build the fix file for a check (optionally only some product ids). */
 function fixFile(checkId, ids, overrides) {
@@ -387,4 +432,4 @@ function ignoredItems(checkId) {
   return keys.map((k) => { const [site, id] = k.split(':'); const p = catalog.load(site).products.find((x) => x.id === Number(id)); return p ? { site, id: p.id, name: p.name, sku: p.sku } : { site, id: Number(id), name: '(δεν υπάρχει πια)' }; });
 }
 
-module.exports = { warmWords, run, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };
+module.exports = { warmWords, setWords, wordsForSave, run, raw, rebuild, setRaw, setLazy, isDirty, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };

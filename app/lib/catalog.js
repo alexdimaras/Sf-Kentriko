@@ -16,10 +16,66 @@ function siteUrl(site) {
 }
 
 function emptyCatalog() { return { syncedAt: null, source: null, products: [], categories: [], info: {} }; }
+// What was worked out from a catalog remembers the catalog's VERSION, never the catalog itself: a kept reference
+// would keep 30 MB of old products in memory after a new reading (two or three catalogs at once is more than a small
+// cloud machine has).
+const cver = (site) => store.ver('catalog-' + site);
+const bothVer = () => cver('sf') + '|' + cver('st');
+// With the engine on (lib/engine.js), the links between the two sites and the list of what is not allowed on the ads
+// site are answered from the last result while new ones are built in the background (never inside a request).
+let lazy = false, onDirty = null;
+function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
+/** A site's catalog was replaced: what pointed into the old one is let go at once. */
+function release(site) { byIdMemo.delete(site); viewMemo.delete(site); idxCache.delete(site); brandsMemo = null; }
 function load(site) {
   const c = store.read('catalog-' + site, emptyCatalog);
   if (!c[PACKED]) { for (const p of c.products) if (p.type !== 'variation') packProduct(p); Object.defineProperty(c, PACKED, { value: true }); }
   return c;
+}
+
+/**
+ * Both catalogs into memory in slices (the program keeps answering while 60 MB are read). After it, load() is
+ * instant. Also prepares what the screens ask for all the time (products by id, the list order, the links).
+ */
+async function preload() {
+  for (const site of SITES) { await store.readAsync('catalog-' + site, emptyCatalog, bg.breathe); load(site); await bg.breathe(); }
+  await bg.drain(warmGen());
+  writeMeta();
+}
+function* warmGen() {
+  for (const site of SITES) { byId(site); yield; }
+  yield* linksGen();
+}
+/** What only some screens need (the order and search text of the product list, what is not allowed on the ads site): after the start. */
+function* warmLateGen() {
+  for (const site of SITES) yield* viewIndexGen(site);
+}
+/** The saved list of what is not allowed on the ads site (it takes seconds to work out on a small cloud machine). */
+function warmBanned() { return bg.drain(bannedGen()); }
+/**
+ * What the program learns from the catalog at every reading (product types, accents). If the files are missing
+ * (data saved by an older version left them out) they are learned again now, in slices. Returns true if anything was made.
+ */
+async function warmLearned() {
+  let made = false;
+  if (!SITES.some((s) => load(s).products.length)) return made;
+  if (!store.exists('types')) { await bg.drain(learnTypesGen()); made = true; }
+  if (!store.exists('accents')) { await bg.drain(accentsGen()); made = true; }
+  return made;
+}
+function setBanned(ids) { bannedMemo = { v: bannedVer(), set: new Set(ids) }; }
+function warmLinks() { return bg.drain(linksGen()); }
+/** The few numbers every screen shows (how many products, when they were read), without opening the catalogs. */
+function writeMeta() {
+  const meta = {};
+  for (const site of SITES) {
+    const c = load(site);
+    let main = 0;
+    for (const p of c.products) if (p.type !== 'variation') main++;
+    meta[site] = { syncedAt: c.syncedAt, source: c.source, products: main, variations: c.products.length - main, categories: c.categories.length, info: c.info || {} };
+  }
+  if (JSON.stringify(store.read('catalog-meta', null)) !== JSON.stringify(meta)) store.write('catalog-meta', meta);
+  return meta;
 }
 
 // ---------- descriptions kept compressed ----------
@@ -27,21 +83,27 @@ function load(site) {
 // than a small cloud machine has. Each product keeps its description and short description compressed
 // (descZ / shortZ, about 1/4 of the size) and p.desc / p.short open them only when they are read.
 const zlib = require('zlib');
+const bg = require('./bg');
 const PACKED = Symbol('packed');
 const TEXTS = ['desc', 'short'];
 function packText(s) { s = String(s == null ? '' : s); return s ? zlib.deflateRawSync(Buffer.from(s, 'utf8'), { level: 6 }).toString('base64') : ''; }
 function unpackText(z) { return z ? zlib.inflateRawSync(Buffer.from(z, 'base64')).toString('utf8') : ''; }
+// p.desc / p.short live once, on a prototype shared by every product (a pair of functions on each product gave each
+// of the 17.000 products its own hidden shape: 30 MB of memory for nothing).
+const Packed = Object.create(Object.prototype, Object.fromEntries(TEXTS.map((k) => [k, {
+  configurable: true, enumerable: false,
+  get() { return unpackText(this[k + 'Z']); },
+  set(v) { this[k + 'Z'] = packText(v); textFacts(this, k, v); },
+}])));
 function packProduct(p) {
+  if (Object.getPrototypeOf(p) === Packed) return p;
   for (const k of TEXTS) {
     const d = Object.getOwnPropertyDescriptor(p, k);
-    if (d && !('value' in d)) continue; // already packed
-    if (d) { delete p[k]; p[k + 'Z'] = packText(d.value); textFacts(p, k, d.value); }
-    Object.defineProperty(p, k, {
-      configurable: true, enumerable: false,
-      get() { return unpackText(this[k + 'Z']); },
-      set(v) { this[k + 'Z'] = packText(v); textFacts(this, k, v); },
-    });
+    if (!d) continue;
+    delete p[k]; // the text itself (or a getter of an older run) leaves the product; the compressed copy stays
+    if ('value' in d) { p[k + 'Z'] = packText(d.value); textFacts(p, k, d.value); }
   }
+  Object.setPrototypeOf(p, Packed);
   return p;
 }
 /** Length, Greek share and the start of the plain text: what the checks need, without opening the text again. */
@@ -142,14 +204,21 @@ async function fetchAll(base, path, query, hooks) {
   hooks.onTotal && hooks.onTotal(total);
   // each page is converted as it arrives (hooks.map): the raw answers of the whole shop are never kept together
   if (hooks.check) hooks.check(first.json);
-  const conv = (list) => (hooks.map ? list.map(hooks.map) : list);
-  const out = conv(first.json);
+  // (in slices: converting 100 products packs 100 descriptions, too long for one go on a small machine)
+  const pace = bg.pacer();
+  const conv = async (list) => {
+    if (!hooks.map) return list;
+    const res = [];
+    for (const x of list) { res.push(hooks.map(x)); if (pace.due()) await pace.rest(); }
+    return res;
+  };
+  const out = await conv(first.json);
   hooks.onItems && hooks.onItems(first.json.length);
   const rest = [];
   for (let p = 2; p <= pages; p++) rest.push(p);
   await http.pool(rest, CONCURRENCY, async (pg) => {
     const r = await http.getJson(apiUrl(base, path, query, pg), { gap: 120, timeout: 60000 });
-    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n); }
+    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of await conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n); }
   }, hooks.cancelled);
   return { items: out, total };
 }
@@ -309,7 +378,7 @@ async function syncSite(site, job, opts) {
   }
   let info = prev.info || {};
   if (full || !info.seo) { try { info = await siteInfo(base); } catch (_) { /* optional */ } }
-  const res = saveCatalog(site, { source: 'api', products, categories, info, meta: { syncStartedAt: new Date(startedAt).toISOString(), lastFullAt: full ? new Date(startedAt).toISOString() : prev.lastFullAt, engine: ENGINE, mode, withVariations: !!s.syncVariations, seconds: Math.round((Date.now() - t0) / 1000) } });
+  const res = await saveCatalogAsync(site, { source: 'api', products, categories, info, meta: { syncStartedAt: new Date(startedAt).toISOString(), lastFullAt: full ? new Date(startedAt).toISOString() : prev.lastFullAt, engine: ENGINE, mode, withVariations: !!s.syncVariations, seconds: Math.round((Date.now() - t0) / 1000) } });
   console.log(`sync ${site} ${mode}: ${res.count} products, ${res.variations} variations in ${res.seconds}s`);
   return res;
 }
@@ -326,27 +395,54 @@ async function siteInfo(base) {
   return { seo, theme };
 }
 
-function saveCatalog(site, data) {
+function* prepareSave(site, data) {
   const prev = load(site);
   const cat = Object.assign({ syncedAt: U.nowIso(), source: data.source, products: data.products, categories: data.categories, info: Object.assign({}, prev.info || {}, data.info || {}) }, data.meta || {});
-  const byId = new Map(cat.products.map((p) => [p.id, p]));
+  const byIdMap = new Map(cat.products.map((p) => [p.id, p]));
+  yield;
   for (const p of cat.products) {
+    yield;
     if (p.type !== 'variation') { packProduct(p); continue; }
-    const par = byId.get(p.parent);
+    const par = byIdMap.get(p.parent);
     // WooCommerce shows the parent's code on variations without their own: that is not a real code.
     if (par && p.sku && p.sku === par.sku) { p.sku = ''; p.skuInherited = true; }
     if (!p.thumb && p.image) p.thumb = p.image;
   }
   Object.defineProperty(cat, PACKED, { value: true });
-  inferBrands(cat);
+  yield* inferBrandsGen(cat);
   const diff = diffCatalogs(prev, cat);
-  store.write('catalog-' + site, cat);
+  yield;
+  return { prev, cat, diff };
+}
+function afterSave(site, data, prev, cat, diff) {
   if (prev.syncedAt) {
     store.update('history', [], (h) => { h.unshift(Object.assign({ site, at: cat.syncedAt, source: data.source, mode: cat.mode || '' }, diff)); return h.slice(0, 40); });
   }
-  rebuildAccents();
-  learnTypes();
+}
+function savedResult(site, cat, diff) {
   return { site, mode: cat.mode || 'full', seconds: cat.seconds || 0, count: cat.products.filter((p) => p.type !== 'variation').length, variations: cat.products.filter((p) => p.type === 'variation').length, categories: cat.categories.length, diff };
+}
+function saveCatalog(site, data) {
+  const { prev, cat, diff } = bg.drainSync(prepareSave(site, data));
+  store.write('catalog-' + site, cat);
+  release(site);
+  afterSave(site, data, prev, cat, diff);
+  bg.drainSync(accentsGen());
+  bg.drainSync(learnTypesGen());
+  writeMeta();
+  return savedResult(site, cat, diff);
+}
+/** The same in slices: the program keeps answering while a 30 MB catalog is prepared and written. */
+async function saveCatalogAsync(site, data) {
+  const { prev, cat, diff } = await bg.drain(prepareSave(site, data));
+  await store.writeAsync('catalog-' + site, cat, bg.breathe);
+  release(site);
+  afterSave(site, data, prev, cat, diff);
+  await bg.drain(accentsGen());
+  await bg.drain(learnTypesGen());
+  await bg.drain(warmGen());
+  writeMeta();
+  return savedResult(site, cat, diff);
 }
 
 function diffCatalogs(prev, cur) {
@@ -368,13 +464,15 @@ function diffCatalogs(prev, cur) {
 // Titles follow ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ…, and many also carry English words (ΖΩΝΗ PENTAGON MONTE BELT).
 // Counting which Greek type goes with which English word teaches us how to name supplier products.
 const TYPE_STOP = new Set(['THE', 'AND', 'FOR', 'WITH', 'PRO', 'NEW', 'MINI', 'MAX', 'PLUS', 'LITE', 'GEN', 'EDITION', 'SET', 'KIT', 'BLACK', 'WHITE', 'GREEN', 'OLIVE', 'COYOTE', 'BROWN', 'GREY', 'GRAY', 'TAN', 'KHAKI', 'NAVY', 'BLUE', 'RED', 'SAND', 'MULTICAM', 'WOODLAND', 'CAMO', 'LED', 'USB']);
-function learnTypes() {
+function learnTypes() { return bg.drainSync(learnTypesGen()); }
+function* learnTypesGen() {
   const votes = new Map();
   const first = new Map();
   const anyPos = new Map();
   for (const site of SITES) {
     for (const p of load(site).products) {
       if (p.type === 'variation') continue;
+      yield;
       const w = U.greekUpper(p.name).split(' ');
       if (!w[0] || !/[\u0370-\u03ff]/.test(w[0]) || w[0].length < 3) continue;
       const type = w[0];
@@ -416,12 +514,15 @@ function knownBrands() {
   return set;
 }
 /** Products without an explicit brand: find a known brand inside the title. */
-function inferBrands(cat) {
+function inferBrands(cat) { return bg.drainSync(inferBrandsGen(cat)); }
+function* inferBrandsGen(cat) {
   const brands = knownBrands();
+  yield;
   for (const p of cat.products) if (p.brand) brands.set(U.foldKey(p.brand), p.brand);
   const list = [...brands.entries()].filter(([k]) => k.length >= 2).sort((a, b) => b[0].length - a[0].length);
   for (const p of cat.products) {
     if (p.brand) continue;
+    yield;
     const t = ' ' + U.foldKey(p.name).replace(/[^\p{L}\p{N}.\-&]+/gu, ' ') + ' ';
     for (const [k, disp] of list) {
       if (t.includes(' ' + k + ' ')) { p.brand = disp; p.brandSource = 'title'; break; }
@@ -431,7 +532,8 @@ function inferBrands(cat) {
 
 // ---------- Accents for Title Case ----------
 let accentCache = null;
-function rebuildAccents() {
+function rebuildAccents() { return bg.drainSync(accentsGen()); }
+function* accentsGen() {
   const counts = new Map();
   for (const site of SITES) {
     const c = load(site);
@@ -440,6 +542,7 @@ function rebuildAccents() {
     for (const p of c.products) {
       if (p.type === 'variation') continue;
       if (n++ > 6000) break;
+      yield;
       U.learnAccents(U.stripTags(p.desc).slice(0, 3000) + ' ' + U.stripTags(p.short), counts);
     }
   }
@@ -484,9 +587,9 @@ const idxCache = new Map();
 function idxFor(site) {
   const c = load(site);
   const hit = idxCache.get(site);
-  if (hit && hit.cat === c) return hit.idx;
+  if (hit && hit.v === cver(site)) return hit.idx;
   const idx = categoryIndex(site);
-  idxCache.set(site, { cat: c, idx });
+  idxCache.set(site, { v: cver(site), idx });
   return idx;
 }
 /** Ad status of a product. linked: the same product on the other site (its categories count too). */
@@ -497,23 +600,41 @@ function adStatus(site, p, linked, linkedSite) {
   const r = adrules.evaluate({ name: p.name, brand: p.brand }, chains);
   return r;
 }
+/** Every product of a site by its id (built once per catalog). */
+const byIdMemo = new Map();
+function byId(site) {
+  const c = load(site);
+  const hit = byIdMemo.get(site);
+  if (hit && hit.v === cver(site)) return hit.map;
+  const map = new Map(c.products.map((p) => [p.id, p]));
+  byIdMemo.set(site, { v: cver(site), map });
+  return map;
+}
 /**
  * Ids of the ads-site products that are not allowed there (weapons, magazines, ammunition…). The program never
  * asks for work on them (texts, photos, prices): the only thing it proposes is to take them off the site.
  */
 let bannedMemo = null;
+const bannedVer = () => bothVer() + '|' + store.ver('settings') + '|' + store.ver('links');
 function bannedOnAds() {
-  const cst = load('st'), csf = load('sf');
-  if (bannedMemo && bannedMemo.cst === cst && bannedMemo.csf === csf) return bannedMemo.set;
-  const L = links();
-  const sfBy = new Map(csf.products.map((p) => [p.id, p]));
+  if (bannedMemo && bannedMemo.v === bannedVer()) return bannedMemo.set;
+  if (bannedMemo && lazy) { if (onDirty) onDirty('links'); return bannedMemo.set; }
+  return bg.drainSync(bannedGen());
+}
+function* bannedGen() {
+  const cst = load('st');
+  const v = bannedVer();
+  if (bannedMemo && bannedMemo.v === v) return bannedMemo.set;
+  const L = yield* linksGen();
+  const sfBy = byId('sf');
   const set = new Set();
   for (const p of cst.products) {
     if (p.type === 'variation') continue;
+    yield;
     const oid = L.stToSf.get(p.id);
     if (adStatus('st', p, oid != null ? sfBy.get(oid) : null, 'sf').level === 'banned') set.add(p.id);
   }
-  bannedMemo = { cst, csf, set };
+  bannedMemo = { v, set };
   return set;
 }
 /** Ad level of every category of a site (for the category lists). */
@@ -528,19 +649,29 @@ function categoryAdLevels(site) {
 // ---------- Cross-site links ----------
 let linksCache = null;
 function links() {
+  const v = bothVer(), mv = store.ver('links');
+  if (linksCache && linksCache.v === v && linksCache.mv === mv) return linksCache.res;
+  // a catalog was read again: the last links are used until the new ones are built in the background
+  // (a link set by hand is worked out at once: the person is waiting to see it)
+  if (linksCache && lazy && linksCache.mv === mv) { if (onDirty) onDirty('links'); return linksCache.res; }
+  return bg.drainSync(linksGen());
+}
+function* linksGen() {
   const csf = load('sf'), cst = load('st');
   const manual = store.read('links', {}); // sfId -> stId | 0 (0 = "not the same")
-  const mk = JSON.stringify(manual);
-  if (linksCache && linksCache.sf === csf && linksCache.st === cst && linksCache.mk === mk) return linksCache.res;
-  const res = computeLinks(csf, cst, manual);
-  linksCache = { sf: csf, st: cst, mk, res };
+  const v = bothVer(), mv = store.ver('links');
+  if (linksCache && linksCache.v === v && linksCache.mv === mv) return linksCache.res;
+  const res = yield* computeLinksGen(csf, cst, manual);
+  linksCache = { v, mv, res };
   return res;
 }
-function computeLinks(csf, cst, manual) {
+function* computeLinksGen(csf, cst, manual) {
   const sf = csf.products.filter((p) => p.type !== 'variation');
   const st = cst.products.filter((p) => p.type !== 'variation');
+  yield;
   const bySku = new Map(), byName = new Map(), bySlug = new Map();
   for (const p of st) {
+    yield;
     if (p.sku) bySku.set(U.normSku(p.sku), p);
     byName.set(U.foldKey(p.name), p);
     if (p.slug) bySlug.set(p.slug, p);
@@ -548,6 +679,7 @@ function computeLinks(csf, cst, manual) {
   const sfToSt = new Map(), stToSf = new Map(), how = new Map();
   const stById = new Map(st.map((p) => [p.id, p]));
   for (const p of sf) {
+    yield;
     let m = null, h = '';
     if (Object.prototype.hasOwnProperty.call(manual, p.id)) {
       m = manual[p.id] ? stById.get(Number(manual[p.id])) : null; h = 'manual';
@@ -719,12 +851,33 @@ function csvImport(site, text, mappingOverride) {
 function summary() {
   const s = settings.all();
   const out = {};
-  for (const site of SITES) {
-    const c = load(site);
-    const main = c.products.filter((p) => p.type !== 'variation');
-    out[site] = { name: s.sites[site].name, url: s.sites[site].url, syncedAt: c.syncedAt, source: c.source, products: main.length, variations: c.products.length - main.length, categories: c.categories.length, info: c.info || {} };
-  }
+  const loaded = SITES.every((site) => store.loaded('catalog-' + site));
+  const meta = loaded ? writeMeta() : store.read('catalog-meta', null) || writeMeta();
+  for (const site of SITES) out[site] = Object.assign({ name: s.sites[site].name, url: s.sites[site].url }, meta[site]);
   return out;
+}
+
+/** The main products of a site in title order, with their search text: prepared once per catalog. */
+const viewMemo = new Map();
+function viewIndex(site) {
+  const hit = viewMemo.get(site);
+  if (hit && hit.v === cver(site)) return hit.rows;
+  return bg.drainSync(viewIndexGen(site));
+}
+function* viewIndexGen(site) {
+  const c = load(site);
+  const hit = viewMemo.get(site);
+  if (hit && hit.v === cver(site)) return hit.rows;
+  const v = cver(site);
+  const rows = [];
+  for (const p of c.products) {
+    if (p.type === 'variation') continue;
+    rows.push({ p, name: U.foldKey(p.name), brand: U.foldKey(p.brand || ''), text: U.foldKey(p.name + ' ' + p.sku + ' ' + p.brand) });
+    yield;
+  }
+  rows.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+  viewMemo.set(site, { v, rows });
+  return rows;
 }
 
 function productsView(q) {
@@ -732,24 +885,24 @@ function productsView(q) {
   const site = q.site === 'st' ? 'st' : 'sf';
   const other = site === 'sf' ? 'st' : 'sf';
   const c = load(site);
-  const oc = load(other);
   const L = links();
   const map = site === 'sf' ? L.sfToSt : L.stToSf;
-  const oById = new Map(oc.products.map((p) => [p.id, p]));
+  const oById = byId(other);
   const supp = require('./suppliers');
   const adOf = (p) => { const oid = map.get(p.id); return adStatus(site, p, oid ? oById.get(oid) : null, other); };
-  let list = c.products.filter((p) => p.type !== 'variation');
+  let rows0 = viewIndex(site); // already in title order
   const term = U.foldKey(q.search || '');
   if (term) {
     const parts = term.split(' ');
-    list = list.filter((p) => { const h = U.foldKey(p.name + ' ' + p.sku + ' ' + p.brand); return parts.every((t) => h.includes(t)); });
+    rows0 = rows0.filter((r) => parts.every((t) => r.text.includes(t)));
   }
+  if (q.brand) { const b = U.foldKey(q.brand); rows0 = rows0.filter((r) => r.brand === b); }
+  let list = rows0.map((r) => r.p);
   if (q.cat) {
     const id = Number(q.cat);
     const idx = categoryIndex(site);
-    list = list.filter((p) => p.cats.some((cid) => cid === id || idx.ancestors(cid).some((a) => a.id === id)));
+    list = list.filter((p) => p.cats.some((cid) => cid === id || idx.ancestors(cid).some((x) => x.id === id)));
   }
-  if (q.brand) { const b = U.foldKey(q.brand); list = list.filter((p) => U.foldKey(p.brand) === b); }
   if (q.only === 'missing') list = list.filter((p) => !map.has(p.id));
   if (q.only === 'both') list = list.filter((p) => map.has(p.id));
   if (q.only === 'sale') list = list.filter((p) => p.sale > 0);
@@ -761,12 +914,10 @@ function productsView(q) {
   if (q.supplier) { const sup = supp.get(q.supplier); list = sup ? list.filter((p) => supp.matches(sup, p)) : []; }
   const sort = q.sort || 'name';
   const dir = q.dir === 'desc' ? -1 : 1;
-  list.sort((a, b) => {
-    if (sort === 'price') return (a.price - b.price) * dir;
-    if (sort === 'id') return (a.id - b.id) * dir;
-    if (sort === 'brand') return a.brand.localeCompare(b.brand, 'el') * dir || a.name.localeCompare(b.name, 'el');
-    return a.name.localeCompare(b.name, 'el') * dir;
-  });
+  if (sort === 'price') list.sort((x, y) => (x.price - y.price) * dir);
+  else if (sort === 'id') list.sort((x, y) => (x.id - y.id) * dir);
+  else if (sort === 'brand') { const k = (p) => U.foldKey(p.brand || ''); const keyed = list.map((p) => [k(p), p]); keyed.sort((x, y) => (x[0] < y[0] ? -dir : x[0] > y[0] ? dir : 0)); list = keyed.map((x) => x[1]); }
+  else if (dir < 0) list.reverse();
   const total = list.length;
   const per = Math.min(500, Math.max(10, Number(q.per) || 50));
   const page = Math.max(1, Number(q.page) || 1);
@@ -810,7 +961,9 @@ function productDetail(site, id) {
   };
 }
 
+let brandsMemo = null;
 function brandsList() {
+  if (brandsMemo && brandsMemo.v === bothVer()) return brandsMemo.list;
   const m = new Map();
   for (const site of SITES) for (const p of load(site).products) {
     if (p.type === 'variation' || !p.brand) continue;
@@ -819,7 +972,8 @@ function brandsList() {
     e[site]++;
     m.set(k, e);
   }
-  return [...m.values()].sort((a, b) => (b.sf + b.st) - (a.sf + a.st));
+  brandsMemo = { v: bothVer(), list: [...m.values()].sort((a, b) => (b.sf + b.st) - (a.sf + a.st)) };
+  return brandsMemo.list;
 }
 
 /** Attribute names used on a site, most common first (for size/colour/brand detection). */
@@ -844,6 +998,7 @@ function detectAttribute(site, kind) {
 }
 
 module.exports = {
+  warmLateGen, setBanned, warmBanned, warmLearned, warmLinks, setLazy, bothVer,
   SITES, load, siteUrl, probe, syncSite, makeProgress, fetchAll, csvDetect, csvImport, summary, productsView, productDetail, links, setManualLink,
-  categoryIndex, adStatus, bannedOnAds, categoryAdLevels, chainsFor, accents, rebuildAccents, brandsList, knownBrands, attributeNames, detectAttribute, fromStoreApi, learnTypes, learnedTypes,
+  categoryIndex, adStatus, bannedOnAds, byId, preload, writeMeta, saveCatalogAsync, viewIndex, categoryAdLevels, chainsFor, accents, rebuildAccents, brandsList, knownBrands, attributeNames, detectAttribute, fromStoreApi, learnTypes, learnedTypes,
 };

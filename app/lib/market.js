@@ -765,6 +765,20 @@ function recompute() {
   }
   store.write('market', all);
 }
+/** The same in slices: the screens keep answering while thousands of results are recalculated (small cloud machine). */
+async function recomputeAsync() {
+  const catalog = require('./catalog');
+  const pace = require('./bg').pacer();
+  const all = results();
+  const byId = { sf: catalog.byId('sf'), st: catalog.byId('st') };
+  for (const key of Object.keys(all)) {
+    const [site, id] = key.split(':');
+    const p = byId[site] && byId[site].get(Number(id));
+    if (p) compute(site, p, all[key]); else delete all[key];
+    if (pace.due()) await pace.rest();
+  }
+  store.write('market', all);
+}
 
 /**
  * Rows for the screen / reports. q: { verdict, q (text), page, per, similar: '1' }
@@ -857,6 +871,6 @@ function setCost(site, id, cost, source, rrp) {
 }
 
 module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
-  quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, overview,
+  quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   resultFor, results, suggest, stats, score, compare, features, candFeatures, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

@@ -78,14 +78,15 @@ function noteFail(key) {
 }
 
 // a fixed hash, so a wrong user name costs the same time as a wrong password (nothing tells which one was wrong)
-const DUMMY = hashPw(crypto.randomBytes(12).toString('hex'));
+let DUMMY = null; // made the first time it is needed (a slow hash: not at every start)
+const dummy = () => DUMMY || (DUMMY = hashPw(crypto.randomBytes(12).toString('hex')));
 /** remember: stay signed in on this device (phone): 30 days without use instead of the idle minutes (while the program is being built: one sign-in a month per device). */
 function login(userName, password, ip, ua, remember) {
   const user = String(userName || '').trim().toLowerCase();
   const wait = Math.max(blockedFor('u:' + user), blockedFor('ip:' + ip));
   if (wait) throw new Error(`Πολλές λάθος προσπάθειες. Δοκίμασε ξανά σε ${wait} δευτερόλεπτα.`);
   const u = all().find((x) => x.user === user);
-  const p = u ? u.pass : DUMMY;
+  const p = u ? u.pass : dummy();
   const ok = crypto.timingSafeEqual(kdf(password || '', p.salt), Buffer.from(p.hash, 'base64')) && !!u;
   if (!ok) { noteFail('u:' + user); noteFail('ip:' + ip); throw new Error('Λάθος όνομα χρήστη ή κωδικός.'); }
   fails.delete('u:' + user); fails.delete('ip:' + ip);
