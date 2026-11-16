@@ -573,8 +573,10 @@ async function run(targets, job, opts) {
 
   const list = targets && targets.length ? targets : targetsAll();
   job && job.progress(0, list.length, 'Σύγκριση με ' + withCatalog.length + ' καταστήματα…');
-  const cats = { sf: catalog.load('sf'), st: catalog.load('st') };
-  const byId = { sf: new Map(cats.sf.products.map((p) => [p.id, p])), st: new Map(cats.st.products.map((p) => [p.id, p])) };
+  const byId = { sf: catalog.byId('sf'), st: catalog.byId('st') };
+  // 17.000 products against every shop: in slices, so the screens keep answering (a small cloud machine would
+  // otherwise freeze for half a minute per competitor)
+  const pace = require('./bg').pacer();
   const all = results();
   const dec = decisions();
   const changes = [];
@@ -582,6 +584,7 @@ async function run(targets, job, opts) {
   // our products once; then one competitor catalog in memory at a time (the indexes are the big part)
   const work = [];
   for (const t of list) {
+    if (pace.due()) await pace.rest();
     const p = byId[t.site] && byId[t.site].get(Number(t.id));
     if (!p) continue;
     const key = t.site + ':' + p.id;
@@ -593,7 +596,7 @@ async function run(targets, job, opts) {
   for (const c of withCatalog) {
     if (job && job.cancelled()) break;
     const ix = indexFor(c.id);
-    for (const w of work) { if (w.searchable) { const o = bestIn(w.f, ix, c, w.yes, w.no); if (o) w.found.push(o); } }
+    for (const w of work) { if (w.searchable) { const o = bestIn(w.f, ix, c, w.yes, w.no); if (o) w.found.push(o); } if (pace.due()) await pace.rest(); }
     idxCache.delete(c.id);
     store.forget('comp-' + c.id);
     step++;
@@ -603,6 +606,7 @@ async function run(targets, job, opts) {
   let done = 0, withData = 0, similar = 0;
   for (const w of work) {
     if (job && job.cancelled()) break;
+    if (pace.due()) await pace.rest();
     done++;
     const { t, p, key, found, yes, no } = w;
     const prev = all[key];

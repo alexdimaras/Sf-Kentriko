@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 // Render (free cloud host) tells the program its port in PORT
 const PORT0 = Number(process.env.RENDER && process.env.PORT ? process.env.PORT : process.env.SFK_PORT) || 17321;
 const MODE = process.env.SFK_MODE === 'server' ? 'server' : 'local';
