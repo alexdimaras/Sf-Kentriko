@@ -35,7 +35,9 @@
       main.appendChild(steps); main.appendChild(note); main.appendChild(bar); main.appendChild(box);
 
       const load = async () => {
+        App.keep({ stage: stage || '', site, q });
         const v = await GET('/api/flow', { stage: stage || '', site, q });
+        if (!main.isConnected) return;
         stage = v.stage;
         clear(steps);
         for (const s of v.stages) {

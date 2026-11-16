@@ -122,7 +122,12 @@ const waking = {
   },
   hide() { if (this.el && !this.n && !this.slow) { this.el.remove(); this.el = null; } },
 };
-async function api(method, path, body) {
+// at start the screens may be drawn from what this device kept, before the program has answered: every request waits
+// for the sign-in check (it brings the token the requests need)
+let gate = Promise.resolve();
+async function api(method, path, body) { return (await call(method, path, body)).data; }
+async function call(method, path, body) {
+  await gate;
   const opt = { method, headers: { 'X-SFK': TOKEN, 'X-Client': CLIENT, 'X-Active': Date.now() - lastInput < 60000 ? '1' : '0' }, credentials: 'same-origin' };
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   let res;
@@ -148,12 +153,106 @@ async function api(method, path, body) {
     waking.hide();
   }
   if (!res) throw new Error(MODE === 'server' ? 'Δεν υπάρχει σύνδεση με το πρόγραμμα. Έλεγξε το internet και ξαναδοκίμασε.' : 'Το πρόγραμμα δεν απαντά. Μήπως έκλεισε το μαύρο παράθυρο; Άνοιξέ το ξανά.');
-  let data = null;
-  try { data = await res.json(); } catch (_) { data = null; }
+  let data = null, text = '';
+  try { text = await res.text(); data = JSON.parse(text); } catch (_) { data = null; }
   if (res.status === 423) { showLock(); const e = new Error('Το πρόγραμμα είναι κλειδωμένο.'); e.locked = true; throw e; }
-  if (res.status === 401 && data && data.login) { showLogin(); const e = new Error(data.error || 'Χρειάζεται σύνδεση.'); e.locked = true; throw e; }
+  if (res.status === 401 && data && data.login) { kept.wipe(); showLogin(); const e = new Error(data.error || 'Χρειάζεται σύνδεση.'); e.locked = true; throw e; }
   if (!res.ok) throw new Error((data && data.error) || ('Σφάλμα ' + res.status));
-  return data;
+  if (method !== 'GET') kept.touched = Date.now(); // something was changed: what is kept may be old now
+  return { data, text };
+}
+
+// ---------- instant screens ----------
+// The last answer of every list is kept (in memory; the main work lists also on this device) and shown at once when
+// a screen opens; the fresh answer follows, and the screen is drawn again only if something changed. So a tab opens
+// in no time even when the program in the cloud needs a second to answer — or is still waking up.
+const KEEPABLE = /^\/api\/(dashboard|flow|fixes|checks|check|products|product|market|suppliers|brands|drafts|history|state)\b/;
+const ON_DEVICE = /^\/api\/(dashboard|flow|fixes|state)\b/; // no costs or supplier terms in these
+const kept = {
+  mem: new Map(), // path → { text, at }
+  used: new Set(), // what the open screen has read
+  opening: 0, touched: 0, routeAt: 0, timer: null,
+  pre: 'sfk:k:', days: 3, budget: 1500000,
+  disk() { return MODE === 'server'; },
+  put(path, text) {
+    this.mem.set(path, { text, at: Date.now() });
+    if (!this.disk() || !ON_DEVICE.test(path) || text.length > 400000) return;
+    try {
+      localStorage.setItem(this.pre + path, JSON.stringify({ at: Date.now(), text }));
+      // a small budget: the oldest answers leave first
+      const all = [];
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith(this.pre)) all.push([k, localStorage.getItem(k).length]); }
+      let total = all.reduce((n, x) => n + x[1], 0);
+      if (total > this.budget) {
+        const byAge = all.map(([k, n]) => { let at = 0; try { at = JSON.parse(localStorage.getItem(k)).at; } catch (_) { /* odd entry */ } return [k, n, at]; }).sort((a, b) => a[2] - b[2]);
+        for (const [k, n] of byAge) { if (total <= this.budget * 0.7) break; if (k === this.pre + path) continue; localStorage.removeItem(k); total -= n; }
+      }
+    } catch (_) { /* storage full or switched off: memory only */ }
+  },
+  /** At start: what this device kept (only for the person who was signed in here, and not older than a few days). */
+  load() {
+    if (!this.disk()) return null;
+    try {
+      const old = Date.now() - this.days * 864e5;
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (!k.startsWith(this.pre)) continue;
+        let e = null; try { e = JSON.parse(localStorage.getItem(k)); } catch (_) { /* odd entry */ }
+        if (!e || !e.text || e.at < old) { localStorage.removeItem(k); continue; }
+        this.mem.set(k.slice(this.pre.length), { text: e.text, at: e.at });
+      }
+      const st = this.mem.get('/api/state');
+      return st ? JSON.parse(st.text) : null;
+    } catch (_) { return null; }
+  },
+  /** Sign-out, or the sign-in ended: nothing of the shop stays on this device. */
+  wipe() {
+    this.mem.clear(); this.used.clear();
+    try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k.startsWith(this.pre)) localStorage.removeItem(k); } } catch (_) { /* no storage */ }
+  },
+  async fetch(path) { const r = await call('GET', path); if (r.text) this.put(path, r.text); return r.data; },
+  /** Ask again behind the screen; if the answer changed, the screen is drawn again (or a small bar offers it). */
+  refresh(path, token) {
+    const before = (this.mem.get(path) || {}).text;
+    return call('GET', path).then((r) => {
+      if (!r.text) return false;
+      this.put(path, r.text);
+      if (r.text === before) return false;
+      if (token === this.opening || token === this.routeToken) this.redraw(true);
+      return true;
+    }).catch(() => false);
+  },
+  /** opening: the fresh answer of a screen that has just opened — not if the person has already touched it. */
+  redraw(opening) {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      const working = live.busy() || (opening && lastInput > this.routeAt + 120);
+      if (working) { live.showBar(); return; } // never under the fingers: a small bar offers the fresh screen
+      const y = window.scrollY;
+      App.route({ quiet: true }).then(() => window.scrollTo(0, y));
+    }, 80);
+  },
+  /** Something changed elsewhere (another PC, a job): ask again what the open screen shows. */
+  async recheck() {
+    const token = this.routeToken;
+    const paths = [...this.used].slice(-8);
+    const changed = await Promise.all(paths.map((p) => this.refresh(p, -1)));
+    if (token === this.routeToken && changed.some(Boolean)) this.redraw(false);
+  },
+};
+function GETPATH(p, q) { return p + (q ? '?' + new URLSearchParams(Object.entries(q).filter(([, v]) => v !== '' && v != null)).toString() : ''); }
+function GET(p, q) {
+  const path = GETPATH(p, q).replace(/\?$/, '');
+  if (!KEEPABLE.test(p)) return api('GET', path);
+  kept.used.add(path);
+  const hit = kept.mem.get(path);
+  if (hit) {
+    const age = Date.now() - hit.at;
+    // just read (the redraw after a fresh answer), or a screen is opening: the kept answer now, the fresh one behind
+    if (age < 1500) return Promise.resolve(JSON.parse(hit.text));
+    if (kept.opening) { kept.refresh(path, kept.opening); return Promise.resolve(JSON.parse(hit.text)); }
+  }
+  return kept.fetch(path);
 }
 
 // ---------- lock screen (PIN) ----------
@@ -238,6 +337,8 @@ function showLogin(setup) {
 }
 async function logout() {
   try { await POST('/api/logout'); } catch (_) { /* already out */ }
+  kept.wipe();
+  const m = $('#main'); if (m) clear(m);
   TOKEN = ''; App.me = null; live.stop();
   showLogin(false);
 }
@@ -288,15 +389,13 @@ const live = {
     refreshBadges();
     if (keys.some((k) => /^(settings|catalog-)/.test(k))) refreshState().catch(() => {});
     if (!keys.some((k) => re.test(k))) { this.pendingKeys.clear(); return; }
-    if (this.busy()) { this.showBar(); clearTimeout(this.timer); this.timer = setTimeout(() => this.apply(), 4000); return; }
-    this.pendingKeys.clear(); this.hideBar();
-    const y = window.scrollY;
-    App.route().then(() => window.scrollTo(0, y));
+    this.pendingKeys.clear();
+    kept.recheck();
   },
   showBar() {
     if (this.bar) return;
     this.bar = h('div', { class: 'livebar', role: 'status' }, icon('sync'), h('span', null, 'Υπάρχουν νέα στοιχεία (από άλλον υπολογιστή ή αυτόματη εργασία).'),
-      h('button', { type: 'button', class: 'btn sm', onclick: () => { this.pendingKeys.clear(); this.hideBar(); const y = window.scrollY; App.route().then(() => window.scrollTo(0, y)); } }, 'Ανανέωση'));
+      h('button', { type: 'button', class: 'btn sm', onclick: () => { this.pendingKeys.clear(); this.hideBar(); const y = window.scrollY; App.route({ quiet: true }).then(() => window.scrollTo(0, y)); } }, 'Ανανέωση'));
     document.body.appendChild(this.bar);
   },
   hideBar() { if (this.bar) { this.bar.remove(); this.bar = null; } },
@@ -348,7 +447,6 @@ setInterval(() => {
   if (MODE === 'server' || !li || !li.pin || lockShown) return;
   if (Date.now() - lastInput > (li.lockMinutes || 30) * 60000) { POST('/api/lock').catch(() => {}); showLock(); }
 }, 20000);
-const GET = (p, q) => api('GET', p + (q ? '?' + new URLSearchParams(Object.entries(q).filter(([, v]) => v !== '' && v != null)).toString() : ''));
 const POST = (p, b) => api('POST', p, b || {});
 
 // ---------- toasts ----------
@@ -614,13 +712,25 @@ function renderSyncBox() {
     h('button', { type: 'button', class: 'linkish', title: 'Ξαναδιαβάζει όλα τα προϊόντα και τις παραλλαγές (λίγα λεπτά)', onclick: () => startSync(null, true) }, 'πλήρης ανάγνωση')));
 }
 async function refreshState() {
-  App.state = await GET('/api/state');
+  App.state = await kept.fetch('/api/state');
   App.me = App.state.user || null;
+  preparing.show(App.state.engine);
   renderSyncBox();
   renderInstanceWarning();
   for (const j of App.state.jobs || []) watchJob(j, j.type === 'sync' ? { done: () => refreshState().then(() => App.route()) } : {});
   return App.state;
 }
+// after a restart the program prepares the checks for some seconds (the very first time, minutes): say what it is doing
+const preparing = {
+  el: null, timer: null,
+  show(e) {
+    clearTimeout(this.timer);
+    if (!e || e.ready) { if (this.el) { this.el.remove(); this.el = null; kept.recheck(); } return; }
+    if (!this.el) { this.el = h('div', { class: 'wakebar prep', role: 'status' }); document.body.appendChild(this.el); }
+    this.el.textContent = 'Ετοιμάζονται τα στοιχεία' + (e.step ? ': ' + e.step.replace(/…$/, '') : '') + '… οι οθόνες δείχνουν ό,τι ήταν πριν.';
+    this.timer = setTimeout(() => refreshState().catch(() => {}), 3000);
+  },
+};
 /** Local mode: the same data folder open on another PC right now (e.g. OneDrive) loses changes — say so. */
 function renderInstanceWarning() {
   const old = $('#instwarn'); if (old) old.remove();
@@ -642,18 +752,57 @@ async function refreshBadges() {
     return d;
   } catch (_) { return null; }
 }
-App.route = async function () {
+let routeSeq = 0;
+App.route = async function (opts) {
   const { view, params } = parseHash();
   const v = App.views[view] || App.views.today;
-  menu.close();
+  const quiet = !!(opts && opts.quiet); // the same screen drawn again with fresh data: nothing is closed
+  if (!quiet) menu.close();
   renderNav(view);
+  live.hideBar();
   // a fresh <main> for every screen: a screen still loading (slow call) never draws over the one opened after it
-  const main = h('main', { id: 'main', tabindex: '-1' });
+  const main = h('main', { id: 'main', tabindex: '-1', class: 'view-' + view });
+  const token = ++routeSeq;
+  if (!quiet) { kept.used.clear(); kept.routeAt = Date.now(); }
+  kept.routeToken = token;
+  // while the screen opens, what was kept is shown at once and asked again behind it
+  kept.opening = token;
+  setTimeout(() => { if (kept.opening === token) kept.opening = 0; }, 400);
   $('#main').replaceWith(main);
-  if (drawer.isOpen()) drawer.close();
-  if (modal.isOpen()) modal.close(); // a dialog of the previous screen never stays over the new one
-  try { await v.render(main, params); } catch (e) { main.appendChild(h('div', { class: 'note crit' }, e.message)); console.error(e); }
-  if (main.isConnected) main.focus({ preventScroll: true });
+  if (!quiet) { if (drawer.isOpen()) drawer.close(); if (modal.isOpen()) modal.close(); } // a dialog of the previous screen never stays over the new one
+  try { await v.render(main, params); } catch (e) { if (!(e && e.locked)) main.appendChild(h('div', { class: 'note crit' }, e.message)); console.error(e); }
+  if (kept.opening === token) kept.opening = 0;
+  if (main.isConnected && !quiet) main.focus({ preventScroll: true });
 };
+/** The filters of a screen go into the address (without a new history step): the screen can be drawn again as it is. */
+function keep(params) {
+  const { view } = parseHash();
+  const qs = new URLSearchParams(Object.entries(params || {}).filter(([, v]) => v !== '' && v != null && v !== false)).toString();
+  const target = '#/' + view + (qs ? '?' + qs : '');
+  if (location.hash !== target) history.replaceState(null, '', target);
+}
+function setToken(t) { if (t) TOKEN = t; }
+function setGate(p) { gate = Promise.resolve(p).catch(() => {}); }
 
-Object.assign(App, { waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+// ---------- the program's shell kept on the device (opens at once, also while the cloud program wakes up) ----------
+function shell() {
+  if (MODE !== 'server' || !('serviceWorker' in navigator) || !window.isSecureContext) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+/** A new version of the program is running: fetch its files and open it (once), when nobody is in the middle of something. */
+function newVersion(v) {
+  const mine = (document.querySelector('meta[name="sfk-version"]') || {}).content || '';
+  if (!v || !mine || v === mine || mine.startsWith('__')) return;
+  let tried = ''; try { tried = sessionStorage.getItem('sfk:upd') || ''; } catch (_) { /* no storage */ }
+  if (tried === v) return;
+  try { sessionStorage.setItem('sfk:upd', v); } catch (_) { /* no storage */ }
+  const reload = () => { const go = () => { if (drawer.isOpen() || modal.isOpen() || Date.now() - lastInput < 4000) return setTimeout(go, 3000); location.reload(); }; go(); };
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = reload;
+    navigator.serviceWorker.controller.postMessage({ type: 'refresh' }, [ch.port2]);
+    setTimeout(reload, 20000);
+  } else reload();
+}
+
+Object.assign(App, { renderNav, renderSyncBox, kept, keep, setToken, setGate, shell, newVersion, preparing, waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });

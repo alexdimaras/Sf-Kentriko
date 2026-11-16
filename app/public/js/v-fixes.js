@@ -70,9 +70,9 @@
       let status = STATUS.some(([k]) => k === p.tab) ? p.tab : 'pending';
       let site = p.site === 'sf' || p.site === 'st' ? p.site : '';
       let group = p.group || '';
-      let level = '';
+      let level = p.level === 'high' ? 'high' : '';
       let q = p.q || '';
-      let page = 1;
+      let page = Math.max(1, Number(p.page) || 1);
       const head = h('div');
       const qual = h('div', { class: 'fx-quality' });
       const tabs = h('div', { class: 'tabs' });
@@ -95,7 +95,39 @@
         load(); App.refreshBadges();
       }).catch(fail);
 
-      const decide = (ids, st, edited) => POST('/api/fixes/decide', { ids, status: st, edited }).then(() => { App.refreshBadges(); load(); }).catch(fail);
+      // A decision shows at once: the change leaves the list, the numbers follow, and the program saves it behind the
+      // screen. The list is brought up to date quietly when the decisions stop for a moment (never while you tap).
+      let settleTimer = null, waiting = 0;
+      const settle = () => { clearTimeout(settleTimer); settleTimer = setTimeout(() => { if (waiting || !main.isConnected) return; App.refreshBadges(); load(); }, 900); };
+      const leave = (ids) => {
+        const gone = new Set(ids);
+        let n = 0;
+        for (const row of list.querySelectorAll('.fx-change[data-id]')) {
+          if (!gone.has(row.dataset.id)) continue;
+          n++;
+          const cardEl = row.closest('.fx-card');
+          row.classList.add('leaving'); row.removeAttribute('data-id');
+          const left = cardEl ? cardEl.querySelectorAll('.fx-change[data-id]').length : 1;
+          if (cardEl && !left) cardEl.classList.add('leaving');
+          setTimeout(() => { row.remove(); if (cardEl && !left) cardEl.remove(); }, 170);
+        }
+        return n;
+      };
+      const bump = (from, to, n) => {
+        if (!n) return;
+        for (const [k, d] of [[from, -n], [to, n]]) {
+          const b = tabs.querySelector(`button[data-k="${k}"] .badge`);
+          if (b) b.textContent = fmt.num(Math.max(0, Number(String(b.textContent).replace(/\D/g, '')) + d));
+        }
+        if (from === 'pending' && App.badges.fixes) { App.badges.fixes.n = Math.max(0, App.badges.fixes.n - n); App.renderNav('fixes'); }
+      };
+      const decide = (ids, st, edited) => {
+        if (!ids.length) return Promise.resolve();
+        const n = leave(ids);
+        bump(status, st, n);
+        waiting++;
+        return POST('/api/fixes/decide', { ids, status: st, edited }).then(() => { waiting--; settle(); }).catch((e) => { waiting--; fail(e); load(); });
+      };
 
       const edit = (c) => {
         const cur = c.field === 'desc' ? c.to.html : c.to;
@@ -127,11 +159,13 @@
       };
 
       const load = async () => {
+        App.keep({ tab: status === 'pending' ? '' : status, site, group, level, q, page: page > 1 ? page : '' });
         let v;
-        try { v = await GET('/api/fixes', { site, status, group, level, q, page, per: 30 }); } catch (e) { clear(list).appendChild(h('div', { class: 'note crit' }, e.message)); return; }
+        try { v = await GET('/api/fixes', { site, status, group, level, q, page, per: 30 }); } catch (e) { if (e && e.locked) return; clear(list).appendChild(h('div', { class: 'note crit' }, e.message)); return; }
+        if (!main.isConnected || waiting) return; // a newer decision is on its way: its own refresh follows
         drawHead(v);
         clear(tabs);
-        for (const [k, l] of STATUS) tabs.appendChild(h('button', { 'aria-selected': String(status === k), onclick: () => { status = k; page = 1; load(); } }, l, v.counts.status[k] ? h('span', { class: 'badge' + (k === 'pending' ? ' coy' : '') }, fmt.num(v.counts.status[k])) : null));
+        for (const [k, l] of STATUS) tabs.appendChild(h('button', { 'aria-selected': String(status === k), 'data-k': k, onclick: () => { status = k; page = 1; load(); } }, l, h('span', { class: 'badge' + (k === 'pending' ? ' coy' : ''), hidden: v.counts.status[k] ? null : '' }, fmt.num(v.counts.status[k] || 0))));
         // the site switch and the search box are made once (the search keeps the focus while you type)
         if (!bar.firstChild) { bar.appendChild(App.seg([['', 'Και τα δύο'], ['sf', siteName('sf')], ['st', siteName('st')]], site, (x) => { site = x; page = 1; load(); })); bar.appendChild(chips); bar.appendChild(search); }
         clear(chips);
@@ -141,13 +175,22 @@
         clear(act);
         if (status === 'pending' && v.counts.high) act.appendChild(h('div', { class: 'fx-sure' }, icon('check'), h('div', null, h('b', null, `${fmt.plural(v.counts.high, 'σίγουρη διόρθωση', 'σίγουρες διορθώσεις')}${group ? ' (' + v.groups[group] + ')' : ''}`), h('div', { class: 'hint', style: { margin: 0 } }, 'Από κανόνες (κενά, κεφαλαία, τόνοι, γράμματα, τιμές, διαφημίσεις) ή από σίγουρη πηγή (ίδιο EAN / κωδικός στον αντιπρόσωπο, το άλλο μας site).')),
           btn('Έγκριση όλων των σίγουρων', { cls: 'primary', icon: 'check' }, () => POST('/api/fixes/approve-sure', { site, group }).then((r) => { toast(`Εγκρίθηκαν ${fmt.num(r.count)}. Φτιάξε το αρχείο από πάνω δεξιά.`); App.refreshBadges(); load(); }).catch(fail))));
-        clear(list);
         if (!v.cards.length) {
-          list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, status === 'pending' ? 'Τίποτα δεν περιμένει' : 'Κανένα εδώ'),
+          clear(list).appendChild(h('div', { class: 'panel empty' }, h('h3', null, status === 'pending' ? 'Τίποτα δεν περιμένει' : 'Κανένα εδώ'),
             h('p', null, status === 'pending' ? 'Δεν βρέθηκε κάτι να διορθωθεί με σιγουριά. Για περιγραφές/φωτογραφίες που λείπουν, πάτα «Βρες περιγραφές και φωτογραφίες» (χρειάζονται τιμοκατάλογοι αντιπροσώπων).' : ''),
             status === 'pending' ? btn('Βρες περιγραφές και φωτογραφίες', { cls: 'primary', icon: 'search' }, find) : null));
         }
-        for (const cd of v.cards) list.appendChild(card(cd, v));
+        const have = new Map();
+        for (const el of list.querySelectorAll('.fx-card[data-sig]')) if (!el.classList.contains('leaving')) have.set(el.dataset.sig, el);
+        const nodes = [];
+        for (const cd of v.cards) {
+          const sig = status + '|' + cd.site + ':' + cd.pid + '|' + cd.changes.map((c) => c.id + ':' + c.hash + (c.edited ? 'e' : '')).join(',');
+          let el = have.get(sig);
+          if (!el) { el = card(cd, v); el.dataset.sig = sig; }
+          nodes.push(el);
+        }
+        for (const el of [...list.children]) if (!nodes.includes(el)) el.remove();
+        nodes.forEach((el, i) => { if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null); });
         clear(pager);
         const pages = Math.ceil(v.total / 30);
         if (pages > 1) pager.appendChild(h('div', { class: 'pager' }, btn('‹', { cls: 'sm', disabled: page <= 1 }, () => { page--; load(); window.scrollTo(0, 0); }), h('span', null, `Σελίδα ${page} από ${pages} · ${fmt.num(v.total)} προϊόντα`), btn('›', { cls: 'sm', disabled: page >= pages }, () => { page++; load(); window.scrollTo(0, 0); })));
@@ -164,7 +207,7 @@
             status === 'pending' ? btn('Όχι', { cls: 'sm ghost', icon: 'x' }, () => decide(ids, 'rejected')) : null)));
         for (const c of cd.changes) {
           const lv = LEVEL[c.level] || LEVEL.medium;
-          el.appendChild(h('div', { class: 'fx-change ' + c.level },
+          el.appendChild(h('div', { class: 'fx-change ' + c.level, 'data-id': c.id },
             h('div', { class: 'fx-ch-head' }, h('span', { class: 'pill' }, c.label), h('span', { class: 'pill ' + lv[1], title: c.level === 'high' ? 'Κανόνας ή σίγουρη πηγή' : 'Πιθανότατα σωστό — ρίξε μια ματιά' }, lv[0]),
               c.edited ? h('span', { class: 'pill' }, 'αλλαγμένο από εσένα') : null, c.by ? h('span', { class: 'faint', style: { fontSize: '12px' } }, c.by + ' · ' + fmt.ago(c.at)) : null,
               h('span', { class: 'grow' }),

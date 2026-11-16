@@ -689,3 +689,23 @@ ul.seclist li.warn svg { color: var(--signal); }
   .kpis { display: flex; overflow-x: auto; gap: 8px; scrollbar-width: none; padding-bottom: 2px; }
   .kpis .kpi { flex: 0 0 auto; min-width: 118px; }
 }
+
+/* ---------- never an empty screen: while a screen's data is on its way, quiet placeholders of its shape ---------- */
+main:empty::before { content: ""; display: block; height: min(70vh, 560px); border-radius: var(--r-l); opacity: .9;
+  background:
+    linear-gradient(var(--surface-2), var(--surface-2)) 0 6px / 46% 26px no-repeat,
+    linear-gradient(var(--surface-2), var(--surface-2)) 0 46px / 72% 14px no-repeat,
+    linear-gradient(var(--surface), var(--surface)) 0 92px / 100% 84px no-repeat,
+    linear-gradient(var(--surface), var(--surface)) 0 188px / 100% 84px no-repeat,
+    linear-gradient(var(--surface), var(--surface)) 0 284px / 100% 84px no-repeat,
+    linear-gradient(var(--surface), var(--surface)) 0 380px / 100% 84px no-repeat;
+  animation: skel 1.4s ease-in-out infinite alternate; }
+@keyframes skel { from { opacity: .55; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { main:empty::before { animation: none; } }
+/* the note "the data is being prepared" sits under the waking note, in the calmer colour */
+.wakebar.prep { top: auto; bottom: calc(18px + env(safe-area-inset-bottom)); background: var(--coyote); color: var(--coyote-ink); }
+@media (max-width: 860px) { .wakebar.prep { bottom: calc(76px + env(safe-area-inset-bottom)); } }
+/* a change that was just decided leaves the list at once */
+.fx-change.leaving, .fx-card.leaving { opacity: 0; transform: translateX(14px); transition: opacity .16s ease, transform .16s ease; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .fx-change.leaving, .fx-card.leaving { transition: none; } }
+[hidden] { display: none !important; }
