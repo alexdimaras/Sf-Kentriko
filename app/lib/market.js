@@ -162,8 +162,10 @@ const TYPE_GROUPS = [
   ['ΦΥΣΙΓΓ', 'AMMO', 'AMMUNITION', 'CARTRIDGES', 'SHELLS'], ['ΒΛΗΜΑΤ', 'ΒΟΛΙΔ', 'ΣΚΑΓΙ', 'PELLETS', 'BBS'], ['ΣΚΟΠΕΥΤ', 'SIGHT', 'REDDOT'],
   ['ΦΙΛΤΡ', 'FILTER'], ['ΜΕΓΕΘΥΝΤ', 'MAGNIFIER'], ['ΜΠΑΤΑΡ', 'BATTERY', 'BATTERIES'], ['ΦΟΡΤΙΣΤ', 'CHARGER'], ['ΣΚΗΝ', 'TENT'], ['ΥΠΝΟΣΑΚ', 'SLEEPING'],
 ];
+const AMMO_GROUP = TYPE_GROUPS.findIndex((g) => g[0] === 'ΦΥΣΙΓΓ');
 function typeGroupsOf(toks) {
   const groups = new Set();
+  if (toks.some((t) => /^\d{1,2}-?ΒΟΛ[ΑΟ]$|^ΜΟΝΟΒΟΛ[ΑΟ]$|^ΔΡΑΜΙΑ?$/.test(t))) groups.add(AMMO_GROUP);
   for (const t of toks) {
     const n = ntok(t);
     TYPE_GROUPS.forEach((g, i) => { if (g.some((w) => (/[Ͱ-Ͽ]/.test(w) ? n.startsWith(w) : n === w))) groups.add(i); });

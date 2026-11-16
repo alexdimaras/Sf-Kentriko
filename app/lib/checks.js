@@ -7,6 +7,7 @@ const store = require('./store');
 const adrules = require('./adrules');
 const spell = require('./spell');
 const U = require('./util');
+const kinds = require('./kinds');
 const bg = require('./bg');
 
 const SEV = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -84,13 +85,19 @@ function typeSuggester(site) {
     }
   }
   const learned = catalog.learnedTypes().map || {};
-  const types = new Set(catalog.learnedTypes().nouns || []);
+  const brandWords = new Set();
+  for (const k of catalog.knownBrands().keys()) for (const w of U.greekUpper(k).split(/[^A-Z0-9Α-Ω]+/)) if (w.length > 1) brandWords.add(w);
+  const R = kinds.recogniser(catalog.learnedTypes().nouns || [], catalog.categoryIndex(site), brandWords);
   return (p) => {
+    // 1. the kind is written inside the title: it goes first, with the words that belong to it
+    //    (5.11 TACTICAL ΣΑΚΙΔΙΟ RUSH → ΣΑΚΙΔΙΟ 5.11 TACTICAL RUSH · BENELLI M4 ΗΜΙΑΥΤΟΜΑΤΗ ΚΑΡΑΜΠΙΝΑ → ΗΜΙΑΥΤΟΜΑΤΗ ΚΑΡΑΜΠΙΝΑ BENELLI M4)
+    const moved = kinds.kindFirst(p.name, R.isKind);
+    if (moved) return { fix: moved.fix, why: `Το είδος «${moved.phrase}» να πάει πρώτο`, how: 'title' };
+    // 2. proof of what it is: a trade name of one kind only (12ΒΟΛΑ, ΜΟΝΟΒΟΛΑ → ΦΥΣΙΓΓΙΑ), or its own category
+    const k = R.kindOf(p);
+    if (k.kind && k.at !== 0 && (k.how === 'compound' || k.how === 'category')) return { fix: k.kind + ' ' + U.collapse(p.name), why: `Είδος «${k.kind}»: ${k.proof}`, how: k.how, kind: k.kind };
+    // 3. no proof: what similar products are called — a suggestion to check, never a certainty
     const words = U.greekUpper(p.name).split(' ');
-    // a type word later in the title: move it to the front (5.11 TACTICAL ΣΑΚΙΔΙΟ → ΣΑΚΙΔΙΟ 5.11 TACTICAL)
-    const inside = words.findIndex((w, i) => i > 0 && types.has(w));
-    if (inside > 0) return { fix: [words[inside]].concat(words.slice(0, inside), words.slice(inside + 1)).join(' '), why: `Το είδος «${words[inside]}» να πάει πρώτο` };
-    // most common type of the product's deepest category
     let best = '', bn = 0;
     for (const id of p.cats) {
       const m = byCat.get(id);
@@ -103,7 +110,8 @@ function typeSuggester(site) {
       for (const w of words) { const l = learned[w.replace(/[^A-Z]/g, '')]; if (l) votes.set(l.type, (votes.get(l.type) || 0) + l.share); }
       for (const [t, v] of votes) if (v > bn) { bn = v; best = t; }
     }
-    return best ? { fix: best + ' ' + U.collapse(p.name), why: `Πρόταση: «${best}» πρώτο (από παρόμοια προϊόντα)` } : { fix: '', why: 'Δεν βρέθηκε πρόταση — γράψε το είδος μπροστά' };
+    if (best) { const sp = spell.check(best, wordStats().freq); if (sp && sp.fix) best = sp.fix; }
+    return best ? { fix: best + ' ' + U.collapse(p.name), why: `Πρόταση: «${best}» πρώτο (έτσι λέγονται παρόμοια προϊόντα — έλεγξέ το)`, how: 'similar' } : { fix: '', why: 'Δεν βρέθηκε πρόταση — γράψε το είδος μπροστά', how: '' };
   };
 }
 
@@ -169,12 +177,14 @@ function* runGen() {
     add({ id: site + '-nobrand', site, severity: 'low', title: 'Χωρίς μάρκα', help: 'Η μάρκα βοηθάει στα φίλτρα, στο Google και στη σύνδεση με αντιπρόσωπο.', items: main.filter((p) => !p.brand).map((p) => item(p)) });
 
     // Titles
-    const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [];
+    const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [], broken = [];
     const suggestType = typeSuggester(site);
     yield;
     for (const p of main) {
       yield;
       const name = p.name;
+      const rep = U.repairEntities(name);
+      if (rep) broken.push(item(p, { fix: U.capsTitle(rep), why: 'Χάθηκε ένα «&» ή άλλο σύμβολο όταν γράφτηκε ο τίτλος στο site' }));
       const fm = U.fixMixedScript(name, latinCommon, dict, freq);
       if (fm.changed) mixed.push(item(p, { fix: U.capsTitle(fm.text), why: 'Ελληνικά και λατινικά γράμματα μαζί' }));
       if (fm.suspects.length) {
@@ -199,17 +209,14 @@ function* runGen() {
         const t = base.split(' ').map((tok) => tok.replace(/[Ͱ-Ͽ]+/g, (m) => { const hit = fixes.find(([a]) => a === m); return hit ? hit[1] : m; })).join(' ');
         typos.push(item(p, { why: fixes.map(([a, b, alts]) => `${a} → ${b}` + (alts.length ? ` (ή ${alts.join(', ')})` : '')).join(' · '), fix: t }));
       }
-      // type first
-      const first = U.greekUpper(name).split(' ')[0] || '';
-      if (first && !/[Ͱ-Ͽ]/.test(first) && /[Ͱ-Ͽ]/.test(U.greekUpper(name)) === true) {
-        const sug = suggestType(p);
-        typeFirst.push(item(p, { why: sug.why, fix: sug.fix }));
-      } else if (first && !/[Ͱ-Ͽ]/.test(first)) {
+      // type first (also «12ΒΟΛΑ FEDERAL…»: a trade name, not the kind)
+      if (kinds.startsWithoutKind(name)) {
         const sug = suggestType(p);
         typeFirst.push(item(p, { why: sug.why, fix: sug.fix }));
       }
     }
     const nameFix = { kind: 'name', label: 'Αρχείο διόρθωσης τίτλων' };
+    add({ id: site + '-broken', site, severity: 'high', title: 'Τίτλοι με σπασμένους χαρακτήρες', help: 'Π.χ. «Hamp;N» αντί για «H&N»: το «&» χάθηκε όταν γράφτηκε ή εισάχθηκε το προϊόν στο site, και έμεινε το υπόλοιπο του κωδικού του («amp;»). Έτσι το βλέπει και ο πελάτης και το Google· η μάρκα δεν αναγνωρίζεται.', items: broken, fix: nameFix });
     add({ id: site + '-mixed', site, severity: 'high', title: 'Τίτλοι με ελληνικά και λατινικά γράμματα μαζί', help: 'Π.χ. «ΔΙXΤΥ» με λατινικό X ή «ΣΟΥΓΙAΣ» με λατινικό A. Ο πελάτης που ψάχνει τη λέξη δεν βρίσκει το προϊόν, ούτε στο site ούτε στο Google.', items: mixed, fix: nameFix });
     add({ id: site + '-typos', site, severity: 'medium', title: 'Πιθανά ορθογραφικά λάθη στον τίτλο', help: 'Λέξεις που δεν υπάρχουν αλλού στον κατάλογο και μοιάζουν με γνωστή λέξη (π.χ. ΠΙΙΣΤΟΛΙ → ΠΙΣΤΟΛΙ). Έλεγξε πριν το ανεβάσεις.', items: typos, fix: nameFix });
     add({ id: site + '-suspect', site, severity: 'medium', title: 'Ελληνικές λέξεις γραμμένες με λατινικά', help: 'Π.χ. «KONTAKIA» αντί «ΚΟΝΤΑΚΙΑ». Εμφανίζονται μόνο λέξεις που υπάρχουν στα ελληνικά κείμενα του καταστήματος.', items: suspect, fix: nameFix });
@@ -296,6 +303,8 @@ function titleContext(site) {
 function titleFix(p, ctx) {
   const steps = [];
   let t = String(p.name || '');
+  const rep = U.repairEntities(t);
+  if (rep) { t = rep; steps.push({ kind: 'broken', why: 'Σπασμένοι χαρακτήρες: χάθηκε ένα «&» ή άλλο σύμβολο όταν γράφτηκε ο τίτλος στο site', level: 'high' }); }
   const sp = U.collapse(t.replace(/\u200b/g, ''));
   if (sp !== t) steps.push({ kind: 'spaces', why: 'Διπλά ή κρυφά κενά', level: 'high' });
   t = sp;
@@ -315,10 +324,9 @@ function titleFix(p, ctx) {
     t = t.split(' ').map((tok) => tok.replace(/[\u0370-\u03ff]+/g, (m) => { const hit = fixes.find(([a]) => a === m); return hit ? hit[1] : m; })).join(' ');
     steps.push({ kind: 'typo', why: 'Ορθογραφία: ' + fixes.map(([a, b]) => `${a} → ${b}`).join(', '), level: 'medium' });
   }
-  const first = U.greekUpper(t).split(' ')[0] || '';
-  if (first && !/[\u0370-\u03ff]/.test(first)) {
+  if (kinds.startsWithoutKind(t)) {
     const sug = ctx.suggestType(Object.assign({}, p, { name: t }));
-    if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: 'medium' }); }
+    if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: 'medium', how: sug.how }); }
   }
   return { fix: U.collapse(t), steps };
 }

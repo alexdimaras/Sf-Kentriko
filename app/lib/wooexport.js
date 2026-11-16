@@ -92,6 +92,8 @@ function draftRows(d, site) {
   if (brand) attrs.push({ name: brandAttr, values: [brand], visible: true, global: true });
   if (sizes.length) attrs.push({ name: sizeAttr, values: sizes, visible: true, global: true });
   if (colors.length) attrs.push({ name: colorAttr, values: colors, visible: true, global: true });
+  // a product in one colour: the colour is in its title, and also where the shop's filters and Google look for it
+  else if (d.color) attrs.push({ name: colorAttr, values: [d.color], visible: true, global: true });
   setAttrs(row, attrs);
   if (seo) { row[seo.desc] = metaDescription(d.description, d.displayTitle || d.title); row[seo.kw] = (d.focus || '').toLowerCase(); }
   if (site === 'st' && d.ads === 'google') row[GLA] = 'dont-sync-and-show';

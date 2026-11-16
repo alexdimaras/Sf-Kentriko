@@ -138,7 +138,8 @@ function buildShort(p, data, sizes) {
   if (sizes.length) facts.push(`Μεγέθη: ${U.escapeHtml(sizes.join(', '))}`);
   if (!facts.length) return ''; // only brand and code: not worth a box
   const brand = p.brand || data.brand;
-  const pts = (brand ? [`Κατασκευαστής: ${U.escapeHtml(brand)}`] : []).concat(facts, p.sku ? [`Κωδικός: ${U.escapeHtml(p.sku)}`] : []);
+  // (no product code here: this text stands right under the title — the code has its own field and its line in the description)
+  const pts = (brand ? [`Κατασκευαστής: ${U.escapeHtml(brand)}`] : []).concat(facts);
   return `<ul>${pts.map((x) => `<li>${x}</li>`).join('')}</ul>`;
 }
 function sizesOf(site, p) {
@@ -192,7 +193,7 @@ function categoryGuesser(site, isDefault) {
 // It knows nothing about decisions (yes / no): those, and the "ignore" marks, are laid over it by compute(). So a
 // yes never recalculates anything here — on a small cloud machine that used to take half a minute per approval.
 const bg = require('./bg');
-const TITLE_CHECKS = ['mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'];
+const TITLE_CHECKS = ['broken', 'mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'];
 const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin'];
 const QK = ['desc', 'images', 'brand', 'short', 'title', 'sku'];
 const QW = [30, 25, 10, 10, 15, 10];
@@ -264,7 +265,11 @@ function proposalsFor(site, p, C) {
     // category: only in the general category → the category of similar products (same type word)
     if ((!p.cats.length || p.cats.every(isDefault)) && !ignoredIn(site + '-nocat')) {
       // the type word: the first Greek word of the title (5.11 TACTICAL ΜΠΟΥΦΑΝ … → ΜΠΟΥΦΑΝ)
-      const type = (U.greekUpper(fixedName || p.name).match(/[Α-Ω]{3,}(?:\s[Α-Ω]{3,})?/) || [''])[0];
+      // the kind: the word the (corrected) title starts with, or what a trade name proves (12ΒΟΛΑ → ΦΥΣΙΓΓΙΑ)
+      const kn = require('./kinds');
+      const t0 = fixedName || p.name;
+      const comp = kn.startsWithoutKind(t0) ? kn.compound(t0) : null;
+      const type = comp ? comp.kind : (U.greekUpper(t0).match(/[Α-Ω]{3,}(?:\s[Α-Ω]{3,})?/) || [''])[0];
       const sug = type ? guessCat(type, p.brand) : null;
       if (sug && sug.score >= 6) add(Object.assign({}, base, { field: 'cats', ign: [site + '-nocat'], from: (p.catNames || []).join(', ') || '—', to: { id: sug.id, path: sug.path }, why: `Είναι μόνο στη γενική κατηγορία. Προϊόντα «${type}» είναι στην «${sug.path}».`, source: { kind: 'rule', label: 'Από παρόμοια προϊόντα του καταστήματος' }, level: 'medium' }));
     }

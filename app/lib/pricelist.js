@@ -185,7 +185,8 @@ function importList(supplierId, opts) {
   const prev = store.read('pricelist-' + supplierId, null);
   const prevPrices = {};
   if (prev) for (const it of prev.items || []) prevPrices[it.key] = it.price;
-  const get = (r, f) => (mapping[f] ? String(r[mapping[f]] == null ? '' : r[mapping[f]]).trim() : '');
+  const TEXT = new Set(['name', 'brand', 'code', 'category', 'color', 'size']);
+  const get = (r, f) => { const v = mapping[f] ? String(r[mapping[f]] == null ? '' : r[mapping[f]]).trim() : ''; return v && TEXT.has(f) && v.indexOf('&') >= 0 ? U.untexturize(U.decodeEntities(v)).trim() : v; };
   const items = [];
   const seen = new Set();
   for (const r of parsed.rows) {

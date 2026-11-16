@@ -228,14 +228,51 @@ function toGreekLetters(word) { return word.replace(/[ABEZHIKMNOPTYX]/g, (c) => 
 
 // ---- Entities / HTML ----
 const NAMED = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—', laquo: '«', raquo: '»', euro: '€', hellip: '…', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', deg: '°', times: '×', copy: '©', reg: '®', trade: '™', middot: '·', bull: '•', frac12: '½', frac14: '¼', frac34: '¾', prime: '′', Prime: '″' };
-function decodeEntities(s) {
-  return String(s == null ? '' : s).replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m, e) => {
+// Greek letters and the accented Latin letters of HTML 4, by name: shop descriptions pasted from Word or another
+// site arrive as &Alpha;&lambda;&phi;&alpha; — without these names such a text was read as "English".
+const GREEK_NAMES = 'Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi Rho _ Sigma Tau Upsilon Phi Chi Psi Omega'.split(' ');
+GREEK_NAMES.forEach((n, i) => { if (n === '_') return; NAMED[n] = String.fromCharCode(0x391 + i); NAMED[n.toLowerCase()] = String.fromCharCode(0x3b1 + i); });
+Object.assign(NAMED, { sigmaf: 'ς', thetasym: 'ϑ', upsih: 'ϒ', piv: 'ϖ', shy: '', ensp: ' ', emsp: ' ', thinsp: ' ', zwnj: '', zwj: '', lrm: '', rlm: '', sbquo: '‚', bdquo: '„', iexcl: '¡', cent: '¢', pound: '£', yen: '¥', sect: '§', uml: '¨', ordf: 'ª', not: '¬', macr: '¯', plusmn: '±', sup2: '²', sup3: '³', acute: '´', micro: 'µ', para: '¶', cedil: '¸', sup1: '¹', ordm: 'º', iquest: '¿', divide: '÷', minus: '−', le: '≤', ge: '≥', ne: '≠', asymp: '≈', infin: '∞', larr: '←', rarr: '→', uarr: '↑', darr: '↓', dagger: '†', permil: '‰', lsaquo: '‹', rsaquo: '›', oline: '‾', frasl: '⁄', szlig: 'ß', AElig: 'Æ', aelig: 'æ', Oslash: 'Ø', oslash: 'ø', Aring: 'Å', aring: 'å', Ccedil: 'Ç', ccedil: 'ç', Ntilde: 'Ñ', ntilde: 'ñ', ETH: 'Ð', eth: 'ð', THORN: 'Þ', thorn: 'þ', yuml: 'ÿ', OElig: 'Œ', oelig: 'œ', Scaron: 'Š', scaron: 'š', Yuml: 'Ÿ', circ: 'ˆ', tilde: '˜' });
+for (const [mark, letters] of [['grave', 'AEIOUaeiou'], ['acute', 'AEIOUYaeiouy'], ['circ', 'AEIOUaeiou'], ['uml', 'AEIOUaeiou'], ['tilde', 'AOao']]) {
+  const comb = { grave: '\u0300', acute: '\u0301', circ: '\u0302', uml: '\u0308', tilde: '\u0303' }[mark];
+  for (const l of letters) NAMED[l + mark] = (l + comb).normalize('NFC');
+}
+function decodeOnce(s) {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m, e) => {
     if (e[0] === '#') {
       const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
       try { return String.fromCodePoint(code); } catch (_) { return m; }
     }
     return Object.prototype.hasOwnProperty.call(NAMED, e) ? NAMED[e] : m;
   });
+}
+/**
+ * HTML entities → the characters they stand for. Text that was encoded twice on its way (H&amp;amp;N, &amp;#8211;)
+ * is opened twice: a second pass runs only when the first one left a whole entity behind.
+ */
+function decodeEntities(s) {
+  s = String(s == null ? '' : s);
+  if (s.indexOf('&') < 0) return s;
+  const once = decodeOnce(s);
+  return once !== s && /&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/i.test(once) ? decodeOnce(once) : once;
+}
+/**
+ * A title whose "&" was lost somewhere before it reached the shop: «Hamp;N» was «H&amp;N», «SMITH #038; WESSON»
+ * was «SMITH &#038; WESSON». Returns the repaired text ('' when nothing is broken).
+ */
+// (entity names are written in small letters: «CHAMP; X» is left alone, «Hamp;N» and «5quot;» are caught)
+const BROKEN_ENTITY = /(^|[^&a-zά-ώ])(amp|quot|apos|nbsp|lt|gt|ndash|mdash|rsquo|lsquo|#0?38|#0?39|#8211|#8212|#8216|#8217|#8220|#8221|#8243|#215);/g;
+function repairEntities(s) {
+  const t = String(s == null ? '' : s);
+  if (t.indexOf(';') < 0) return '';
+  let hit = false;
+  const fixed = t.replace(BROKEN_ENTITY, (m, pre, name) => {
+    const ch = decodeOnce('&' + name.toLowerCase() + ';');
+    if (ch === '&' + name.toLowerCase() + ';') return m;
+    hit = true;
+    return pre + ch;
+  });
+  return hit ? fixed : '';
 }
 /** Undo WordPress "smart" punctuation that the public API adds to titles (″ for ", × for x, – for -). */
 function untexturize(s) {
@@ -386,6 +423,6 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 module.exports = {
   greekShare, stripTonos, collapse, greekUpper, foldKey, capsTitle, hasLowercase, spellSuggest, titleCase, learnAccents, accentMapFrom, greeklish, slugify, fixMixedScript, toGreekLetters,
-  decodeEntities, untexturize, escapeHtml, stripTags, parseNumber, r2, money, roundPrice, roundDown, median,
+  decodeEntities, repairEntities, untexturize, escapeHtml, stripTags, parseNumber, r2, money, roundPrice, roundDown, median,
   toCSV, parseCSV, decodeText, uid, hostOf, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
 };

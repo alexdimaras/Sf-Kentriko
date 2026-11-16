@@ -14,7 +14,7 @@ const fixes = require('./fixes');
 const flow = require('./flow');
 const U = require('./util');
 
-const FORMAT = 1;
+const FORMAT = 2; // bump when the rules of the checks or the fixes change: saved results are then built again once
 const state = { started: false, loaded: false, ready: false, busy: false, step: '', gen: 0, bootMs: 0, buildMs: 0, error: '' };
 let readyResolve, loadedResolve;
 const readyP = new Promise((r) => { readyResolve = r; });

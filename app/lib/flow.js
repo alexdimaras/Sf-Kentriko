@@ -20,11 +20,11 @@ const STAGES = [
 
 // check id (without the site prefix) → step
 const STAGE_OF_CHECK = {
-  nobrand: 2, nocat: 2, mixed: 2, typos: 2, suspect: 2, typefirst: 2, caps: 2, accents: 2, spaces: 2, 'ads-banned': 2, 'ads-google': 2,
+  nobrand: 2, nocat: 2, broken: 2, mixed: 2, typos: 2, suspect: 2, typefirst: 2, caps: 2, accents: 2, spaces: 2, 'ads-banned': 2, 'ads-google': 2,
   nodesc: 3, noimg: 3,
   'x-price': 4, 'x-price-zero': 4,
 };
-const FIELD_OF = { mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
+const FIELD_OF = { broken: 'name', mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
 
 const skuKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, '');
 const bg = require('./bg');

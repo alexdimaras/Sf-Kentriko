@@ -41,7 +41,7 @@ function buildNow() {
     ck = checks.cached();
     // Only what the program could NOT correct by itself is shown as a problem: products of a check that already
     // have a ready fix (waiting, approved or in the file) are in the "fixes" task instead.
-    const FIELD_OF = { mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', oneimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
+    const FIELD_OF = { broken: 'name', mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', oneimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
     const fixed = new Set();
     try { for (const x of require('./fixes').compute().items) if (x.status !== 'rejected') fixed.add(x.site + ':' + x.pid + ':' + x.field); } catch (_) { /* no fixes yet */ }
     let shown = 0;

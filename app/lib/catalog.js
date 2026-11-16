@@ -29,7 +29,13 @@ function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
 function release(site) { byIdMemo.delete(site); viewMemo.delete(site); idxCache.delete(site); brandsMemo = null; }
 function load(site) {
   const c = store.read('catalog-' + site, emptyCatalog);
-  if (!c[PACKED]) { for (const p of c.products) if (p.type !== 'variation') packProduct(p); Object.defineProperty(c, PACKED, { value: true }); }
+  if (!c[PACKED]) {
+    for (const p of c.products) {
+      if (p.type !== 'variation') packProduct(p);
+      if (p.sku && p.sku.indexOf('&') >= 0) p.sku = cleanSku(p.sku); // read by an older version: codes were kept encoded
+    }
+    Object.defineProperty(c, PACKED, { value: true });
+  }
   return c;
 }
 
@@ -148,7 +154,7 @@ function fromStoreApi(p) {
     name: U.collapse(U.untexturize(U.decodeEntities(String(p.name || '').replace(/<[^>]+>/g, '')))),
     varLabel: p.variation ? U.untexturize(U.decodeEntities(p.variation)) : '',
     slug: safeDecode(p.slug || ''),
-    sku: String(p.sku || '').trim(),
+    sku: cleanSku(p.sku),
     url: p.permalink || '',
     price, regular,
     sale: onSale ? price : 0,
@@ -177,6 +183,8 @@ function fromStoreApi(p) {
  */
 function fromStoreApiPacked(p) { return packProduct(fresh(packProduct(fromStoreApi(p)))); }
 function fresh(o) { return JSON.parse(JSON.stringify(o)); }
+/** A product code as it is written in the shop: «SE &#8211; 40403» is «SE – 40403» (the public API sends codes encoded). */
+function cleanSku(s) { s = String(s == null ? '' : s); return U.collapse(s.indexOf('&') < 0 ? s : U.untexturize(U.decodeEntities(s)).replace(/[–—]/g, '-')); }
 function safeDecode(s) { try { return decodeURIComponent(s); } catch (_) { return s; } }
 
 function catFromStoreApi(c) {
@@ -523,7 +531,8 @@ function* inferBrandsGen(cat) {
   for (const p of cat.products) {
     if (p.brand) continue;
     yield;
-    const t = ' ' + U.foldKey(p.name).replace(/[^\p{L}\p{N}.\-&]+/gu, ' ') + ' ';
+    // (a title whose «&» was lost — «Hamp;N» — is read as it was meant: the brand H&N is still found)
+    const t = ' ' + U.foldKey(U.repairEntities(p.name) || p.name).replace(/[^\p{L}\p{N}.\-&]+/gu, ' ') + ' ';
     for (const [k, disp] of list) {
       if (t.includes(' ' + k + ' ')) { p.brand = disp; p.brandSource = 'title'; break; }
     }

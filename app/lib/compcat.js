@@ -28,7 +28,7 @@ function fromWoo(p) {
   return {
     id: p.id,
     n: U.untexturize(U.decodeEntities(p.name || '')),
-    s: p.sku || '',
+    s: U.decodeEntities(p.sku || ''),
     b: brandOfWoo(p),
     u: p.permalink || '',
     p: f(pr.price) || (range ? f(range.min_amount) : 0),

@@ -30,6 +30,9 @@ function translateColor(c) {
 function guessType(name, category) {
   const t = String(name || '') + ' ' + String(category || '');
   for (const [re, gr] of EN_TYPES) if (re.test(t)) return gr;
+  // a trade name of one kind only: 12ΒΟΛΑ, 9ΒΟΛΟ, ΜΟΝΟΒΟΛΑ → ΦΥΣΙΓΓΙΑ (the word itself stays in the model)
+  const comp = require('./kinds').compound(name);
+  if (comp && require('./kinds').startsWithoutKind(name)) return comp.kind;
   // Greek title: first word(s) before the brand are the type
   const caps = U.greekUpper(name);
   const m = caps.match(/^([Ͱ-Ͽ]+(?:\s[Ͱ-Ͽ]+){0,2})/);
@@ -63,6 +66,9 @@ function typeSuggestions() {
   return [...m.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 150).map(([k]) => k);
 }
 
+/** Plain text of a name or brand from any source: entities opened (H&amp;N → H&N), a lost «&» repaired (Hamp;N → H&N). */
+function plain(s) { const t = U.collapse(U.untexturize(U.decodeEntities(s == null ? '' : s))); return U.repairEntities(t) || t; }
+
 /** Find a known brand (from the shops and the suppliers) inside a product name. */
 function brandIn(name, supplierBrands) {
   const catalog = require('./catalog');
@@ -72,6 +78,15 @@ function brandIn(name, supplierBrands) {
   const list = [...map.entries()].filter(([k]) => k.length >= 2).sort((a, b) => b[0].length - a[0].length);
   for (const [k, disp] of list) if (t.includes(' ' + k + ' ')) return disp;
   return '';
+}
+
+/** A supplier's name without its own code («RANGER 2.0 PANTS K05007» → «RANGER 2.0 PANTS»): the code has its own field. */
+function dropCode(model, code) {
+  const c = U.normSku(code || '');
+  if (c.length < 4 || !/\d/.test(c)) return model;
+  const toks = U.collapse(model).split(' ');
+  const rest = toks.filter((t) => U.normSku(t.replace(/^[([]|[)\],]$/g, '')) !== c);
+  return rest.length >= 2 && rest.length < toks.length ? rest.join(' ') : model; // a name that is only the code keeps it (MH40PRO)
 }
 
 function buildTitle(f) {
@@ -106,7 +121,6 @@ function templateBody(d) {
 function shortFrom(d) {
   const pts = [];
   if (d.fields.brand) pts.push(`Κατασκευαστής: ${U.escapeHtml(d.fields.brand)}`);
-  if (d.code) pts.push(`Κωδικός: ${U.escapeHtml(d.code)}`);
   const sizes = [...new Set((d.variations || []).map((v) => v.size).filter(Boolean))];
   if (sizes.length) pts.push(`Μεγέθη: ${U.escapeHtml(sizes.join(', '))}`);
   return pts.length ? `<ul>${pts.map((p) => `<li>${p}</li>`).join('')}</ul>` : '';
@@ -243,6 +257,7 @@ function fromExtract(x, opts) {
   const catalog = require('./catalog');
   const d = blank();
   d.source = { type: 'url', url: x.url, host: x.host };
+  x = Object.assign({}, x, { name: plain(x.name), brand: plain(x.brand) });
   const brand = x.brand || brandIn(x.name || '', []);
   let model = U.collapse(x.name || '');
   // model = name without brand and without type words we translate
@@ -255,7 +270,7 @@ function fromExtract(x, opts) {
   } else {
     for (const [re] of EN_TYPES) model = model.replace(re, ' ');
   }
-  model = U.collapse(model.replace(/\s[-–|]\s*$/, ''));
+  model = dropCode(U.collapse(model.replace(/\s[-–|]\s*$/, '')), x.code);
   d.fields = { type, brand, model, extra: '' };
   d.code = x.code || ''; d.ean = x.ean || '';
   d.descOfficial = x.descHtml || '';
@@ -264,7 +279,7 @@ function fromExtract(x, opts) {
   d.images = x.images || [];
   const variants = x.variants || [];
   const colors = [...new Set(variants.map((v) => v.color).filter(Boolean))];
-  if (colors.length === 1) { d.fields.extra = translateColor(colors[0]); }
+  if (colors.length === 1) { d.fields.extra = translateColor(colors[0]); d.color = d.fields.extra; } // one colour: in the title AND as a product attribute
   d.variations = variants.map((v) => ({ size: U.greekUpper(v.size), color: colors.length > 1 ? translateColor(v.color) : '', sku: v.sku || '', ean: v.ean || '', price: 0, supplierPrice: v.price || 0 }))
     .filter((v) => v.size || v.color);
   // dedupe variations
@@ -304,7 +319,7 @@ function fromPricelist(supplierId, keys) {
   const created = [];
   const all = list();
   for (const [, its] of groups) {
-    const first = its[0];
+    const first = Object.assign({}, its[0], { name: plain(its[0].name), brand: plain(its[0].brand) });
     const d = blank();
     d.source = { type: 'pricelist', supplierId };
     d.supplierId = supplierId;
@@ -320,7 +335,8 @@ function fromPricelist(supplierId, keys) {
       for (const i of its) { if (i.size) model = model.replace(new RegExp('\\b' + i.size.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'), ''); }
     }
     for (const c of colors) model = model.replace(new RegExp('\\b' + c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'), '');
-    d.fields = { type, brand, model: U.collapse(model), extra: colors.length === 1 ? translateColor(colors[0]) : '' };
+    d.fields = { type, brand, model: dropCode(U.collapse(model), first.group || first.code), extra: colors.length === 1 ? translateColor(colors[0]) : '' };
+    if (colors.length === 1) d.color = d.fields.extra;
     d.code = first.group || (its.length === 1 ? first.code : '');
     d.ean = its.length === 1 ? first.ean : '';
     d.descOfficial = first.desc ? (/<[a-z]/i.test(first.desc) ? require('./extract').cleanHtml(first.desc) : require('./extract').textToHtml(first.desc)) : '';
