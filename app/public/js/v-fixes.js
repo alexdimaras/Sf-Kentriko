@@ -149,9 +149,16 @@
           btn('Βρες περιγραφές και φωτογραφίες', { icon: 'search', title: 'Στους τιμοκαταλόγους και στις σελίδες των αντιπροσώπων (γίνεται και μόνο του κάθε μέρα)' }, find),
           ['sf', 'st'].map((s) => (v.counts.sites[s] ? btn(`Αρχείο ${App.SITE_SHORT[s]} (${fmt.num(v.counts.sites[s])})`, { cls: 'primary', icon: 'download', title: 'Αρχείο ενημέρωσης WooCommerce με τις εγκεκριμένες διορθώσεις του ' + siteName(s) }, () => doExport(s)) : null)),
         ]));
+        const wasOpen = (qual.querySelector('details') || { open: window.innerWidth > 820 }).open;
         clear(qual);
+        const panels = h('div', { class: 'fx-q-grid' });
+        if (v.quality.length) qual.appendChild(h('details', { class: 'fx-qd', open: wasOpen ? '' : null },
+          h('summary', null, h('span', { class: 'fx-qd-t' }, 'Ποιότητα καταλόγου'),
+            v.quality.map((x) => h('span', { class: 'fx-qd-s' }, sitePill(x.site), h('b', null, x.score), x.after > x.score ? [icon('arrow'), h('b', { class: 'after' }, x.after)] : null)),
+            h('span', { class: 'fx-qd-more' }, icon('chev'))),
+          panels));
         for (const x of v.quality) {
-          qual.appendChild(h('div', { class: 'panel fx-q' },
+          panels.appendChild(h('div', { class: 'panel fx-q' },
             h('div', { class: 'fx-q-head' }, sitePill(x.site), h('span', { class: 'faint' }, `Ποιότητα καταλόγου · ${fmt.num(x.products)} προϊόντα`)),
             h('div', { class: 'fx-q-score' }, h('b', { class: 'now' }, x.score), h('span', { class: 'faint' }, '/100'), x.after > x.score ? [icon('arrow'), h('b', { class: 'after', title: 'Αν εγκριθούν οι διορθώσεις που περιμένουν' }, x.after), h('span', { class: 'faint' }, 'μετά τις διορθώσεις')] : null),
             h('div', { class: 'fx-q-parts' }, x.parts.map((pt) => h('div', { class: 'fx-q-part', title: `${pt.label}: ${pt.pct}% των προϊόντων (βάρος ${pt.weight})` }, h('span', null, pt.label), h('div', { class: 'bar' }, h('i', { style: { width: pt.pct + '%' }, class: pt.pct >= 85 ? 'ok' : pt.pct >= 60 ? 'mid' : 'low' })), h('b', null, pt.pct + '%'))))));

@@ -58,6 +58,7 @@ const ICONS = {
   mail: 'M3 6h18v12H3zM3 6l9 7 9-7',
   copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
   arrow: 'M5 12h14M13 6l6 6-6 6',
+  chev: 'M6 9l6 6 6-6',
   check: 'M5 12l5 5L20 7',
   power: 'M12 3v8M6.3 6.3a8 8 0 1011.4 0',
   info: 'M12 8h.01M11 12h1v5h1M12 21a9 9 0 110-18 9 9 0 010 18z',
@@ -761,7 +762,7 @@ App.route = async function (opts) {
   renderNav(view);
   live.hideBar();
   // a fresh <main> for every screen: a screen still loading (slow call) never draws over the one opened after it
-  const main = h('main', { id: 'main', tabindex: '-1', class: 'view-' + view });
+  const main = h('main', { id: 'main', tabindex: '-1', class: 'view-' + view + (quiet ? '' : ' enter') });
   const token = ++routeSeq;
   if (!quiet) { kept.used.clear(); kept.routeAt = Date.now(); }
   kept.routeToken = token;
@@ -769,6 +770,9 @@ App.route = async function (opts) {
   kept.opening = token;
   setTimeout(() => { if (kept.opening === token) kept.opening = 0; }, 400);
   $('#main').replaceWith(main);
+  // another screen starts from its top (the same screen with other filters stays where it is)
+  if (!quiet && kept.view !== view) window.scrollTo(0, 0);
+  kept.view = view;
   if (!quiet) { if (drawer.isOpen()) drawer.close(); if (modal.isOpen()) modal.close(); } // a dialog of the previous screen never stays over the new one
   try { await v.render(main, params); } catch (e) { if (!(e && e.locked)) main.appendChild(h('div', { class: 'note crit' }, e.message)); console.error(e); }
   if (kept.opening === token) kept.opening = 0;
