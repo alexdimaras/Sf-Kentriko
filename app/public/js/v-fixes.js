@@ -5,33 +5,30 @@
   const STATUS = [['pending', 'Περιμένουν'], ['approved', 'Εγκρίθηκαν'], ['exported', 'Στο αρχείο'], ['rejected', 'Απορρίφθηκαν']];
   const LEVEL = { high: ['Σίγουρο', 'ok'], medium: ['Δες το', 'warn'] };
 
-  // word-level difference of two titles: each word that changes is shown as old → new, side by side
+  // word-level difference of two titles → the old title with what leaves marked, the new one with what comes marked
   function wordDiff(a, b) {
     const A = String(a || '').split(/\s+/).filter(Boolean), B = String(b || '').split(/\s+/).filter(Boolean);
     const n = A.length, m = B.length;
     const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
     for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-    const ops = [];
-    let i = 0, j = 0;
+    const before = [], after = [];
+    let i = 0, j = 0, changed = false;
     while (i < n || j < m) {
-      if (i < n && j < m && A[i] === B[j]) { ops.push(['eq', A[i]]); i++; j++; }
-      else if (i < n && (j >= m || L[i + 1][j] >= L[i][j + 1])) { ops.push(['del', A[i]]); i++; }
-      else { ops.push(['ins', B[j]]); j++; }
+      if (i < n && j < m && A[i] === B[j]) { before.push(h('span', null, A[i]), ' '); after.push(h('span', null, B[j]), ' '); i++; j++; }
+      else if (i < n && (j >= m || L[i + 1][j] >= L[i][j + 1])) { before.push(h('del', null, A[i]), ' '); i++; changed = true; }
+      else { after.push(h('ins', null, B[j]), ' '); j++; changed = true; }
     }
-    // inside every changed stretch: old word, new word, old word, new word…
-    const out = [];
-    for (let k = 0; k < ops.length;) {
-      if (ops[k][0] === 'eq') { out.push(h('span', null, ops[k][1]), ' '); k++; continue; }
-      const dels = [], ins = [];
-      while (k < ops.length && ops[k][0] !== 'eq') { (ops[k][0] === 'del' ? dels : ins).push(ops[k][1]); k++; }
-      for (let x = 0; x < Math.max(dels.length, ins.length); x++) {
-        if (dels[x]) out.push(h('del', null, dels[x]), ' ');
-        if (ins[x]) out.push(h('ins', null, ins[x]), ' ');
-      }
-    }
-    if (!ops.some((o) => o[0] !== 'eq')) out.push(h('span', { class: 'faint' }, ' (αλλάζουν μόνο τα κενά)'));
-    return h('div', { class: 'wdiff' }, out);
+    if (!changed) after.push(h('span', { class: 'faint' }, ' (αλλάζουν μόνο τα κενά)'));
+    return { before, after };
   }
+  /** «Πριν» over «Μετά», the same way for every kind of change: what is there now, what it becomes. */
+  function beforeAfter(before, after, opts) {
+    const o = opts || {};
+    return h('div', { class: 'ba' + (o.cls ? ' ' + o.cls : '') },
+      h('div', { class: 'ba-row ba-old' }, h('span', { class: 'ba-cap' }, 'Πριν'), h('div', { class: 'ba-val' }, before)),
+      h('div', { class: 'ba-row ba-new' }, h('span', { class: 'ba-cap' }, 'Μετά'), h('div', { class: 'ba-val' }, after)));
+  }
+  const none = (text) => h('span', { class: 'ba-none' }, text || '—');
   // plain text of a description (a space between paragraphs and list items, not "μέροςΘήκη")
   // (parsed as an inert document: nothing in a supplier's text can run or load)
   const textOf = (html) => { const d = new DOMParser().parseFromString(String(html || '').replace(/<(\/?)(p|li|h\d|div|tr|td|th|ul|ol|br)\b/gi, ' <$1$2'), 'text/html'); return ((d.body && d.body.textContent) || '').replace(/\s+/g, ' ').trim(); };
@@ -48,22 +45,27 @@
   function changeBody(c) {
     const to = c.to, from = c.from;
     switch (c.field) {
-      case 'name': return wordDiff(from, to);
-      case 'desc': return h('div', { class: 'fx-cmp' }, preview('Τώρα', from, 'Χωρίς περιγραφή'), preview('Πρόταση', to.html), to.meta ? h('div', { class: 'hint fx-meta' }, h('b', null, 'Meta description (Google): '), to.meta) : null);
-      case 'short': return h('div', { class: 'fx-cmp' }, preview('Τώρα', from, 'Χωρίς σύντομη περιγραφή'), preview('Πρόταση', to));
+      case 'name': { const d = wordDiff(from, to); return beforeAfter(d.before, d.after, { cls: 'wdiff' }); }
+      case 'desc': return h('div', { class: 'fx-cmp' }, preview('Πριν', from, 'Χωρίς περιγραφή'), preview('Μετά', to.html), to.meta ? h('div', { class: 'hint fx-meta' }, h('b', null, 'Meta description (Google): '), to.meta) : null);
+      case 'short': return h('div', { class: 'fx-cmp' }, preview('Πριν', from, 'Χωρίς σύντομη περιγραφή'), preview('Μετά', to));
       case 'images': {
         const old = new Set(from || []);
-        return h('div', { class: 'fx-imgs' }, (to || []).map((u) => h('div', { class: 'fx-img' + (old.has(u) ? '' : ' new') }, thumb(u), old.has(u) ? null : h('span', null, 'νέα'))));
+        const added = (to || []).filter((u) => !old.has(u)).length;
+        return beforeAfter(
+          (from || []).length ? h('div', { class: 'fx-imgs' }, (from || []).map((u) => h('div', { class: 'fx-img' }, thumb(u)))) : none('Χωρίς φωτογραφία'),
+          [h('div', { class: 'fx-imgs' }, (to || []).map((u) => h('div', { class: 'fx-img' + (old.has(u) ? '' : ' new') }, thumb(u), old.has(u) ? null : h('span', null, 'νέα')))), h('div', { class: 'faint ba-note' }, `${fmt.plural((to || []).length, 'φωτογραφία', 'φωτογραφίες')} (${added} ${added === 1 ? 'νέα' : 'νέες'})`)], { cls: 'ba-imgs' });
       }
-      case 'price': return h('div', { class: 'fx-price' }, h('del', null, fmt.money(from.price)), icon('arrow'), h('ins', null, fmt.money(to.sale > 0 ? to.sale : to.regular)), to.sale > 0 ? h('span', { class: 'faint' }, ` (προσφορά· κανονική ${fmt.money(to.regular)})`) : null);
-      case 'cats': return h('div', { class: 'fx-price' }, h('del', null, from), icon('arrow'), h('ins', null, to.path));
-      case 'published': return h('div', { class: 'fx-price' }, h('del', null, 'Δημοσιευμένο'), icon('arrow'), h('ins', null, 'Πρόχειρο'));
-      case 'gla': return h('div', { class: 'fx-price' }, h('del', null, 'Google Shopping'), icon('arrow'), h('ins', null, 'μόνο στο site'));
-      case 'brand': return h('div', { class: 'fx-price' }, h('ins', null, to));
-      case 'gtin': return h('div', { class: 'fx-price mono' }, h('ins', null, to), h('span', { class: 'faint' }, ' · σωστό ψηφίο ελέγχου'));
+      case 'price': return beforeAfter(h('del', null, fmt.money(from.price)), [h('ins', null, fmt.money(to.sale > 0 ? to.sale : to.regular)), to.sale > 0 ? h('span', { class: 'faint' }, ` (προσφορά· κανονική ${fmt.money(to.regular)})`) : null]);
+      case 'cats': return beforeAfter(from && from !== '—' ? h('del', null, from) : none('Χωρίς κατηγορία'), h('ins', null, to.path));
+      case 'published': return beforeAfter(h('del', null, 'Δημοσιευμένο'), h('ins', null, 'Πρόχειρο (δεν φαίνεται στο site)'));
+      case 'gla': return beforeAfter(h('del', null, 'Στο site και στο Google Shopping'), h('ins', null, 'Μόνο στο site'));
+      case 'brand': return beforeAfter(from ? h('del', null, from) : none('Χωρίς μάρκα'), h('ins', null, to));
+      case 'gtin': return beforeAfter(from ? h('del', null, from) : none('Χωρίς EAN'), [h('ins', { class: 'mono' }, to), h('span', { class: 'faint' }, ' · σωστό ψηφίο ελέγχου')]);
       default: return null;
     }
   }
+  // how sure a proposal is, in words, next to its source
+  const SURE = { high: 'υψηλή — κανόνας ή ίδια ταυτότητα προϊόντος (κωδικός / EAN / το άλλο σας site)', medium: 'μέτρια — πιθανότατα σωστό, ρίξε μια ματιά' };
 
   App.views.fixes = {
     async render(main, p) {
@@ -221,9 +223,10 @@
               status === 'pending' && c.exportable !== false ? btn('Έγκριση', { cls: 'sm', icon: 'check' }, () => decide([c.id], 'approved')) : null,
               status === 'pending' ? btn('Όχι', { cls: 'sm ghost' }, () => decide([c.id], 'rejected')) : null,
               status !== 'exported' && ['name', 'desc', 'short'].includes(c.field) ? btn('Αλλαγή', { cls: 'sm ghost', icon: 'edit' }, () => edit(c)) : null),
-            h('p', { class: 'fx-why' }, c.why),
             changeBody(c),
-            h('div', { class: 'fx-src' }, 'Πηγή: ', c.source && c.source.url ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(c.source.url); } }, c.source.label) : (c.source ? c.source.label : '—'),
+            h('p', { class: 'fx-why' }, h('b', null, 'Γιατί: '), c.why),
+            h('div', { class: 'fx-src' }, h('b', null, 'Πηγή: '), c.source && c.source.url ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(c.source.url); } }, c.source.label) : (c.source ? c.source.label : '—'),
+              h('span', { class: 'fx-conf ' + (c.level === 'high' ? 'high' : 'medium'), title: SURE[c.level] || SURE.medium }, 'Σιγουριά: ' + (c.level === 'high' ? 'υψηλή' : 'μέτρια')),
               c.field === 'desc' && c.english && v.ai ? btn('Μετάφραση με AI', { cls: 'sm ghost' }, () => { toast('Μετάφραση… (μπορεί να πάρει λίγο)'); POST('/api/fixes/translate', { site: cd.site, id: cd.pid }).then(() => { toast('Μεταφράστηκε: διάβασέ τη πριν την έγκριση.'); load(); }).catch(fail); }) : null,
               c.group === 'content' && status === 'pending' ? h('button', { type: 'button', class: 'linkish', onclick: () => pageSource(cd) }, 'άλλη σελίδα ως πηγή…') : null)));
         }

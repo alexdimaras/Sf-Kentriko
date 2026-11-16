@@ -170,7 +170,7 @@ const routes = {
   'GET /api/dashboard': () => dashboard.build(),
 
   // Sync
-  'POST /api/sync': (b) => {
+  'POST /api/sync': (b, _q, _ctx, o) => {
     const sites = (b.sites && b.sites.length ? b.sites : ['sf', 'st']).filter((x) => catalog.SITES.includes(x));
     return jobs.start('sync', b.full ? 'Πλήρης ανάγνωση προϊόντων' : 'Ανάγνωση προϊόντων', async (job) => {
       const out = {};
@@ -178,17 +178,25 @@ const routes = {
       const progress = catalog.makeProgress(job);
       // both shops at the same time: the total time is that of the bigger shop (one after the other on a small cloud machine: half the memory)
       const one = async (site) => {
+        // each shop has its own record: when it was read, how many products, whether it finished or failed
+        catalog.readStarted(site, !!b.full);
         try {
           out[site] = await catalog.syncSite(site, job, { full: !!b.full, progress });
+          catalog.readEnded(site, out[site], null, !out[site]);
           if (out[site]) job.log(`${settings.all().sites[site].name}: έτοιμο.`);
           // free cloud: each shop is kept in GitHub as soon as it is read (whatever happens next, it is not read again)
           if (out[site] && cloudsave.status().enabled) { const sv = await cloudsave.save('ανάγνωση ' + site); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); }
-        } catch (e) { out[site] = { error: e.message }; job.log(`${settings.all().sites[site].name}: ${e.message}`); }
+        } catch (e) {
+          const stopped = job.cancelled() || (e && e.cancelled);
+          catalog.readEnded(site, null, e, stopped);
+          out[site] = { error: stopped ? 'Σταμάτησε πριν τελειώσει.' : e.message }; job.log(`${settings.all().sites[site].name}: ${out[site].error}`);
+        }
       };
       engine.hold(); // nothing is rebuilt while the shops are being read; once, at the end
-      try { if (SMALL) { for (const site of sites) await one(site); } else await Promise.all(sites.map(one)); } finally { engine.release(); }
+      try { if (SMALL) { for (const site of sites) { if (job.cancelled()) { catalog.readEnded(site, null, null, true); out[site] = { error: 'Σταμάτησε πριν ξεκινήσει.' }; continue; } await one(site); } } else await Promise.all(sites.map(one)); } finally { engine.release(); }
       checks.invalidate(); suppliers.resetIndex(); fixes.invalidate();
-      if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => out[s].error).join(' / '));
+      if (job.cancelled()) return out;
+      if (sites.every((s) => out[s] && out[s].error)) throw new Error(sites.map((s) => `${settings.all().sites[s].name}: ${out[s].error}`).join(' / '));
       // free cloud: what was read is kept in GitHub at once, before anything else can go wrong
       if (cloudsave.status().enabled) { job.progress(null, null, 'Φύλαξη στο GitHub…'); const sv = await cloudsave.save('ανάγνωση sites'); if (sv && sv.error) job.log('Φύλαξη στο GitHub: ' + sv.error); else job.log('Φυλάχτηκαν στο GitHub.'); }
       // checks, fixes and the work flow are built again in the background, in slices; the job ends when they are ready
@@ -197,7 +205,7 @@ const routes = {
       await market.recomputeAsync();
       if (cloudsave.status().enabled) await cloudsave.save('έλεγχοι');
       return out;
-    });
+    }, { heavy: true, auto: !!(o && o.auto) });
   },
   'POST /api/probe': async (b) => catalog.probe(b.site),
   'POST /api/csv/detect': (b) => { const d = catalog.csvDetect(U.decodeText(Buffer.from(b.base64 || '', 'base64'))); delete d.sample; return d; },
@@ -229,7 +237,7 @@ const routes = {
   'POST /api/fixes/decide': (b, _, ctx) => fixes.decide(b.ids || [], b.status, ctx.user ? ctx.user.name : '', b.edited),
   'POST /api/fixes/approve-sure': (b, _, ctx) => fixes.approveSure(b.site === 'st' ? 'st' : b.site === 'sf' ? 'sf' : '', b.group || '', ctx.user ? ctx.user.name : ''),
   'POST /api/fixes/export': (b, _, ctx) => { const site = b.site === 'st' ? 'st' : 'sf'; const r = fixes.exportFile(site, ctx.user ? ctx.user.name : ''); return Object.assign({ count: r.count, products: r.products, changes: r.changes, site, gtin: r.gtin }, saveExport(r.name, r.csv)); },
-  'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) })),
+  'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) }), { heavy: true }),
   'POST /api/fixes/page': (b) => fixes.fromPage(b.site === 'st' ? 'st' : 'sf', b.id, b.url),
   'POST /api/fixes/translate': (b) => fixes.translate(b.site === 'st' ? 'st' : 'sf', b.id),
   'GET /api/checks/ignored': (q) => checks.ignoredItems(q.id),
@@ -274,7 +282,11 @@ const routes = {
   },
   // automatic search for suppliers, for approval
   'GET /api/supplierfind': () => supplierfind.view(),
-  'POST /api/supplierfind/run': (b) => jobs.start('supplierfind', 'Αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { brands: Array.isArray(b.brands) && b.brands.length ? b.brands : null, limit: Math.min(400, Number(b.limit) || 40) })),
+  'POST /api/supplierfind/run': (b) => {
+    const brands = Array.isArray(b.brands) && b.brands.length ? b.brands.slice(0, 20) : null;
+    if (brands) return jobs.start('supplierfind-one', 'Αναζήτηση αντιπροσώπου' + (brands.length === 1 ? '' : ` (${brands.length} μάρκες)`), (job) => supplierfind.run(job, { brands, limit: brands.length }));
+    return jobs.start('supplierfind', 'Αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { limit: Math.min(400, Number(b.limit) || 40), yieldTo: 'supplierfind-one' }), { heavy: true });
+  },
   'POST /api/supplierfind/approve': (b) => { const r = supplierfind.approve(b.key, b.host); checks.invalidate(); fixes.invalidate(); return r; },
   'POST /api/supplierfind/reject': (b) => supplierfind.reject(b.key, b.host, !!b.never),
   'POST /api/supplierfind/dismiss': (b) => supplierfind.dismiss(b.key, !!b.undo),
@@ -333,7 +345,7 @@ const routes = {
   // research for every product (or only the given ones): refresh competitor catalogs, compare locally
   'POST /api/market/run': (b) => {
     const targets = (b.targets || []).filter((t) => t && catalog.SITES.includes(t.site));
-    return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload }));
+    return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload }), { heavy: !targets.length });
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
   'GET /api/flow': (q) => require('./lib/flow').view(q),
@@ -675,7 +687,7 @@ async function handleApi(req, res, url) {
     // before login only small bodies are read
     const limit = SERVER && !ctx.user ? 64 * 1024 : 120 * 1024 * 1024;
     const body = req.method === 'POST' ? await readBody(req, limit) : {};
-    const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx));
+    const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx, null));
     send(res, 200, out === undefined ? { ok: true } : out, null, Object.assign(timing(), ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null));
   } catch (e) {
     if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key0, e);
@@ -776,6 +788,8 @@ function lagMax() { let m = 0; for (const [, v] of lags) if (v > m) m = v; retur
 
 function afterStart() {
   cloudsave.start();
+  jobs.setHeavyLimit(SMALL ? 1 : 2);
+  catalog.closeOpenReads(); // a reading that was running when the program stopped did not finish: say so
   // everything the screens need is loaded (or calculated) now, in the background, in slices
   const t0 = Date.now();
   engine.start().then(() => console.log(`Ready: the screens' data prepared in ${Math.round((Date.now() - t0) / 1000)} s.`));
@@ -801,18 +815,18 @@ function afterStart() {
     const s = settings.all();
     const sum = catalog.summary();
     const stale = ['sf', 'st'].filter((site) => sum[site].source === 'api' && s.autoSyncHours && (!sum[site].syncedAt || (Date.now() - new Date(sum[site].syncedAt)) / 36e5 > s.autoSyncHours));
-    if (stale.length && !process.env.SFK_NO_AUTOSYNC) routes['POST /api/sync']({ sites: stale });
+    if (stale.length && !process.env.SFK_NO_AUTOSYNC) routes['POST /api/sync']({ sites: stale }, null, null, { auto: true });
   });
   // daily competitor research: the first time the program is open each day, after the products are read
   if (!process.env.SFK_NO_AUTOSYNC) {
     const tick = () => {
       try {
         if (!engine.status().ready) return;
-        const busy = jobs.running().some((j) => j.type === 'sync' || j.type === 'market' || j.type === 'supplierfind');
+        const busy = jobs.running().some((j) => j.heavy);
         if (busy) return;
         // once a week, after the daily research: look for suppliers of brands without one (for approval)
         if (!market.dailyDue()) {
-          if (settings.all().supplierFindAuto !== false && supplierfind.weeklyDue() && catalog.load('sf').products.length) jobs.start('supplierfind', 'Εβδομαδιαία αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { limit: 40 }));
+          if (settings.all().supplierFindAuto !== false && supplierfind.weeklyDue() && catalog.load('sf').products.length) jobs.start('supplierfind', 'Εβδομαδιαία αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { limit: 40, auto: true, yieldTo: 'supplierfind-one' }), { heavy: true, auto: true });
           return;
         }
         if (!catalog.load('sf').products.length) return;
@@ -831,7 +845,7 @@ function afterStart() {
           // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
           if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
           return res;
-        });
+        }, { heavy: true, auto: true });
       } catch (e) {
         // the same problem is written once an hour, not every minute
         const msg = e && e.message ? e.message : String(e);

@@ -4,18 +4,24 @@ const { sleep, hostOf } = require('./util');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const lastHit = new Map();
+/** A pause that ends at once when the job that asked for it is stopped. */
+function nap(ms, signal) {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((r) => { const t = setTimeout(done, ms); function done() { clearTimeout(t); signal.removeEventListener('abort', done); r(); } signal.addEventListener('abort', done, { once: true }); });
+}
 
 class HttpError extends Error {
   constructor(msg, info) { super(msg); Object.assign(this, info || {}); }
 }
 
-async function pace(host, minGap) {
+async function pace(host, minGap, signal) {
   if (!minGap) return;
   for (;;) {
     const last = lastHit.get(host) || 0;
     const wait = last + minGap - Date.now();
-    if (wait <= 0) break;
-    await sleep(wait);
+    if (wait <= 0 || (signal && signal.aborted)) break;
+    await nap(wait, signal);
   }
   lastHit.set(host, Date.now());
 }
@@ -42,8 +48,12 @@ async function get(url, opts) {
   const host = hostOf(url);
   let lastErr;
   for (let attempt = 0; attempt <= o.retries; attempt++) {
-    await pace(host, o.gap);
+    if (o.signal && o.signal.aborted) throw new HttpError('Σταμάτησε.', { cancelled: true, fatal: true });
+    await pace(host, o.gap, o.signal);
+    if (o.signal && o.signal.aborted) throw new HttpError('Σταμάτησε.', { cancelled: true, fatal: true });
     const ctl = new AbortController();
+    const onStop = () => { try { ctl.abort(); } catch (_) { /* ignore */ } };
+    if (o.signal) o.signal.addEventListener('abort', onStop, { once: true });
     let t = null;
     try {
       // A hard deadline for the whole answer (headers AND body). The abort signal alone is not enough: after a
@@ -62,16 +72,18 @@ async function get(url, opts) {
       })();
       work.catch(() => {}); // if the deadline wins, a late failure of the abandoned request is nobody's problem
       const deadline = new Promise((_, reject) => { t = setTimeout(() => { try { ctl.abort(); } catch (_) { /* ignore */ } const e = new Error('deadline'); e.name = 'AbortError'; reject(e); }, o.timeout); });
-      const { res, buf } = await Promise.race([work, deadline]);
+      const stopped = new Promise((_, reject) => { if (o.signal) o.signal.addEventListener('abort', () => reject(new HttpError('Σταμάτησε.', { cancelled: true, fatal: true })), { once: true }); });
+      const { res, buf } = await Promise.race([work, deadline, stopped]);
       clearTimeout(t);
       const text = o.raw ? '' : buf.toString('utf8');
       if (res.status === 429 || res.status === 503) {
         const ra = parseInt(res.headers.get('retry-after') || '0', 10);
         lastErr = new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status });
-        if (attempt < o.retries && !/Cloudflare/.test(lastErr.message)) { await sleep(Math.min(30, ra || (attempt + 1) * 4) * 1000); continue; }
+        if (attempt < o.retries && !/Cloudflare/.test(lastErr.message)) { await nap(Math.min(30, ra || (attempt + 1) * 4) * 1000, o.signal); continue; }
         throw lastErr;
       }
       if (res.status >= 400) throw new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status, fatal: res.status < 500 });
+      if (o.signal) o.signal.removeEventListener('abort', onStop);
       const out = { status: res.status, headers: res.headers, text, buf, url: res.url || url };
       if (o.json) {
         const trimmed = text.replace(/^﻿/, '').trimStart();
@@ -86,6 +98,8 @@ async function get(url, opts) {
       return out;
     } catch (e) {
       clearTimeout(t);
+      if (o.signal) o.signal.removeEventListener('abort', onStop);
+      if (o.signal && o.signal.aborted) throw new HttpError('Σταμάτησε.', { cancelled: true, fatal: true });
       if (e instanceof HttpError) {
         if (e.fatal || attempt >= o.retries) throw e;
         lastErr = e;
@@ -100,7 +114,7 @@ async function get(url, opts) {
         lastErr = new HttpError(msg, { network: true });
         if (attempt >= o.retries) throw lastErr;
       }
-      await sleep(1500 * (attempt + 1));
+      await nap(1500 * (attempt + 1), o.signal);
     }
   }
   throw lastErr;
@@ -124,4 +138,4 @@ async function pool(items, limit, fn, shouldStop) {
   return results;
 }
 
-module.exports = { get, getJson, pool, HttpError, UA };
+module.exports = { get, getJson, pool, nap, HttpError, UA };

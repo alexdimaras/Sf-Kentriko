@@ -131,10 +131,11 @@ async function search(q, state) {
     if (state.blocked.has(eng.id)) continue;
     // a calm pace, like a person searching: 4–7 seconds between searches
     const wait = lastSearch + 4000 + Math.random() * 3000 - Date.now();
-    if (wait > 0 && !process.env.SFK_SEARCH_FAST) await U.sleep(wait);
+    if (wait > 0 && !process.env.SFK_SEARCH_FAST) await http.nap(wait, state.signal);
+    if (state.signal && state.signal.aborted) throw new Error('Σταμάτησε.');
     lastSearch = Date.now();
     try {
-      const r = await http.get(eng.url(q), { retries: 0, timeout: 20000 });
+      const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
       if (r.status === 202) throw new Blocked(eng.name);
       const res = eng.parse(r.text);
       state.used.add(eng.name);
@@ -235,13 +236,18 @@ async function run(job, opts) {
     if (o.brands) return o.brands.includes(t.key);
     if (!b) return true;
     if (b.status === 'dismissed' || b.status === 'approved') return false;
+    // by itself (o.auto): only what is new, or found nothing long ago — see autoTodo()
+    if (o.auto) return b.status === 'nothing' && (!b.searchedAt || new Date(b.searchedAt).getTime() < Date.now() - 90 * 864e5);
     return !b.searchedAt || new Date(b.searchedAt).getTime() < monthAgo;
   });
   todo = todo.slice(0, o.limit);
-  const state = { blocked: new Set(), used: new Set() };
+  const state = { blocked: new Set(), used: new Set(), signal: job && job.signal };
   let done = 0, found = 0;
   d.blocked = null;
   for (const t of todo) {
+    // the mass search steps aside while a person's own search (one brand, now) is running: the search engines allow
+    // only so many questions, and the person is waiting
+    if (o.yieldTo && require('./jobs').busy(o.yieldTo)) { if (job) job.progress(done, todo.length, 'Περιμένει: προηγείται η αναζήτηση που ζήτησες…'); await require('./jobs').whileBusy(o.yieldTo, () => !!(job && job.cancelled())); }
     if (job && job.cancelled()) break;
     if (job) job.progress(done, todo.length, `Αναζήτηση αντιπροσώπου: ${t.brand}`);
     const hits = [];
@@ -290,10 +296,26 @@ async function run(job, opts) {
   return { searched: done, found, remaining: Math.max(0, all.filter((t) => !d.brands[t.key]).length), blocked: d.blocked };
 }
 
+/**
+ * Is the automatic search worth running now? Only when there is something new to look for: a brand that was never
+ * searched (a new brand in the shop or at the competitors), or one where nothing was found three months ago.
+ * Brands with proposals waiting for an answer are not searched again by themselves (the answer is the person's);
+ * any brand can be searched at once, on request. So the weekly run costs nothing when the catalog has not changed.
+ */
+function autoTodo() {
+  const d = data();
+  const old = Date.now() - 90 * 864e5;
+  return targets().filter((t) => {
+    const b = d.brands[t.key];
+    if (!b) return true;
+    return b.status === 'nothing' && (!b.searchedAt || new Date(b.searchedAt).getTime() < old);
+  });
+}
 function weeklyDue() {
   const d = data();
-  if (d.blocked) return Date.now() - new Date(d.blocked.at).getTime() > 6 * 36e5;
-  return !d.lastRun || Date.now() - new Date(d.lastRun).getTime() > 7 * 864e5;
+  if (d.blocked) { if (Date.now() - new Date(d.blocked.at).getTime() <= 6 * 36e5) return false; }
+  else if (d.lastRun && Date.now() - new Date(d.lastRun).getTime() <= 7 * 864e5) return false;
+  return autoTodo().length > 0;
 }
 
 function view() {

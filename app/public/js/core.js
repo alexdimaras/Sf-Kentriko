@@ -388,7 +388,7 @@ const live = {
     const view = parseHash().view;
     const re = keys.includes('*') ? /./ : VIEW_KEYS[view] || VIEW_KEYS.today;
     refreshBadges();
-    if (keys.some((k) => /^(settings|catalog-)/.test(k))) refreshState().catch(() => {});
+    if (keys.some((k) => /^(settings|catalog-|sync-status)/.test(k))) refreshState().catch(() => {});
     if (!keys.some((k) => re.test(k))) { this.pendingKeys.clear(); return; }
     this.pendingKeys.clear();
     kept.recheck();
@@ -587,7 +587,7 @@ function watchJob(job, handlers) {
     if (!w) return;
     w.job = j; renderJobs();
     if (w.h.progress) w.h.progress(j);
-    if (j.status === 'running') { setTimeout(tick, 800); return; }
+    if (j.status === 'running' || j.status === 'queued') { setTimeout(tick, j.status === 'queued' ? 1500 : 800); return; }
     watching.delete(job.id); renderJobs();
     if (j.status === 'done') { w.h.done ? w.h.done(j.result, j) : toast(j.label + ': ολοκληρώθηκε.'); }
     else if (j.status === 'cancelled') toast(j.label + ': σταμάτησε.');
@@ -600,12 +600,18 @@ function renderJobs() {
   const box = $('#jobs');
   clear(box);
   try { renderNav(parseHash().view); } catch (_) { /* before start */ }
-  for (const { job } of watching.values()) {
+  for (const w of watching.values()) {
+    const job = w.job;
     const pct = job.total ? Math.min(100, Math.round(job.done / job.total * 100)) : 0;
-    box.appendChild(h('div', { class: 'jobcard' },
-      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', null, job.label), h('button', { class: 'x', style: { color: 'inherit', padding: '2px' }, title: 'Διακοπή', onclick: () => POST('/api/jobs/cancel', { id: job.id }) }, icon('x'))),
-      h('div', { class: 'progress' + (job.total ? '' : ' indet') }, h('i', { style: { width: pct + '%' } })),
-      h('div', { class: 'msg', title: job.msg }, job.total ? `${job.done}/${job.total} · ${job.msg}` : job.msg)));
+    const stopping = job.cancelling || w.stopping;
+    const queued = job.status === 'queued';
+    // stopping shows at once, before the program answers: the button never looks dead
+    const stop = () => { if (w.stopping) return; w.stopping = true; renderJobs(); POST('/api/jobs/cancel', { id: job.id }).then((j) => { if (j && watching.has(job.id)) { watching.get(job.id).job = j; renderJobs(); } }).catch(() => { w.stopping = false; renderJobs(); }); };
+    box.appendChild(h('div', { class: 'jobcard' + (stopping ? ' stopping' : '') + (queued ? ' queued' : '') },
+      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', null, job.label),
+        stopping ? h('span', { class: 'jobstate' }, 'σταματάει…') : h('button', { class: 'x', style: { color: 'inherit', padding: '2px' }, title: queued ? 'Να μη γίνει' : 'Διακοπή', 'aria-label': 'Διακοπή: ' + job.label, onclick: stop }, icon('x'))),
+      queued ? null : h('div', { class: 'progress' + (job.total && !stopping ? '' : ' indet') }, h('i', { style: { width: pct + '%' } })),
+      h('div', { class: 'msg', title: job.msg }, stopping ? 'Σταματάει: ό,τι διαβάστηκε ως τώρα μένει.' : job.total ? `${fmt.num(job.done)}/${fmt.num(job.total)} · ${job.msg}` : job.msg)));
   }
 }
 
@@ -701,12 +707,43 @@ const menu = {
 };
 document.addEventListener('click', (e) => { if (e.target.matches('[data-close-menu]') || e.target.closest('#nav a')) menu.close(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu.close(); });
+/**
+ * How the last reading of one site went, in words: { state: ok|old|running|failed|cancelled|never, title, text, since }.
+ * Each site has its own record (a failed reading of one never hides behind the other).
+ */
+function readInfo(site) {
+  const s = (App.state && App.state.summary && App.state.summary[site]) || {};
+  const r = s.read;
+  const counts = s.syncedAt ? `${fmt.plural(s.products || 0, 'προϊόν', 'προϊόντα')}${s.variations ? ' · ' + fmt.plural(s.variations, 'παραλλαγή', 'παραλλαγές') : ''}` : '';
+  const dur = (sec) => (sec >= 90 ? `${Math.round(sec / 60)} λεπτά` : sec ? `${sec} δευτ.` : '');
+  const kept = s.syncedAt ? ` Ισχύουν τα στοιχεία της ${fmt.dateTime(s.syncedAt)} (${counts}).` : ' Δεν υπάρχουν ακόμα στοιχεία.';
+  if (r && r.state === 'running') return { state: 'running', title: 'Διαβάζεται τώρα', text: (r.full ? 'Πλήρης ανάγνωση' : 'Ανάγνωση αλλαγών') + ` — ξεκίνησε ${fmt.ago(r.startedAt)}.` + (s.syncedAt ? kept : ''), counts };
+  if (r && r.state === 'failed') return { state: 'failed', title: 'Η ανάγνωση απέτυχε', text: `${fmt.ago(r.endedAt)}: ${r.error}` + kept, counts };
+  if (r && r.state === 'cancelled') return { state: 'cancelled', title: 'Η ανάγνωση σταμάτησε', text: `${fmt.ago(r.endedAt)}, πριν τελειώσει.` + kept, counts };
+  if (!s.syncedAt) return { state: 'never', title: 'Δεν έχει διαβαστεί', text: 'Πάτα «Ανάγνωση» για να διαβαστούν τα προϊόντα του.', counts: '' };
+  const old = (Date.now() - new Date(s.syncedAt).getTime()) / 36e5 > 36;
+  const how = r && r.state === 'ok' ? (r.mode === 'full' ? 'ολόκληρος ο κατάλογος' : 'μόνο ό,τι άλλαξε') + (dur(r.seconds) ? ', σε ' + dur(r.seconds) : '') : s.source === 'csv' ? 'από αρχείο CSV' : '';
+  const whole = r && r.state === 'ok' && r.expected ? ` Το site έχει ${fmt.num(r.expected)}, διαβάστηκαν ${fmt.num(r.products)}.` : '';
+  return { state: old ? 'old' : 'ok', title: old ? 'Παλιά ανάγνωση' : 'Ολοκληρώθηκε', text: `Διαβάστηκε ${fmt.ago(s.syncedAt)}${how ? ' (' + how + ')' : ''}.` + whole, counts };
+}
+/** The two sites side by side: when each was read, how many products, whether the reading finished or failed. */
+function readsCard() {
+  const busy = (App.state.jobs || []).some((j) => j.type === 'sync');
+  return h('div', { class: 'reads', role: 'group', 'aria-label': 'Ανάγνωση των sites' }, ['sf', 'st'].map((site) => {
+    const i = readInfo(site);
+    return h('div', { class: 'read ' + i.state },
+      h('div', { class: 'read-top' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), h('b', null, siteName(site)), h('span', { class: 'read-state' }, i.title)),
+      i.counts ? h('div', { class: 'read-n' }, i.counts) : null,
+      h('p', null, i.text),
+      i.state === 'failed' || i.state === 'cancelled' || i.state === 'never' || i.state === 'old' ? btn(i.state === 'never' ? 'Ανάγνωση' : 'Διάβασε ξανά', { cls: 'sm', icon: 'sync', disabled: busy }, () => startSync([site])) : null);
+  }));
+}
 function renderSyncBox() {
   const box = clear($('#syncbox'));
   if (!App.state) return;
   const s = App.state.summary;
   box.appendChild(h('div', { class: 'syncbox' },
-    ['sf', 'st'].map((site) => h('div', { class: 'site' }, h('b', null, s[site].name), h('span', { title: fmt.dateTime(s[site].syncedAt) }, s[site].syncedAt ? fmt.ago(s[site].syncedAt) : 'όχι ακόμα'))),
+    ['sf', 'st'].map((site) => { const i = readInfo(site); return h('div', { class: 'site ' + i.state, title: i.title + ' — ' + i.text }, h('b', null, h('span', { class: 'dot', 'aria-hidden': 'true' }), s[site].name), h('span', null, i.state === 'running' ? 'διαβάζεται…' : i.state === 'failed' ? 'απέτυχε' : i.state === 'cancelled' ? 'σταμάτησε' : s[site].syncedAt ? fmt.ago(s[site].syncedAt) : 'όχι ακόμα')); }),
     MODE === 'server' && App.state.user ? h('div', { class: 'whoami' }, icon('user'), h('span', null, App.state.user.name, App.state.user.role === 'admin' ? h('small', null, ' · διαχειριστής') : null), h('button', { type: 'button', class: 'x', title: 'Αποσύνδεση', onclick: logout }, icon('logout'))) : null,
     MODE !== 'server' && App.lockInfo && App.lockInfo.pin ? btn('Κλείδωμα τώρα', { cls: 'sm block', icon: 'lock', title: 'Κλειδώνει το πρόγραμμα· ξεκλειδώνει με το PIN' }, () => POST('/api/lock').then(() => showLock()).catch(() => showLock())) : null,
     btn('Ανάγνωση από τα sites', { cls: 'sm block', icon: 'sync', title: 'Διαβάζει μόνο ό,τι άλλαξε (δευτερόλεπτα). Μία φορά την εβδομάδα γίνεται μόνη της πλήρης ανάγνωση.' }, () => startSync()),
@@ -809,4 +846,4 @@ function newVersion(v) {
   } else reload();
 }
 
-Object.assign(App, { renderNav, renderSyncBox, kept, keep, setToken, setGate, shell, newVersion, preparing, waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+Object.assign(App, { readInfo, readsCard, renderNav, renderSyncBox, kept, keep, setToken, setGate, shell, newVersion, preparing, waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });

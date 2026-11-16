@@ -205,7 +205,7 @@ function apiUrl(base, path, query, page) {
 /** Fetch every page of a Store API list. onTotal(total) once, onItems(n) per page. */
 async function fetchAll(base, path, query, hooks) {
   hooks = hooks || {};
-  const first = await http.getJson(apiUrl(base, path, query, 1), { gap: 120, timeout: 60000 });
+  const first = await http.getJson(apiUrl(base, path, query, 1), { gap: 120, timeout: 60000, signal: hooks.signal });
   if (!Array.isArray(first.json)) throw new Error('Μη αναμενόμενη απάντηση από ' + base);
   const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
   const total = parseInt(first.headers.get('x-wp-total') || '0', 10) || first.json.length;
@@ -225,8 +225,9 @@ async function fetchAll(base, path, query, hooks) {
   const rest = [];
   for (let p = 2; p <= pages; p++) rest.push(p);
   await http.pool(rest, CONCURRENCY, async (pg) => {
-    const r = await http.getJson(apiUrl(base, path, query, pg), { gap: 120, timeout: 60000 });
-    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of await conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n); }
+    const r = await http.getJson(apiUrl(base, path, query, pg), { gap: 120, timeout: 60000, signal: hooks.signal });
+    if (!Array.isArray(r.json)) throw new Error(`Το ${U.hostOf(base)} έστειλε λάθος απάντηση στη σελίδα ${pg} από ${pages}: η ανάγνωση σταμάτησε για να μη φυλαχτεί μισός κατάλογος.`);
+    const n = r.json.length; for (const x of await conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n);
   }, hooks.cancelled);
   return { items: out, total };
 }
@@ -241,6 +242,28 @@ async function probe(site) {
   if (!base) throw new Error('Δεν έχει οριστεί διεύθυνση για το site.');
   const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=1`, { retries: 1, timeout: 20000 });
   return { ok: true, total: parseInt(r.headers.get('x-wp-total') || '0', 10) };
+}
+
+// ---------- how the last reading of each site went ----------
+// Kept apart from the catalogs (a failed reading leaves the catalog of the last good one in place): the screens show,
+// for each site by itself, when it was read, how many products, and whether the reading finished or failed.
+const READS = 'sync-status';
+function readStatus() { const r = store.read(READS, null) || {}; const out = {}; for (const s of SITES) out[s] = r[s] || null; return out; }
+function setReadStatus(site, patch) {
+  store.update(READS, {}, (all) => { all[site] = Object.assign({}, all[site] || {}, patch); return all; });
+}
+/** A reading starts: remembered at once (if the program is stopped in the middle, the next start says so). */
+function readStarted(site, full) { setReadStatus(site, { state: 'running', startedAt: U.nowIso(), endedAt: null, full: !!full, error: '', done: 0, total: 0 }); }
+function readEnded(site, res, err, cancelled) {
+  const now = U.nowIso();
+  if (res && !err) setReadStatus(site, { state: 'ok', endedAt: now, mode: res.mode, products: res.count, variations: res.variations, expected: res.expected || 0, skipped: res.skipped || 0, seconds: res.seconds, error: '', lastOkAt: now, lastOkProducts: res.count, lastOkVariations: res.variations });
+  else setReadStatus(site, { state: cancelled ? 'cancelled' : 'failed', endedAt: now, error: cancelled ? 'Σταμάτησε πριν τελειώσει.' : String((err && err.message) || err || 'Άγνωστο σφάλμα') });
+}
+/** At start: a reading that was running when the program stopped did not finish. */
+function closeOpenReads() {
+  const r = store.read(READS, null);
+  if (!r) return;
+  for (const s of SITES) if (r[s] && r[s].state === 'running') setReadStatus(s, { state: 'failed', endedAt: U.nowIso(), error: 'Διακόπηκε: το πρόγραμμα έκλεισε ή ξεκίνησε ξανά πριν τελειώσει η ανάγνωση.' });
 }
 
 /** Shared progress for one sync job (both sites at once), with time left. */
@@ -308,8 +331,8 @@ async function syncSite(site, job, opts) {
   const categories = cats.items.map(catFromStoreApi);
   prog.note('');
 
-  const hooks = { onTotal: (n) => prog.addTotal(n), onItems: (n) => prog.add(n), cancelled };
-  let products, mode;
+  const hooks = { onTotal: (n) => prog.addTotal(n), onItems: (n) => prog.add(n), cancelled, signal: job && job.signal };
+  let products, mode, expected = 0, skipped = 0;
   if (full) {
     mode = 'full';
     let prods;
@@ -322,6 +345,9 @@ async function syncSite(site, job, opts) {
     }
     if (cancelled()) return null;
     products = prods.items;
+    expected = prods.total;
+    // every product the site says it has must be here: a reading that came short is not kept as a whole one
+    if (expected && products.length < expected - Math.max(5, Math.ceil(expected * 0.005))) throw new Error(`Διαβάστηκαν ${products.length} από ${expected} προϊόντα: η ανάγνωση δεν ολοκληρώθηκε και δεν φυλάχτηκε.`);
     job && job.log(`${name}: ${products.length} προϊόντα (${Math.round((Date.now() - t0) / 1000)} δευτ.).`);
     let vars = [];
     if (s.syncVariations && products.some((p) => p.type === 'variable')) {
@@ -340,6 +366,7 @@ async function syncSite(site, job, opts) {
     for (const p of products) if (p.type === 'variable') for (const id of p.variations || []) listed.add(id);
     let orphans = 0;
     for (const v of vars) { if (seen.has(v.id)) continue; if (!listed.has(v.id)) { orphans++; continue; } products.push(v); }
+    skipped = orphans;
     if (orphans) job && job.log(`${name}: ${orphans} παραλλαγές αγνοήθηκαν (ανήκουν σε πρόχειρα ή διαγραμμένα προϊόντα).`);
   } else {
     mode = 'changes';
@@ -355,6 +382,7 @@ async function syncSite(site, job, opts) {
     // Deleted or hidden products: the shop's total no longer matches.
     prog.note('έλεγχος για διαγραμμένα…');
     const total = await countOf(base, '');
+    expected = total;
     if (total !== main.size) {
       job && job.log(`${name}: ${total} στο site, ${main.size} εδώ — έλεγχος λίστας προϊόντων…`);
       const ids = new Set((await fetchAll(base, 'products', '_fields=id', { cancelled })).items.map((x) => x.id));
@@ -387,6 +415,7 @@ async function syncSite(site, job, opts) {
   let info = prev.info || {};
   if (full || !info.seo) { try { info = await siteInfo(base); } catch (_) { /* optional */ } }
   const res = await saveCatalogAsync(site, { source: 'api', products, categories, info, meta: { syncStartedAt: new Date(startedAt).toISOString(), lastFullAt: full ? new Date(startedAt).toISOString() : prev.lastFullAt, engine: ENGINE, mode, withVariations: !!s.syncVariations, seconds: Math.round((Date.now() - t0) / 1000) } });
+  res.expected = expected; res.skipped = skipped;
   console.log(`sync ${site} ${mode}: ${res.count} products, ${res.variations} variations in ${res.seconds}s`);
   return res;
 }
@@ -862,7 +891,8 @@ function summary() {
   const out = {};
   const loaded = SITES.every((site) => store.loaded('catalog-' + site));
   const meta = loaded ? writeMeta() : store.read('catalog-meta', null) || writeMeta();
-  for (const site of SITES) out[site] = Object.assign({ name: s.sites[site].name, url: s.sites[site].url }, meta[site]);
+  const reads = readStatus();
+  for (const site of SITES) out[site] = Object.assign({ name: s.sites[site].name, url: s.sites[site].url }, meta[site], { read: reads[site] });
   return out;
 }
 
@@ -1008,6 +1038,7 @@ function detectAttribute(site, kind) {
 
 module.exports = {
   warmLateGen, setBanned, warmBanned, warmLearned, warmLinks, setLazy, bothVer,
+  readStatus, readStarted, readEnded, closeOpenReads,
   SITES, load, siteUrl, probe, syncSite, makeProgress, fetchAll, csvDetect, csvImport, summary, productsView, productDetail, links, setManualLink,
   categoryIndex, adStatus, bannedOnAds, byId, preload, writeMeta, saveCatalogAsync, viewIndex, categoryAdLevels, chainsFor, accents, rebuildAccents, brandsList, knownBrands, attributeNames, detectAttribute, fromStoreApi, learnTypes, learnedTypes,
 };

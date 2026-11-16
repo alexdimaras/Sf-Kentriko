@@ -28,6 +28,11 @@
           h('div', { role: 'listitem' }, h('b', null, fmt.num(k.both)), h('span', null, 'Και στα δύο')),
           h('div', { role: 'listitem', class: k.critical ? 'crit' : '' }, h('b', null, fmt.num(k.critical + k.high)), h('span', null, 'Σοβαρά θέματα')))));
 
+      // each site by itself: when it was read, how many products, whether the reading finished or failed.
+      // On top only when a site needs attention; when both are fine, a quiet line under the day's work.
+      const readsBad = ['sf', 'st'].some((x) => !['ok', 'running'].includes(App.readInfo(x).state));
+      if (readsBad) main.appendChild(App.readsCard());
+
       const list = h('div', { class: 'tasks' });
       for (const t of d.tasks) {
         list.appendChild(h('div', { class: 'task ' + t.level },
@@ -37,6 +42,7 @@
       }
       if (!d.tasks.length) list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Όλα εντάξει'), h('p', null, 'Πάτα «Ανάγνωση από τα sites» αριστερά όταν αλλάξουν προϊόντα, για να ξαναγίνουν οι έλεγχοι.')));
       main.appendChild(list);
+      if (!readsBad) { main.appendChild(h('div', { class: 'section-title' }, h('h2', null, 'Ανάγνωση των sites'))); main.appendChild(App.readsCard()); }
 
       if (d.history && d.history.length) {
         main.appendChild(h('div', { class: 'section-title' }, h('h2', null, 'Τι άλλαξε στα sites'), h('span', { class: 'faint' }, 'σε σχέση με την προηγούμενη ανάγνωση')));
