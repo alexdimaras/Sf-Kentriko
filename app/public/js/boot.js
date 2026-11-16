@@ -3,7 +3,7 @@
 (async function () {
   App.applyTheme();
   App.shell();
-  let started = false;
+  let started = false, other = false;
   const start = async () => {
     if (started) return;
     started = true;
@@ -41,7 +41,7 @@
         App.clear(document.getElementById('main'));
         App.showLogin(!!s.setup);
         await App.whenUnlocked();
-      } else if (last && last.user && s.user.id !== last.user.id) App.kept.wipe();
+      } else if (last && last.user && s.user.id !== last.user.id) { App.kept.wipe(); other = true; } // another person signed in here since
       release();
       App.newVersion(s.version);
     } else {
@@ -54,6 +54,7 @@
     if (!started) document.getElementById('main').textContent = e.message; else App.toast(e.message, { err: true });
     return;
   }
+  if (started && other) await App.route(); // the kept screens were another person's: drawn again from the program
   await start(); // (already open when this device had the last screens kept: their fresh data is on its way)
   App.refreshBadges();
   App.live.start();
