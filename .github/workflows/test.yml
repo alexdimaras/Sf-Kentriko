@@ -1,0 +1,36 @@
+# Every push and pull request: all the tests, with a real PostgreSQL (the shared database, as on Supabase).
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sfk
+          POSTGRES_PASSWORD: sfk-ci
+          POSTGRES_DB: sfk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U sfk" --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - name: all tests (files)
+        run: npm test
+      - name: queue, computers and database on PostgreSQL
+        env:
+          COORD_PG: postgres://sfk:sfk-ci@127.0.0.1:5432/sfk
+        run: node test/coord.js && node test/workers.js && node test/db.js

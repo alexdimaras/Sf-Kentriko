@@ -30,7 +30,17 @@ const coord = require('./lib/coord');
 const jobtypes = require('./lib/jobtypes');
 const secrets = require('./lib/secrets');
 
-const log = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log(line); try { fs.appendFileSync(path.join(HOME, 'worker.log'), line + '\n'); } catch (_) { /* optional */ } };
+// the log of this computer: at most 2 × 5 MB (the full one becomes worker.log.1, the older one goes)
+let logN = 0;
+const log = (...a) => {
+  const line = `[${new Date().toISOString()}] ${a.join(' ')}`;
+  console.log(line);
+  const f = path.join(HOME, 'worker.log');
+  try {
+    if (++logN % 100 === 1 && fs.existsSync(f) && fs.statSync(f).size > 5 * 1048576) fs.renameSync(f, f + '.1');
+    fs.appendFileSync(f, line + '\n');
+  } catch (_) { /* optional */ }
+};
 
 function readConf() { try { return JSON.parse(fs.readFileSync(CONF, 'utf8')); } catch (_) { return null; } }
 function writeConf(c) { fs.mkdirSync(HOME, { recursive: true }); const tmp = CONF + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(c, null, 2)); fs.renameSync(tmp, CONF); }

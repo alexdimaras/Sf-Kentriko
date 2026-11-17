@@ -84,6 +84,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   delete process.env.SFK_TREAT_PUBLIC;
   inner.close(); redir.close();
 
+  section('Αντίγραφα με ημερομηνία');
+  const days = Array.from({ length: 120 }, (_, i) => new Date(Date.UTC(2026, 10, 17) - i * 864e5).toISOString().slice(0, 10));
+  const keep = require(APP + '/lib/cloudsave').keepOf(days);
+  const sundays = [...keep].filter((d) => new Date(d + 'T12:00:00Z').getUTCDay() === 0);
+  ok(keep.has('2026-11-17') && keep.has('2026-11-04') && !keep.has('2026-11-02') && keep.size <= 22 && sundays.length >= 8, '14 daily copies and 8 weekly (Sunday) ones are kept, the rest go', JSON.stringify([keep.size, sundays.length]));
+
   section('Τιμές μόνο από ό,τι διατίθεται');
   const compcat = require(APP + '/lib/compcat');
   const sh = compcat.fromShopify({ id: 1, title: 'Bag', handle: 'bag', vendor: 'X', images: [], variants: [{ price: '29.90', available: false }, { price: '39.90', available: true }, { price: '44.90', available: true }] }, 'https://s.example');

@@ -267,6 +267,11 @@ function supplierSite() {
       const id = () => require('crypto').randomBytes(20).toString('hex');
       const commit = (entries) => { const t = id(), c = id(); ghState.trees.set(t, entries); ghState.commitsMap.set(c, t); ghState.head = c; ghState.commits++; };
       let m;
+      if (req.method === 'GET' && (m = req.url.match(/\/git\/trees\/(backup-[\d-]+)\?recursive=1$/))) {
+        const c = ghState.refs && ghState.refs.get('refs/heads/' + m[1]);
+        if (!c) return out(404);
+        return out(200, { tree: ghState.trees.get(ghState.commitsMap.get(c)).map((e) => ({ path: e.path, mode: e.mode, type: 'blob', sha: e.sha, size: ghState.blobs.get(e.sha).length })) });
+      }
       if (req.method === 'GET' && /\/git\/trees\/main\?recursive=1$/.test(req.url)) {
         if (ghState.slow) await new Promise((x) => setTimeout(x, ghState.slow));
         if (!ghState.head) return out(409, { message: 'Git Repository is empty.' });
@@ -278,6 +283,10 @@ function supplierSite() {
       if (req.method === 'POST' && /\/git\/blobs$/.test(req.url)) { if (!ghState.head) return out(409, { message: 'Git Repository is empty.' }); const k = id(); ghState.blobs.set(k, Buffer.from(j.content, 'base64')); ghState.blobPosts++; return out(201, { sha: k }); }
       if (req.method === 'POST' && /\/git\/trees$/.test(req.url)) { if (j.tree.some((e) => !ghState.blobs.has(e.sha))) return out(422, { message: 'tree.sha is not a valid blob' }); const k = id(); ghState.trees.set(k, j.tree); return out(201, { sha: k }); }
       if (req.method === 'POST' && /\/git\/commits$/.test(req.url)) { const k = id(); ghState.commitsMap.set(k, j.tree); return out(201, { sha: k, parents: j.parents }); }
+      if (req.method === 'POST' && /\/git\/refs$/.test(req.url)) { ghState.refs = ghState.refs || new Map(); if (ghState.refs.has(j.ref)) return out(422); ghState.refs.set(j.ref, j.sha); return out(201, { ref: j.ref }); }
+      if (req.method === 'PATCH' && (m = req.url.match(/\/git\/refs\/(heads\/backup-[\d-]+)$/))) { ghState.refs.set('refs/' + m[1], j.sha); return out(200, {}); }
+      if (req.method === 'GET' && /\/git\/matching-refs\/heads\/backup-$/.test(req.url)) return out(200, [...(ghState.refs || new Map()).keys()].map((ref) => ({ ref })));
+      if (req.method === 'DELETE' && (m = req.url.match(/\/git\/refs\/(heads\/backup-[\d-]+)$/))) { ghState.refs.delete('refs/' + m[1]); return out(204); }
       if (req.method === 'PATCH' && /\/git\/refs\/heads\/main$/.test(req.url)) { if (!ghState.commitsMap.has(j.sha)) return out(422); ghState.head = j.sha; ghState.commits++; return out(200, { object: { sha: j.sha } }); }
       return out(404, { message: 'not here: ' + req.method + ' ' + req.url });
     });
@@ -302,6 +311,9 @@ function supplierSite() {
   const sv = await cloudSave(p1, s1);
   ok(sv.saved && ghPart('settings') && ghPart('settings').minShops === 3 && ghPart('users') && /test-token/.test(ghState.auth), 'saved to the private repository, one compressed file per data file (first time on an empty repository)', JSON.stringify(sv));
   ok(!ghFile('README.md') && ghTree().every((e) => /^data\/[a-z0-9._-]+\.json\.gz$/.test(e.path)), 'the repository holds only the data files', ghTree().map((e) => e.path).join(' '));
+  const today = 'refs/heads/backup-' + new Date().toISOString().slice(0, 10);
+  ok(ghState.refs && ghState.refs.has(today) && ghState.commitsMap.has(ghState.refs.get(today)), 'a dated copy of the day is kept beside it (backup-YYYY-MM-DD), that later saves never change');
+  for (let i = 1; i <= 40; i++) ghState.refs.set('refs/heads/backup-' + new Date(Date.now() - i * 864e5).toISOString().slice(0, 10), ghState.refs.get(today));
   const sentBefore = ghState.blobPosts, usersSha = ghTree().find((e) => e.path === 'data/users.json.gz').sha;
   ok((await cloudSave(p1, s1)).same === true && ghState.blobPosts === sentBefore, 'nothing changed: nothing is sent');
   await setting(p1, s1, { minShops: 4 });
@@ -338,6 +350,17 @@ function supplierSite() {
   const still = await fetch(`http://127.0.0.1:${pX}/api/state`, { headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf } });
   ok(gone.status === 401 && still.status === 200, 'after a hard stop and a restart the signed-out device is still out (the other one still in)', String([gone.status, still.status]));
   await stopApp(aX);
+  // a restore from the dated copy of the day: the settings go back to what the copy holds, the saves go on to main
+  const dayRef = 'refs/heads/backup-' + new Date().toISOString().slice(0, 10);
+  const minBefore = ghPart('settings').minShops;
+  process.env.SFK_RESTORE_FROM = dayRef.replace('refs/heads/', '');
+  const pR = p1 + 8;
+  const aR = await startApp(path.join(tmp, 'cloudR'), pR, 8000, /Cloud data|Restored from/);
+  delete process.env.SFK_RESTORE_FROM;
+  const sR = await loginTo('http://127.0.0.1:' + pR);
+  const stR = await (await fetch(`http://127.0.0.1:${pR}/api/state`, { headers: { Cookie: sR.cookie, 'X-SFK': sR.csrf } })).json();
+  ok(/Restored from backup-/.test(aR.log()) && stR.settings.minShops === 3 && minBefore !== 3, 'a restore from the dated copy of the day brings back what it held (minShops 3, not ' + minBefore + ')', JSON.stringify([stR.settings && stR.settings.minShops, aR.log().slice(-600)]));
+  await stopApp(aR);
   // (a2 was cut off above)
   // the previous way of saving (everything in one file): read as it is, and the next save turns it into parts
   const oldDir = path.join(tmp, 'cloud-old');

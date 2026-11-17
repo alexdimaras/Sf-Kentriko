@@ -19,12 +19,19 @@ let pg = null;
 function lib() { if (!pg) pg = require('pg'); return pg; }
 
 /** A small pool (free plans allow few connections). */
+let tls = '';
+/** How the connection is protected: 'verified' (certificate checked), 'encrypted' (not checked), 'local'. */
+function tlsMode() { return tls; }
 async function connect(url) {
   const { Pool } = lib();
   const local = /@(localhost|127\.0\.0\.1)(:\d+)?\//.test(url);
   const ca = process.env.SFK_DB_CA ? String(process.env.SFK_DB_CA).replace(/\\n/g, '\n') : '';
   // always encrypted outside this machine; with the provider's certificate the server is also checked
+  // the database's identity is checked with its certificate (SFK_DB_CA). Without it the connection is still encrypted,
+  // but not checked — said plainly in Settings → Δεδομένα; SFK_DB_TLS=verify refuses to connect without it.
+  if (!local && !ca && process.env.SFK_DB_TLS === 'verify') throw new Error('Η βάση δεν έχει πιστοποιητικό (SFK_DB_CA): η σύνδεση δεν γίνεται χωρίς έλεγχο ταυτότητας.');
   const ssl = local ? false : ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: false };
+  tls = local ? 'local' : ca ? 'verified' : 'encrypted';
   // the ssl settings of a pasted address (?sslmode=require) would replace ours: they are taken out
   let clean = url;
   try { const u = new URL(url); for (const k of [...u.searchParams.keys()]) if (/^ssl/i.test(k)) u.searchParams.delete(k); clean = u.toString(); } catch (_) { /* not a URL: as given */ }
@@ -152,4 +159,4 @@ async function auditList(pool, n) { return (await pool.query('SELECT id, at, act
 /** Storage used, for the screen (free plans: 500 MB). */
 async function size(pool) { return Number((await pool.query('SELECT pg_database_size(current_database()) AS b')).rows[0].b); }
 
-module.exports = { connect, migrate, reset, coordBackend, docList, docGet, docPut, docPutRaw, docGetRaw, docDelete, audit, auditList, size, Conflict, SCHEMA };
+module.exports = { tlsMode, connect, migrate, reset, coordBackend, docList, docGet, docPut, docPutRaw, docGetRaw, docDelete, audit, auditList, size, Conflict, SCHEMA };

@@ -20,6 +20,9 @@ const REPO = String(process.env.SFK_GITHUB_DATA || '').trim().replace(/^https?:\
 const TOKEN = String(process.env.SFK_GITHUB_TOKEN || '').trim();
 const API = String(process.env.SFK_GITHUB_API || 'https://api.github.com').replace(/\/+$/, '');
 const BRANCH = String(process.env.SFK_GITHUB_BRANCH || 'main').trim();
+// a restore from a dated copy (SFK_RESTORE_FROM=backup-YYYY-MM-DD): read from there once; the saves keep going to BRANCH
+const RESTORE_FROM = /^backup-\d{4}-\d{2}-\d{2}$/.test(String(process.env.SFK_RESTORE_FROM || '').trim()) ? String(process.env.SFK_RESTORE_FROM).trim() : '';
+let readBranch = BRANCH;
 const DIR = 'data';
 const FILE = 'sf-kentro-data.json.gz'; // the previous way (everything in one file): read once, replaced at the next save
 // kept in the cloud although the daily copies on a PC leave them out: the open sessions (a restart does not sign
@@ -61,8 +64,20 @@ function statOf(f) { try { const s = fs.statSync(path.join(store.dir(), f)); ret
 
 // ---------- at start: the data saved last time ----------
 /** At start, before anything else: the data saved last time (nothing when this is the first start). */
+/** Read the dated copy `branch` (a restore), instead of the usual data. */
+async function restoreFrom(branch) {
+  readBranch = branch;
+  try { return await restore(); } finally { readBranch = BRANCH; state.pending = true; changes++; }
+}
 async function restore() {
   if (!state.enabled) return null;
+  // a restore asked for at start (cloud with GitHub only): the dated copy is read instead, once (marked in the data)
+  if (RESTORE_FROM && readBranch === BRANCH && !restoreDone) {
+    restoreDone = true;
+    const r = await restoreFrom(RESTORE_FROM);
+    if (r && r.files) { console.log(`Restored from ${RESTORE_FROM}: ${r.files} files.`); store.write('restore-mark', { from: RESTORE_FROM, at: new Date().toISOString() }); }
+    return r;
+  }
   for (let i = 0; ; i++) {
     try { const out = await restoreOnce(); restored = true; return out; } catch (e) {
       if (i >= 4) { state.blocked = true; state.error = e.message + ' Δεν αποθηκεύεται τίποτα μέχρι την επόμενη επανεκκίνηση, για να μη χαθούν τα σωσμένα δεδομένα.'; throw e; }
@@ -73,7 +88,7 @@ async function restore() {
 async function restoreOnce() {
   check();
   const t0 = Date.now();
-  const tr = await gh('GET', `/repos/${REPO}/git/trees/${encodeURIComponent(BRANCH)}?recursive=1`);
+  const tr = await gh('GET', `/repos/${REPO}/git/trees/${encodeURIComponent(readBranch)}?recursive=1`);
   // an empty repository (409) or no such branch yet (404): the first start
   if (tr.status === 404 || tr.status === 409) { state.loadedAt = new Date().toISOString(); return { files: 0, first: true }; }
   if (!tr.ok) throw new Error(`GitHub: δεν διαβάστηκαν τα δεδομένα (${tr.status}).`);
@@ -110,7 +125,7 @@ async function restoreOnce() {
 }
 /** The previous way: everything in one compressed file. Read as before; the next save writes the parts. */
 async function restoreOld() {
-  const r = await gh('GET', `/repos/${REPO}/contents/${FILE}?ref=${encodeURIComponent(BRANCH)}`, null, 'application/vnd.github.raw');
+  const r = await gh('GET', `/repos/${REPO}/contents/${FILE}?ref=${encodeURIComponent(readBranch)}`, null, 'application/vnd.github.raw');
   if (r.status === 404) { state.loadedAt = new Date().toISOString(); return { files: 0, first: true }; }
   if (!r.ok) throw new Error(`GitHub: δεν διαβάστηκαν τα δεδομένα (${r.status}).`);
   const tmp = tmpFile();
@@ -215,6 +230,8 @@ function save(reason) {
     let ref = await gh('PATCH', `/repos/${REPO}/git/refs/heads/${BRANCH}`, { sha, force: true });
     if (ref.status === 422 || ref.status === 404) ref = await gh('POST', `/repos/${REPO}/git/refs`, { ref: 'refs/heads/' + BRANCH, sha });
     if (!ref.ok) throw new Error(`GitHub: δεν αποθηκεύτηκαν τα δεδομένα (${ref.status}).`);
+    // a dated copy too, once a day, that the next saves never touch (backup-YYYY-MM-DD): 14 daily + 8 weekly kept
+    try { await snapshot(sha); } catch (e) { console.error('cloud copy of the day:', e.message); }
     known.clear();
     let size = 0;
     for (const [f, k] of now) { known.set(f, k); size += k.gz || 0; }
@@ -244,4 +261,33 @@ function status() { return Object.assign({}, state); }
  */
 function backupOnly() { restored = true; }
 
-module.exports = { restore, save, start, status, backupOnly, FILE, DIR, KEEP };
+// ---------- dated copies (history that a wrong save cannot overwrite) ----------
+let snapDay = '', restoreDone = false;
+const SNAP = /^refs\/heads\/backup-(\d{4}-\d{2}-\d{2})$/;
+async function snapshot(sha) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (snapDay === day) return;
+  const name = 'backup-' + day;
+  // the FIRST save of a day makes the day's copy, and it is never changed after (a wrong save later that day cannot
+  // touch it: going back to it undoes the whole day)
+  const r = await gh('POST', `/repos/${REPO}/git/refs`, { ref: 'refs/heads/' + name, sha });
+  if (r.status === 422) { snapDay = day; return; } // already made today
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  snapDay = day;
+  state.snapshotAt = new Date().toISOString();
+  // the old ones go: the last 14 days, and one a week (Sunday) for 8 weeks
+  const list = await gh('GET', `/repos/${REPO}/git/matching-refs/heads/backup-`);
+  if (!list.ok) return;
+  const days = (await list.json()).map((x) => (String(x.ref).match(SNAP) || [])[1]).filter(Boolean);
+  const keep = keepOf(days);
+  for (const d of days) if (!keep.has(d)) await gh('DELETE', `/repos/${REPO}/git/refs/heads/backup-${d}`);
+}
+/** Which dated copies stay: the newest 14 days, and the newest 8 Sundays. */
+function keepOf(days) {
+  const sorted = [...new Set(days)].sort().reverse();
+  const keep = new Set(sorted.slice(0, 14));
+  for (const d of sorted.filter((x) => new Date(x + 'T12:00:00Z').getUTCDay() === 0).slice(0, 8)) keep.add(d);
+  return keep;
+}
+
+module.exports = { RESTORE_FROM, restoreFrom, keepOf, restore, save, start, status, backupOnly, FILE, DIR, KEEP };

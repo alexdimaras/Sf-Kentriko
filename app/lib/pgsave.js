@@ -42,6 +42,22 @@ async function restoreOnce() {
   const t0 = Date.now();
   const p = await getPool();
   const list = (await db.docList(p)).filter((d) => NAME_OK.test(d.name));
+  // a restore from a dated copy of GitHub (SFK_RESTORE_FROM=backup-YYYY-MM-DD), once: it replaces what the database holds
+  const gh0 = require('./cloudsave');
+  if (gh0.RESTORE_FROM && gh0.status().enabled) {
+    const mark = list.find((d) => d.name === 'restore-mark.json') ? JSON.parse((await db.docGet(p, 'restore-mark.json')).text || '{}') : {};
+    if (mark.from !== gh0.RESTORE_FROM) {
+      const r = await gh0.restoreFrom(gh0.RESTORE_FROM);
+      if (!r || !r.files) throw new Error('Το αντίγραφο ' + gh0.RESTORE_FROM + ' δεν βρέθηκε ή είναι άδειο.');
+      store.forgetAll();
+      store.write('restore-mark', { from: gh0.RESTORE_FROM, at: new Date().toISOString() });
+      // every file is written over the database's version at the next save
+      for (const d of list) known.set(d.name, { version: d.version, size: -1, mtimeMs: -1 });
+      console.log(`Database: restored from ${gh0.RESTORE_FROM} (${r.files} files); written into the database now.`);
+      state.loadedAt = new Date().toISOString(); state.pending = true; changes++;
+      return { files: r.files, restoredFrom: gh0.RESTORE_FROM };
+    }
+  }
   if (!list.length) {
     // the first time: what was kept in GitHub until now comes over once
     const gh = require('./cloudsave');
@@ -128,7 +144,7 @@ function start() {
   }
 }
 
-function status() { return Object.assign({}, state); }
+function status() { return Object.assign({}, state, { tls: require('./db').tlsMode() }); }
 /** The shared database's pool (the coordinator and the audit log use the same one). */
 function poolNow() { return state.enabled ? getPool() : Promise.resolve(null); }
 

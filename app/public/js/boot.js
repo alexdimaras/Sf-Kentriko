@@ -29,10 +29,11 @@
       // every request waits for this check: it brings the token they need
       let release;
       App.setGate(new Promise((r) => { release = r; }));
-      // signed in on this device before: the screens open at once with what it saw last; the fresh data follows
+      // what this device kept from last time is shown only AFTER the program confirms who is signed in, and only if it
+      // is the same person (a shared computer never shows the previous person's screens, not even for a moment)
       const last = App.kept.load();
-      if (last && last.user) { App.state = last; App.me = last.user; start().then(() => App.renderSyncBox()); }
       const s = await session;
+      if (s && s.user && last && last.user && s.user.id === last.user.id) { App.state = last; App.me = last.user; start().then(() => App.renderSyncBox()); }
       App.waking.hide();
       if (!s) { release(); throw new Error('Το πρόγραμμα δεν απαντά. Ξαναδοκίμασε σε λίγο.'); }
       App.setToken(s.csrf);
