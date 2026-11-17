@@ -112,7 +112,7 @@ function remoteIO(api, jobId) {
 async function runJob(api, conf, j) {
   const h = coord.handler(j.type);
   if (!h) { await api.call('POST', '/api/worker/fail', { id: j.id, error: 'Αυτός ο υπολογιστής δεν ξέρει αυτή την εργασία (παλιά έκδοση;).', retryable: true }); return; }
-  log(`εργασία ${j.id} (${j.type}) — ${j.payload.comp ? j.payload.comp.name : ''}, προσπάθεια ${j.attempt}`);
+  log(`εργασία ${j.id} (${j.type}) — ${j.payload.comp ? j.payload.comp.name : (j.payload.items || []).length + ' προϊόντα'}, προσπάθεια ${j.attempt}`);
   const ctl = new AbortController();
   let cancel = false, prog = { done: 0, total: 0, msg: 'Ξεκινάει…' }, lines = [];
   // «still working», every 15 s (the cloud gives the job to another computer if this one goes silent for 90 s)

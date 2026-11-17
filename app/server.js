@@ -166,7 +166,7 @@ function supplierCounts() {
   supCounts = { key, counts };
   return counts;
 }
-async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running().concat(coordReady ? (await coord.live()).filter((j) => !(j.auto && j.type === 'codes.web')) : []), workers: coordReady && SERVER ? await coord.stats() : null, strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
+async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running().concat(coordReady ? (await coord.live()).filter((j) => j.type !== 'codes.web' && j.type !== 'market.shop') : []), workers: coordReady && SERVER ? await coord.stats() : null, strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
 
 // ---------- API ----------
 const routes = {
