@@ -442,21 +442,26 @@ function score(our, cand) {
 
 // ---------- Index of a competitor catalog ----------
 const idxCache = new Map();
-function indexFor(compId) {
+function indexFor(compId) { return require('./bg').drainSync(indexGen(compId)); }
+/** The same in slices (the research builds one index per shop: in one go it froze a small machine for seconds). */
+function* indexGen(compId) {
   const cat = compcat.load(compId);
+  yield;
   const hit = idxCache.get(compId);
   if (hit && hit.cat === cat) return hit;
   const items = cat.products || [];
   const feats = new Array(items.length);
   const post = new Map();
-  items.forEach((c, i) => {
-    const cf = candFeatures(c);
+  const put = (k, i) => { let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); };
+  for (let i = 0; i < items.length; i++) {
+    if (i % 50 === 0) yield;
+    const cf = candFeatures(items[i]);
     feats[i] = cf;
-    for (const t of cf.set) { let a = post.get(t); if (!a) post.set(t, (a = [])); a.push(i); }
-    if (cf.sku) { const k = '#' + cf.sku; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); }
-    for (const cb of [cf.code, cf.mpn]) if (cb) { const k = '~' + cb.base; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); if (cb.run && cb.run !== cb.base) { const k2 = '~' + cb.run; let a2 = post.get(k2); if (!a2) post.set(k2, (a2 = [])); a2.push(i); } }
-    if (cf.gtin) { const k = '=' + cf.gtin; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); }
-  });
+    for (const t of cf.set) put(t, i);
+    if (cf.sku) put('#' + cf.sku, i);
+    for (const cb of [cf.code, cf.mpn]) if (cb) { put('~' + cb.base, i); if (cb.run && cb.run !== cb.base) put('~' + cb.run, i); }
+    if (cf.gtin) put('=' + cf.gtin, i);
+  }
   const res = { cat, items, feats, post };
   idxCache.set(compId, res);
   return res;
@@ -812,7 +817,7 @@ async function run(targets, job, opts) {
     step++;
     const catAt = compcat.load(c.id).at || '';
     if (whole && !opts.fresh && prog.done[c.id] && prog.done[c.id] === catAt) { store.forget('comp-' + c.id); continue; } // already compared with this reading of its catalog
-    const ix = indexFor(c.id);
+    const ix = await bg.drain(indexGen(c.id));
     for (const w of work) {
       if (pace.due()) { await pace.rest(); if (job && job.cancelled()) break; }
       const o = w.searchable ? bestIn(w.f, ix, c, w.yes, w.no) : null;

@@ -745,11 +745,13 @@ async function findSources(job, opts) {
   const ec = cache();
   const maxPages = Math.max(0, Number(opts.maxPages == null ? 120 : opts.maxPages));
   const sites = catalog.SITES.filter((x) => catalog.load(x).syncedAt);
-  // 1. who needs what
+  // 1. who needs what (in slices: 17.000 products in one go froze a small cloud machine for half a minute)
+  const pace = bg.pacer();
   const needs = [];
   const bannedAds = catalog.bannedOnAds();
   for (const site of sites) {
     for (const p of catalog.load(site).products) {
+      if (pace.due()) await pace.rest();
       if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
       if (site === 'st' && bannedAds.has(p.id)) continue; // not allowed on the ads site: nothing is looked up for it
       const n = contentNeeds(p, s);
@@ -768,6 +770,7 @@ async function findSources(job, opts) {
       const cmp = pricelist.compare(sup.id, site);
       if (!cmp) continue;
       for (const r of cmp.rows) {
+        if (pace.due()) await pace.rest();
         if (!r.match) continue;
         const k = site + ':' + (r.match.parent || r.match.id);
         if (!cand.has(k)) cand.set(k, []);
@@ -781,6 +784,7 @@ async function findSources(job, opts) {
   const gap = 1500;
   for (const { site, p, n } of needs) {
     if (job && job.cancelled()) break;
+    if (pace.due()) await pace.rest();
     done++;
     if (done % 50 === 0) job && job.progress(done, needs.length, `${found.toLocaleString('el-GR')} πηγές βρέθηκαν · ${pages} σελίδες αντιπροσώπων διαβάστηκαν`);
     const key = site + ':' + p.id;
