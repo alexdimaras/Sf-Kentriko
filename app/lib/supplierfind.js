@@ -125,15 +125,47 @@ const ENGINES = [
   { id: 'ddg', name: 'DuckDuckGo', url: (q) => (process.env.SFK_SEARCH_DDG || 'https://html.duckduckgo.com/html/') + '?q=' + encodeURIComponent(q) + '&kl=gr-el', parse: parseDdg, host: 'duckduckgo.com' },
   { id: 'bing', name: 'Bing', url: (q) => (process.env.SFK_SEARCH_BING || 'https://www.bing.com/search') + '?q=' + encodeURIComponent(q) + '&setlang=el&cc=GR', parse: parseBing, host: 'bing.com' },
 ];
-let lastSearch = 0;
+// a calm pace for each search engine, like a person searching: 4–7 seconds between two searches on the same one
+// (a helping computer may set its own: SFK_SEARCH_GAP_MS)
+const lastBy = {};
+function gapMs() { const g = Number(process.env.SFK_SEARCH_GAP_MS) || 0; return g > 0 ? g + Math.random() * g * 0.5 : 4000 + Math.random() * 3000; }
+async function paced(eng, state) {
+  const wait = (lastBy[eng.id] || 0) + gapMs() - Date.now();
+  if (wait > 0 && !process.env.SFK_SEARCH_FAST) await http.nap(wait, state.signal);
+  if (state.signal && state.signal.aborted) throw new Error('Σταμάτησε.');
+  lastBy[eng.id] = Date.now();
+}
+/**
+ * Every search engine that answers, together (more shops than one engine shows): the results merged by address,
+ * in the order they came. An engine that turns us away is left for this round; all of them → Blocked.
+ */
+async function searchWide(q, state) {
+  const out = [], seen = new Set();
+  let any = false;
+  await Promise.all(ENGINES.map(async (eng) => {
+    if (state.blocked.has(eng.id)) return;
+    try {
+      await paced(eng, state);
+      const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
+      if (r.status === 202) throw new Blocked(eng.name);
+      const res = eng.parse(r.text);
+      any = true;
+      state.used.add(eng.name);
+      res.forEach((x, i) => { x.rank = i; x.engine = eng.id; });
+      out.push(...res);
+    } catch (e) {
+      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) state.blocked.add(eng.id);
+    }
+  }));
+  if (!any && ENGINES.every((e) => state.blocked.has(e.id))) throw new Blocked('all');
+  // the two lists interleaved by rank: the best of each engine first
+  out.sort((a, b) => a.rank - b.rank);
+  return out.filter((x) => { const k = String(x.url).replace(/[?#].*$/, '').replace(/\/$/, ''); if (seen.has(k)) return false; seen.add(k); return true; });
+}
 async function search(q, state) {
   for (const eng of ENGINES) {
     if (state.blocked.has(eng.id)) continue;
-    // a calm pace, like a person searching: 4–7 seconds between searches
-    const wait = lastSearch + 4000 + Math.random() * 3000 - Date.now();
-    if (wait > 0 && !process.env.SFK_SEARCH_FAST) await http.nap(wait, state.signal);
-    if (state.signal && state.signal.aborted) throw new Error('Σταμάτησε.');
-    lastSearch = Date.now();
+    await paced(eng, state);
     try {
       const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
       if (r.status === 202) throw new Blocked(eng.name);
@@ -377,4 +409,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, NEVER, Blocked };
+module.exports = { targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };

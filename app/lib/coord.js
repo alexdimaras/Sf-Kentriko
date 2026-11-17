@@ -313,6 +313,8 @@ function view(j) {
 async function job(id) { return view(await backend.job(id)); }
 /** The job itself (the server checks with it that a computer only fetches data for its own job). */
 async function rawJob(id) { return backend ? backend.job(id) : null; }
+/** The waiting / running jobs of one type, as they are (with their payload): for whoever keeps the queue fed. */
+async function liveOf(type) { return (await backend.live()).filter((j) => j.type === type); }
 async function live() { return (await backend.live()).sort(order).map(view); }
 async function recent(n) { return (await backend.recent(n || 20)).map(view); }
 async function workersView() {
@@ -327,4 +329,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

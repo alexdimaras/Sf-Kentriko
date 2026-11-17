@@ -435,9 +435,24 @@ function proposalsFor(site, p, C) {
         // only the photo of a shop that has the SAME product (code / EAN, or brand + model + colour), never of a look-alike
         const byKey = new Map();
         for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
+        // …and the shops of the internet with the same product (each photo of their page; the same file at two shops = the maker's)
+        for (const hh of webHits(C, site, p)) {
+          const w = { shop: hh.host, url: hh.url, name: hh.name, exact: hh.how === 'code', proof: hh.how === 'code' ? 'ίδιος κωδικός, internet' : 'ίδιο προϊόν, internet' };
+          const safe = safeWitness(p, w);
+          if (!safe) continue;
+          for (const u0 of (hh.images && hh.images.length ? hh.images : [hh.img]).slice(0, 4)) {
+            const u = fullImage(u0); const k = imageKey(u);
+            if (!u || !k || (p.images || []).some((x) => sameImage(x, u))) continue;
+            const e = byKey.get(k) || { u, shops: [] };
+            if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w);
+            if (safe === 'maybe') e.weak = true;
+            byKey.set(k, e);
+          }
+        }
         const best = [...byKey.values()].sort((a1, b1) => b1.shops.length - a1.shops.length)[0];
         if (best) {
-          cand = [best.u];
+          // the best photo, and the other views of the same product (as surely sourced as the best one)
+          cand = [best.u].concat([...byKey.values()].filter((e) => e !== best && e.shops.length >= Math.min(2, best.shops.length) && !(e.weak && !best.weak)).sort((a1, b1) => b1.shops.length - a1.shops.length).map((e) => e.u)).slice(0, 5);
           const w0 = best.shops[0];
           imgSource = { kind: 'competitor', label: `Φωτογραφία του ίδιου προϊόντος στο ${w0.shop} (${w0.proof})`, url: w0.url };
           imgLevel = best.shops.length >= 2 && !best.weak ? 'high' : 'medium';
@@ -459,6 +474,7 @@ function proposalsFor(site, p, C) {
       const vote = (raw, src, weight) => { const b = brandName(raw, C.brands); if (!b) return; const e = votes.get(b.key) || { name: b.name, known: b.known, n: 0, srcs: [] }; e.n += weight; e.srcs.push(src); votes.set(b.key, e); };
       if (found && found.data && found.data.brand) vote(found.data.brand, found.src, found.src.level === 'high' ? 2 : 1);
       for (const w of wit) if (w.brand && !w.byWords) vote(w.brand, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, 1);
+      for (const hh of webHits(C, site, p)) if (hh.brand && hh.how === 'code') vote(hh.brand, { kind: 'web', label: `${hh.host} (ίδιος κωδικός, internet)`, url: hh.url }, 1);
       const ranked = [...votes.values()].sort((a1, b1) => b1.n - a1.n);
       const top = ranked[0];
       // two sources that disagree (and neither is clearly ahead): nothing is proposed — a wrong brand is worse than none

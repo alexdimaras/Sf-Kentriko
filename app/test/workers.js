@@ -46,9 +46,24 @@ function comp(slow) {
   return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, state, url: 'http://127.0.0.1:' + srv.address().port })));
 }
 
+// ---------- a little «internet»: a search engine and two shops with the same glove pouch ----------
+function web() {
+  const page = (shop) => `<!doctype html><html><head><title>Glove pouch</title><script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: shop === 1 ? '5.11 Tactical Flex Disposable Glove Pouch' : 'Θήκη γαντιών 5.11 Flex Disposable Glove Pouch Black', sku: '56423', gtin13: '4046872358951', brand: { '@type': 'Brand', name: '5.11 Tactical' }, image: ['http://' + (shop === 1 ? '127.0.0.1' : 'localhost') + ':PORT/wp-content/uploads/flex-glove-pouch-56423-600x600.jpg'], offers: { '@type': 'Offer', priceCurrency: 'EUR', price: '27.90', availability: 'https://schema.org/InStock' } })}</script></head><body>${'x'.repeat(1500)}</body></html>`;
+  const state = { searches: 0 };
+  const srv = http.createServer((req, res) => {
+    const port = srv.address().port;
+    if (req.url.startsWith('/ddg')) { state.searches++; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(`<html><body><div class="result"><a class="result__a" href="http://127.0.0.1:${port}/shop1/glove">a</a></div><div class="result"><a class="result__a" href="http://localhost:${port}/shop2/glove">b</a></div></body></html>`); }
+    if (req.url.startsWith('/bing')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body></body></html>'); }
+    if (req.url.startsWith('/shop1/') || req.url.startsWith('/shop2/')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(page(req.url.startsWith('/shop1/') ? 1 : 2).replace(/PORT/g, port)); }
+    res.writeHead(404); res.end();
+  });
+  return new Promise((r) => srv.listen(0, '127.0.0.1', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
+}
+
 (async () => {
+  const webSrv = await web();
   const shopA = await comp(false);
-  W('catalog-sf', { syncedAt: now, source: 'api', products: NAMES.map((_, i) => product(i)), categories: [{ id: 11, name: 'Είδη', slug: 'eidi', parent: 0, count: 5, url: '' }], info: {}, lastFullAt: now, syncStartedAt: now, engine: 2, mode: 'full' });
+  W('catalog-sf', { syncedAt: now, source: 'api', products: NAMES.map((_, i) => product(i)).concat([Object.assign(product(5), { name: 'ΘΗΚΗ 5.11 FLEX DISPOSABLE GLOVE POUCH', brand: '5.11 TACTICAL', sku: '', images: [], price: 29, regular: 29 })]), categories: [{ id: 11, name: 'Είδη', slug: 'eidi', parent: 0, count: 5, url: '' }], info: {}, lastFullAt: now, syncStartedAt: now, engine: 2, mode: 'full' });
   W('settings', { firstRunDone: true });
   W('competitors', [{ id: 'cA', name: 'shop-a', url: shopA.url, kind: 'woo', enabled: true }]);
   W('competitors-meta', { seed: 99 });
@@ -57,7 +72,7 @@ function comp(slow) {
   const port = 19600 + Math.floor(Math.random() * 300);
   const base = `http://127.0.0.1:${port}`;
   const env = Object.assign({}, process.env, { SFK_MODE: 'server', SFK_PORT: String(port), SFK_DATA: DATA, APPDATA: path.join(tmp, 'cfg'), SFK_NO_AUTOSYNC: '1', SFK_ADMIN_USER: 'admin', SFK_ADMIN_PASSWORD: 'Test-pass-123456', SFK_SECRET_KEY: 'k'.repeat(40),
-    SFK_LEASE_MS: '4000', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
+    SFK_LEASE_MS: '4000', SFK_FEED_MS: '1500', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
   if (process.env.COORD_PG) {
     // an empty database, as on the first start with Supabase (the data of this test then comes from its folder)
     env.SFK_DATABASE_URL = process.env.COORD_PG;
@@ -120,6 +135,17 @@ function comp(slow) {
     ok(qj && qj.worker === os.hostname() && qj.status === 'completed', 'the job of the competitor was done by the computer (not by the cloud)', JSON.stringify(qj && [qj.worker, qj.status]));
     ok(/εργασία .* παραδόθηκε/.test(r1.out()), 'the computer reports that it handed in the result');
 
+    section('Έρευνα στο internet από τον υπολογιστή (κωδικός, EAN, φωτογραφίες)');
+    const fx = await until(async () => { const v = await get('/api/fixes?group=codes&q=GLOVE'); const c = (v.cards || [])[0]; return c && c.changes.some((x) => x.field === 'sku') ? c : null; }, 60000);
+    const skuFx = fx && fx.changes.find((x) => x.field === 'sku');
+    ok(skuFx && skuFx.to === '56423' && skuFx.level === 'high', 'a product without a code gets the maker\'s code from two shops of the internet → sure, for approval', JSON.stringify(skuFx && [skuFx.to, skuFx.level, skuFx.source && skuFx.source.label]));
+    const all6 = await get('/api/fixes?q=GLOVE');
+    const fields = (all6.cards[0] || { changes: [] }).changes.map((x) => x.field + ':' + x.level);
+    ok(fields.some((f) => f.startsWith('images:')) && fields.includes('gtin:high'), 'the same search brings the EAN (sure: two shops) and the photo (for a look: our title names no colour, a shop says «Black»)', JSON.stringify(fields));
+    const wj = (await get('/api/jobs')).find((x) => x.distributed && /internet/.test(x.label || ''));
+    ok(wj && wj.worker === os.hostname(), 'the searching was done by the shop\'s computer', JSON.stringify(wj && [wj.worker, wj.status]));
+    ok(webSrv.state.searches >= 1, 'it searched the «internet»');
+
     section('Υπολογιστής που σβήνει στη μέση');
     // the next day's research (a new day: the note of the day is reset)
     await post('/api/market/run', {}); // joins nothing (done today): returns at once
@@ -162,6 +188,7 @@ function comp(slow) {
     for (const p of workers) { try { p.kill('SIGKILL'); } catch (_) { /* gone */ } }
     try { server.kill('SIGKILL'); } catch (_) { /* gone */ }
     shopA.srv.close();
+    webSrv.srv.close();
     if (fails) console.log(slog.slice(-2000));
   }
   console.log(`\n${passes} ok, ${fails} failed`);

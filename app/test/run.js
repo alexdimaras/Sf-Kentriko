@@ -119,13 +119,13 @@ function supplierSite() {
   const desc = one('sf', 102, 'desc');
   ok(desc && desc.level === 'high' && /Cordura 500D/.test(desc.to.html), 'missing description filled from the supplier page (same code → sure)');
   ok(desc && !/2104123456|χονδρικ/i.test(desc.to.html), "the supplier's phone / wholesale text never reaches our site");
-  ok(desc && /^<h2>Σακίδιο Helikon-Tex Raccoon Mk2 20L<\/h2>/.test(desc.to.html), 'description starts with the title in Title Case');
+  ok(desc && /^<h2>Σακίδιο Helikon-Tex Raccoon (Mk2|MK2) 20L<\/h2>/.test(desc.to.html), 'description starts with the title in Title Case');
   ok(one('sf', 102, 'images') && one('sf', 102, 'images').to.length === 4, 'photos added from the supplier page');
   ok(one('sf', 102, 'gtin') && one('sf', 102, 'gtin').to === gtin('590582012345'), 'EAN with a valid check digit');
   ok(!one('sf', 103, 'gtin'), 'EAN with a wrong check digit is not proposed');
   ok(!one('sf', 103, 'desc'), 'a login page is not taken as a description (title check)');
   ok(one('sf', 103, 'name') && one('sf', 103, 'name').to === 'ΓΑΝΤΙΑ MECHANIX M-PACT COYOTE', 'mixed Greek/Latin letters fixed in the title');
-  ok(one('sf', 102, 'name') && one('sf', 102, 'name').to === 'ΣΑΚΙΔΙΟ HELIKON-TEX RACCOON Mk2 20L', 'title to capitals without accents');
+  ok(one('sf', 102, 'name') && one('sf', 102, 'name').to === 'ΣΑΚΙΔΙΟ HELIKON-TEX RACCOON MK2 20L', 'title to capitals without accents, codes too (Mk2 → MK2)');
   ok(one('sf', 104, 'cats') && one('sf', 104, 'cats').to.id === 12, 'category from similar products (ΜΠΟΥΦΑΝ → Μπουφάν)');
   ok(one('st', 201, 'price') && one('st', 201, 'price').to.regular === 69.9, 'ads site follows the price of the main site');
   ok(one('st', 203, 'published') && one('st', 203, 'published').to === -1, 'weapons become drafts on the ads site');

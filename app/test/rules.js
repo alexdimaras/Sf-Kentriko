@@ -109,13 +109,13 @@ function shop() {
   const one = (pid, field) => all.find((c) => c.site === 'sf' && c.pid === pid && c.field === field);
   const broken = checks.cached().checks.find((c) => c.id === 'sf-broken');
   ok(broken && broken.items.length === 1 && broken.items[0].id === 267335, 'check «Τίτλοι με σπασμένους χαρακτήρες» finds the Hamp;N title and nothing else', broken ? broken.items.map((i) => i.name).join(' | ') : 'no check');
-  ok(one(267335, 'name') && one(267335, 'name').to === 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5mm (400pcs)' && one(267335, 'name').level === 'high', 'ready fix: ΒΟΛΙΔΕΣ H&N SILVER POINT… (sure)', one(267335, 'name') && one(267335, 'name').to);
+  ok(one(267335, 'name') && one(267335, 'name').to === 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5MM (400PCS)' && one(267335, 'name').level === 'high', 'ready fix: ΒΟΛΙΔΕΣ H&N SILVER POINT… (sure)', one(267335, 'name') && one(267335, 'name').to);
   const f = one(252799, 'name');
   ok(f && f.to === 'ΦΥΣΙΓΓΙΑ 12ΒΟΛΑ FEDERAL F130 POWER SHOCK C12', '«12ΒΟΛΑ FEDERAL F130 POWER SHOCK C12» is recognised as cartridges: ΦΥΣΙΓΓΙΑ goes first', f && f.to);
   ok(f && /12ΒΟΛΑ/.test(f.why) && /ΦΥΣΙΓΓΙΑ/.test(f.why) && !/παρόμοια/.test(f.why), 'with the proof in plain words, not "from similar products"', f && f.why);
   ok(one(2, 'name') && one(2, 'name').to === 'ΦΥΣΙΓΓΙΑ WINCHESTER SUPER-X 27 ΒΟΛΑ', 'the same for «27 ΒΟΛΑ» written in two words', one(2, 'name') && one(2, 'name').to);
   ok(!one(3, 'name'), '«ΜΟΝΟΒΟΛΑ FEDERAL…» is left alone (a word customers look for)');
-  ok(one(4, 'name') && one(4, 'name').to === 'ΦΥΣΙΓΓΙΑ FEDERAL H163 HI BRASS 36gr' && /κατηγορία «ΦΥΣΙΓΓΙΑ ΚΥΝΗΓΙΟΥ-ΣΚΟΠΟΒΟΛΗΣ › FEDERAL»/.test(one(4, 'name').why), 'a title of Latin words only takes its kind from its own category (FEDERAL under ΦΥΣΙΓΓΙΑ…)', one(4, 'name') && one(4, 'name').to);
+  ok(one(4, 'name') && one(4, 'name').to === 'ΦΥΣΙΓΓΙΑ FEDERAL H163 HI BRASS 36GR' && /κατηγορία «ΦΥΣΙΓΓΙΑ ΚΥΝΗΓΙΟΥ-ΣΚΟΠΟΒΟΛΗΣ › FEDERAL»/.test(one(4, 'name').why), 'a title of Latin words only takes its kind from its own category (FEDERAL under ΦΥΣΙΓΓΙΑ…)', one(4, 'name') && one(4, 'name').to);
   ok(one(5, 'name') && one(5, 'name').to === 'ΣΟΥΓΙΑΣ OPINEL CARBON #07', 'OPINEL CARBON #07 in ΣΟΥΓΙΑΔΕΣ › OPINEL → ΣΟΥΓΙΑΣ first', one(5, 'name') && one(5, 'name').to);
   ok(!one(6, 'name') || !/^ΜΑΧΑΙΡΙ/.test(one(6, 'name').to), 'an accessory in the knives category (FIRE KIT ΓΙΑ…) is NOT called a knife', one(6, 'name') && one(6, 'name').to);
   ok(!one(7, 'name') || !/κατηγορία/.test(one(7, 'name').why), 'a category of two kinds (ΜΠΟΥΦΑΝ/ΑΔΙΑΒΡΟΧΑ) proves nothing: at most a suggestion to check', one(7, 'name') && one(7, 'name').why);
@@ -294,6 +294,19 @@ function shop() {
       ok(w2 && w2.level === 'medium' && /Μία μόνο πηγή/.test(w2.why), 'one shop only → «look at it» (medium)', JSON.stringify(w2 && [w2.level]));
       ok(!fixes.compute().items.some((c) => c.field === 'sku' && /^S[FT]-\d/.test(String(c.to))), 'no invented codes: only codes found somewhere');
       ok(cf.suggestedShops(1).some((x) => x.host === 'shop-a.example') && !cf.suggestedShops(1).some((x) => x.host === 'shop.example'), 'the shops that sell our products are kept as proposals for the price research (never our own site)');
+      // photos: the same file at two shops of the internet with the same product = the maker's photo → sure
+      const hp = catalog.byId('sf').get(267335); const keepImgs = hp.images; hp.images = [];
+      const ph = (host, u, more) => Object.assign({}, r.hits[0], { host, url: `https://${host}/p`, images: [u].concat(more || []), img: u });
+      cf.save({ 'sf:267335': { read: 2, hits: [ph('shop-a.example', 'https://shop-a.example/wp-content/uploads/hn-silver-point-sp45a-300x300.jpg', ['https://shop-a.example/wp-content/uploads/hn-silver-point-sp45b.jpg']), ph('shop-b.example', 'https://shop-b.example/img/hn-silver-point-sp45a.jpg', ['https://shop-b.example/img/hn-silver-point-sp45b.jpg'])] } });
+      fixes.invalidate();
+      const im = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 267335 && c.field === 'images');
+      ok(im && im.level === 'high' && im.to.length === 2 && !im.to.some((u) => /300x300/.test(u)) && /internet/.test(JSON.stringify([im.source, im.sources])), 'a product without photos gets the photos found at two shops of the internet with the same product (full size, both views) → sure', JSON.stringify(im && [im.to, im.level]));
+      hp.images = keepImgs;
+      // our code, searched with the brand: a page with the same code counts even when the titles are written otherwise
+      const qs = cf.queriesOf({ name: 'ΘΗΚΗ SAFARILAND 6360', brand: 'SAFARILAND', sku: '6360-832-411' });
+      ok(qs[0] === 'SAFARILAND 6360-832-411' && qs.length >= 2, 'the searches: brand + our code first, then the title, then brand + model', JSON.stringify(qs));
+      const r3 = await cf.lookUp({ k: 'sf:191690', name: 'ΘΗΚΗ SAFARILAND 6360', brand: 'SAFARILAND', sku: '6360-832-411', price: 150 }, { own: new Set(), search: async () => [{ url: 'https://gun.example/a' }], page: async (url) => ({ url, name: 'Safariland Model 6360 ALS/SLS Mid-Ride Level III Retention Duty Holster', brand: 'Safariland', code: '6360-832-411', ean: '', price: 160, currency: 'EUR', images: [] }) });
+      ok(r3.hits.length === 1 && r3.hits[0].how === 'code', 'a shop page with our own code is the same product (even with a longer title)', JSON.stringify(r3.hits.map((x) => x.how)));
       store.write('web-codes', {}); fixes.invalidate();
     }
     // the sizes / colours: the product's code and the value, in Latin letters, each one unique

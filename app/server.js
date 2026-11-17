@@ -730,6 +730,22 @@ async function webCodes(job, opts) {
   }
   return cf.run(job, { max: o.max || 25, items: o.items });
 }
+async function feedWebResearch() {
+  if (!coordReady || settings.all().webResearchAuto === false) return;
+  const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('codes.web') && !w.caps.battery);
+  if (!ws.length) return;
+  const live = await coord.liveOf('codes.web');
+  const want = ws.length * 2 - live.filter((j) => j.status === 'queued').length;
+  if (want <= 0) return;
+  const busy = new Set();
+  for (const j of live) for (const it of (j.payload && j.payload.items) || []) busy.add(it.k);
+  const cf = require('./lib/codefind');
+  const items = cf.candidates(400).filter((x) => !busy.has(x.k)).slice(0, want * 20);
+  if (!items.length) return;
+  const s = settings.all();
+  const own = ['sf', 'st'].map((x) => { try { return new URL(s.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
+  for (let i = 0; i < items.length; i += 20) await coord.enqueue('codes.web', { items: items.slice(i, i + 20), own }, { dedupKey: 'codes.web:' + items[i].k + ':' + Date.now(), auto: true, priority: 0 });
+}
 async function useWorkers() { return SERVER && coordReady && (await coord.workersView()).length > 0; }
 /**
  * The price research through the shared queue: one job per competitor (a shop's computer takes it; the cloud only
@@ -947,6 +963,9 @@ function afterStart() {
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)
     if (SERVER) setInterval(() => { coord.cloudTick().catch((e) => console.error('queue (cloud):', e.message)); }, 10000).unref();
+    // While a shop's computer that can search is switched on, the research on the internet never stops: two groups of
+    // 20 products waiting for each such computer, fed again as they are taken (like a clock, not once a day).
+    if (SERVER) setInterval(() => { feedWebResearch().catch((e) => console.error('internet research:', e.message)); }, Number(process.env.SFK_FEED_MS) || 30000).unref();
   })().catch((e) => console.error('queue start:', e.message));
   jobs.setHeavyLimit(SMALL ? 1 : 2);
   catalog.closeOpenReads(); // a reading that was running when the program stopped did not finish: say so

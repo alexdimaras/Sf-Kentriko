@@ -189,12 +189,13 @@ function fixMixedScript(title, knownLatinWords, dict, greekTitleWords) {
 }
 
 /** Capitals for the store's title style, leaving codes/units with digits as written (9x19, 400g, 1800Lm). */
+/** A title in capitals only, without accents — every word, codes and measures too (B12i → B12I, 4.5mm → 4.5MM). */
 function capsTitle(name) {
-  return collapse(name).split(' ').map((w) => (/\d/.test(w) ? stripTonos(w) : greekUpper(w))).join(' ');
+  return greekUpper(collapse(name));
 }
-/** Does a title break the capitals rule (ignoring tokens that contain digits)? */
+/** Does a title break the capitals rule (any small letter, also inside codes and measures)? */
 function hasLowercase(name) {
-  return collapse(name).split(' ').some((w) => !/\d/.test(w) && /\p{Ll}/u.test(w));
+  return /\p{Ll}/u.test(collapse(name));
 }
 
 /**

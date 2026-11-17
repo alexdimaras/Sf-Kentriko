@@ -22,6 +22,8 @@ process.env.APPDATA = process.env.APPDATA || path.join(os.homedir(), '.config');
 fs.mkdirSync(process.env.SFK_DATA, { recursive: true });
 const CONF = path.join(HOME, 'worker.json');
 const POLL = Number(process.env.SFK_POLL_MS) || 15000;
+// a shop's own connection: the searches can come a little faster than from the cloud (each engine 2.5–4 s apart)
+process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '2500';
 
 const store = require('./lib/store');
 const coord = require('./lib/coord');
@@ -46,7 +48,7 @@ function caps() {
     battery: onBattery(),
   };
 }
-function canRead() { try { require.resolve('node-html-parser'); return true; } catch (_) { return false; } }
+function canRead() { try { require('./lib/extract'); return true; } catch (_) { return false; } }
 let batteryAt = 0, batteryVal = false;
 /** On battery (a laptop unplugged): no new work. */
 function onBattery() {

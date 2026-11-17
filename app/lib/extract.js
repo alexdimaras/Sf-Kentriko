@@ -1,7 +1,8 @@
 'use strict';
 // Read a supplier / manufacturer product page and pull out what a listing needs:
 // name, brand, code, EAN, price, official description (HTML), features, specs, images, variants.
-const { parse } = require('node-html-parser');
+// the page reader; the program folder downloaded without its packages (a helping computer) uses the bundled copy
+const { parse } = (() => { try { return require('node-html-parser'); } catch (_) { return require('../vendor/node-html-parser'); } })();
 const http = require('./http');
 const U = require('./util');
 
