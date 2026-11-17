@@ -39,12 +39,14 @@ function caps() {
   const cpus = os.cpus() || [];
   return {
     cpus: cpus.length, cpuModel: (cpus[0] && cpus[0].model) || '', ramMB: ram, freeMB: Math.round(os.freemem() / 1048576), version: VERSION, platform: process.platform + '-' + process.arch,
-    types: ['market.shop'],
+    // the internet search reads web pages: it needs the page reader (in the full program folder)
+    types: ['market.shop'].concat(canRead() ? ['codes.web'] : []),
     // one job at a time on a small PC; two on a strong one
     slots: cpus.length >= 8 && ram >= 12000 ? 2 : 1,
     battery: onBattery(),
   };
 }
+function canRead() { try { require.resolve('node-html-parser'); return true; } catch (_) { return false; } }
 let batteryAt = 0, batteryVal = false;
 /** On battery (a laptop unplugged): no new work. */
 function onBattery() {

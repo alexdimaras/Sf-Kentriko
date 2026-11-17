@@ -17,6 +17,7 @@ const localIO = {
 };
 
 function register() {
+  registerCodes();
   // ---- the price research for ONE competitor: read its catalog (or part of its site map), compare with ours ----
   coord.register('market.shop', {
     label: 'Έρευνα τιμών σε ένα κατάστημα',
@@ -63,6 +64,44 @@ function register() {
       }
       const m = await require('./research').mergeShop(comp.id, String(r.catAt || ''), offers);
       return { offers: Object.keys(offers).length, products: m.touched, changes: m.changes, read: r.read || null };
+    },
+  });
+}
+
+function registerCodes() {
+  // ---- codes (SKU / EAN) of products without one, from the shops of the internet that show the same product ----
+  // A shop's computer searches from its own connection (the search engines often turn a cloud machine away).
+  coord.register('codes.web', {
+    label: 'Κωδικοί από το internet',
+    needs: { ramMB: 500 },
+    cloudOk: true,
+    maxAttempts: 2,
+    async run(payload, api) {
+      const cf = require('./codefind');
+      const sfind = require('./supplierfind');
+      const extract = require('./extract');
+      const state = { blocked: new Set(), used: new Set(), signal: api.signal };
+      const io = { own: new Set(payload.own || []), search: (q) => sfind.search(q, state), page: (url) => extract.fromUrl(url, { gap: 1500 }), cancelled: api.cancelled };
+      const results = {};
+      const items = (payload.items || []).slice(0, 40);
+      let i = 0;
+      for (const it of items) {
+        if (api.cancelled()) break;
+        api.progress(i, items.length, `Κωδικοί από το internet: ${it.name}`);
+        try { results[it.k] = await cf.lookUp(it, io); } catch (e) { if (e instanceof sfind.Blocked) break; results[it.k] = { hits: [], read: 0 }; }
+        i++;
+      }
+      return { results };
+    },
+    async apply(job, result) {
+      const want = new Set((job.payload.items || []).map((x) => x.k));
+      const clean = {};
+      for (const [k, r] of Object.entries((result && result.results) || {})) {
+        if (!KEY_RE.test(k) || !want.has(k) || !r || !Array.isArray(r.hits)) continue;
+        clean[k] = { read: Number(r.read) || 0, hits: r.hits.slice(0, 10).filter((h) => h && typeof h === 'object').map((h) => ({ host: String(h.host || '').slice(0, 100), url: /^https?:\/\//.test(String(h.url || '')) ? String(h.url).slice(0, 500) : '', name: String(h.name || '').slice(0, 200), brand: String(h.brand || '').slice(0, 60), code: String(h.code || '').slice(0, 60), ean: String(h.ean || '').replace(/\D/g, '').slice(0, 14), price: Number(h.price) > 0 ? U.r2(Number(h.price)) : 0, img: /^https?:\/\//.test(String(h.img || '')) ? String(h.img).slice(0, 500) : '', proof: String(h.proof || '').slice(0, 200) })).filter((h) => h.host) };
+      }
+      require('./codefind').save(clean);
+      return { products: Object.keys(clean).length, withCode: Object.values(clean).filter((r) => r.hits.some((h) => h.code || h.ean)).length };
     },
   });
 }

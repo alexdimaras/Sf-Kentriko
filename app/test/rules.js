@@ -270,23 +270,38 @@ function shop() {
     ok(!items2.find((c) => c.pid === 6 && c.field === 'sku'), 'a shop\'s own variation number («3498.vs1») is never proposed as our code');
     c7.sku = s7sku;
     store.write('market', {}); fixes.invalidate();
-    // no maker's code anywhere: our own, unique, the same on both sites — so every product passes step 1
-    const items3 = fixes.compute().items;
-    const own = items3.find((c) => c.site === 'sf' && c.pid === 267335 && c.field === 'sku');
-    ok(own && own.to === 'SF-267335' && own.level === 'high' && own.group === 'codes' && own.source.kind === 'rule', 'a product with no code anywhere gets our own unique code (SF-<number>), sure, in the group «Κωδικοί»', JSON.stringify(own && [own.to, own.level, own.group]));
-    ok(items3.filter((c) => c.field === 'sku' && c.site === 'sf').every((c) => !catalog.byId('sf').get(c.pid).sku), 'only products without a code get one');
-    fixes.decide([own.id], 'approved', 'test');
-    const ex = fixes.exportFile('sf', 'test');
-    ok(/(^|,)SKU(,|\r|$)/.test(ex.csv.split('\n')[0]) && ex.csv.includes('SF-267335'), 'the approved code goes into the WooCommerce file (column SKU)', ex.csv.split('\n')[0]);
+    // codes from the internet: shops that show the SAME product, the code sure only when two of them agree
+    {
+      const cf = require(APP + '/lib/codefind');
+      const pages = {
+        'https://shop-a.example/p/1': { name: 'H&N Silver Point 4.5mm (400pcs)', brand: 'H&N', code: 'HN-SP45-400', ean: '4046872358951', price: 9.9, currency: 'EUR', images: ['https://shop-a.example/i.jpg'] },
+        'https://shop-b.example/x': { name: 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5mm 400 τεμ.', brand: 'H&N', code: 'HN-SP45-400', ean: '4046872358951', price: 10.5, currency: 'EUR', images: [] },
+        'https://shop-c.example/y': { name: 'H&N Baracuda Match 4.5mm (400pcs)', brand: 'H&N', code: 'HN-BM45', ean: '', price: 12, currency: 'EUR', images: [] },
+        'https://shop.example/p/267335': { name: 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5mm (400pcs)', brand: 'H&N', code: 'OURS', ean: '', price: 9, currency: 'EUR', images: [] },
+      };
+      const io = { own: new Set(['shop.example']), search: async () => Object.keys(pages).map((url) => ({ url, title: '' })), page: async (url) => Object.assign({ url }, pages[url]) };
+      const it = { k: 'sf:267335', name: 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5mm (400pcs)', brand: 'H&N', price: 9 };
+      const r = await cf.lookUp(it, io);
+      ok(r.hits.length === 2 && r.hits.every((x) => /shop-[ab]/.test(x.host)), 'only shop pages with the SAME product count (another model and our own site are left out)', JSON.stringify(r.hits.map((x) => x.host)));
+      cf.save({ 'sf:267335': r });
+      fixes.invalidate();
+      const items4 = fixes.compute().items;
+      const w1 = items4.find((c) => c.site === 'sf' && c.pid === 267335 && c.field === 'sku');
+      ok(w1 && w1.to === 'HN-SP45-400' && w1.level === 'high' && (w1.sources || []).length === 1 && /internet/.test(w1.source.label), 'a code given by two shops of the internet with the same product → sure, both named', JSON.stringify(w1 && [w1.to, w1.level, w1.source.label]));
+      cf.save({ 'sf:267335': { hits: r.hits.slice(0, 1), read: 1 } });
+      fixes.invalidate();
+      const w2 = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 267335 && c.field === 'sku');
+      ok(w2 && w2.level === 'medium' && /Μία μόνο πηγή/.test(w2.why), 'one shop only → «look at it» (medium)', JSON.stringify(w2 && [w2.level]));
+      ok(!fixes.compute().items.some((c) => c.field === 'sku' && /^S[FT]-\d/.test(String(c.to))), 'no invented codes: only codes found somewhere');
+      ok(cf.suggestedShops(1).some((x) => x.host === 'shop-a.example') && !cf.suggestedShops(1).some((x) => x.host === 'shop.example'), 'the shops that sell our products are kept as proposals for the price research (never our own site)');
+      store.write('web-codes', {}); fixes.invalidate();
+    }
     // the sizes / colours: the product's code and the value, in Latin letters, each one unique
     const fakeC = { skus: { sf: new Set(['K07014XL']), st: new Set() }, vars: { sf: new Map([[50, [
       { id: 51, type: 'variation', parent: 50, varLabel: 'Μέγεθος: XL', sku: '' }, { id: 52, type: 'variation', parent: 50, varLabel: 'Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο', sku: '' },
       { id: 53, type: 'variation', parent: 50, varLabel: '', sku: '' }, { id: 54, type: 'variation', parent: 50, varLabel: 'Μέγεθος: L', sku: 'K07014-L' }]]]) } };
     const vc = fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014');
     ok(vc.length === 3 && vc[0].sku === 'K07014-XL-2' && vc[1].sku === 'K07014-43UK812-MAVRO' && vc[2].sku === 'K07014-3' && new Set(vc.map((v) => v.sku)).size === 3, 'sizes/colours without a code: «K07014-MAVRO»-style codes, never one already used, the ones with a code left alone', JSON.stringify(vc.map((v) => v.sku)));
-    ok(fixes.internalCode({ skus: { sf: new Set(['SF267335']), st: new Set() }, L: { stToSf: new Map() } }, 'sf', { id: 267335 }) === 'SF-267335-2', 'our own code is never one that is already in use');
-    ok(fixes.internalCode({ skus: { sf: new Set(), st: new Set() }, L: { stToSf: new Map([[88, 267335]]) } }, 'st', { id: 88 }) === 'SF-267335', 'the same product on the ads site gets the same code as on SpecialForces');
-    fixes.decide([own.id], 'pending', 'test');
   }
 
   console.log(`\n${passes} ok, ${fails} failed`);

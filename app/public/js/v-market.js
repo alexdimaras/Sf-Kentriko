@@ -316,6 +316,15 @@
     const auto = list.filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify' || c.kind === 'sitemap')).length;
     main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('div', { class: 'row' }, url, name, btn('Προσθήκη', { cls: 'primary', icon: 'new' }, () => POST('/api/competitors', { url: url.value, name: name.value }).then(() => App.route()).catch(fail)), btn('Έλεγχος όλων', { icon: 'sync' }, () => POST('/api/competitors/detect').then((job) => watchJob(job, { done: () => { toast('Ο έλεγχος ολοκληρώθηκε.'); App.route(); } })).catch(fail))),
       h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${auto} από ${list.length} διαβάζονται αυτόματα. WooCommerce / Shopify: κατεβαίνει όλος ο κατάλογός τους. Τα υπόλοιπα («σταδιακά»): διαβάζονται από τον χάρτη του site τους, λίγες σελίδες κάθε μέρα, μόνο όσες μοιάζουν με δικά σας προϊόντα — η πρώτη φορά θέλει μέρες, μετά ανοίγουν μόνο όσες αλλάζουν. Όσα δεν διαβάζονται καθόλου ανοίγουν για χειροκίνητο έλεγχο.`)));
+    // shops found on the internet selling several of our products (from the search for codes): more competition
+    const cs = await GET('/api/codes').catch(() => null);
+    if (cs) main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('h2', null, 'Καταστήματα που βρέθηκαν στο internet'),
+      h('p', { class: 'muted' }, `Η αναζήτηση κωδικών στο internet έχει δει ${fmt.num(cs.looked)} προϊόντα (μένουν ${fmt.num(cs.waiting)}). Όσα καταστήματα πουλάνε τουλάχιστον 3 ίδια προϊόντα με εσάς προτείνονται εδώ: με «Προσθήκη» μπαίνουν στην έρευνα τιμών.`),
+      cs.shops.length ? h('div', { class: 'stack s' }, cs.shops.map((x) => h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
+        h('div', null, h('b', null, x.host), h('span', { class: 'faint' }, ` · ${fmt.num(x.count)} ίδια προϊόντα`)),
+        btn('Προσθήκη', { cls: 'sm', icon: 'new' }, () => POST('/api/competitors', { url: x.url, name: x.host.replace(/\.(gr|com|eu)$/, '') }).then(() => { toast('Προστέθηκε· διαβάζεται στην επόμενη έρευνα.'); App.route(); }).catch(fail)))))
+        : h('p', { class: 'faint' }, 'Κανένα ακόμα.'),
+      h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Ψάξε κωδικούς τώρα (25 προϊόντα)', { cls: 'sm', icon: 'search' }, () => POST('/api/codes/find', { max: 25 }).then((job) => watchJob(job, { done: () => App.route() })).catch(fail)))));
     main.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl comps' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Κατάστημα'), h('th', null, 'Ανάγνωση'), h('th', { class: 'num' }, 'Προϊόντα'), h('th', null, ''))), tb)));
   }
 })();

@@ -68,6 +68,7 @@
                 x.hint ? h('div', { class: 'faint' }, x.hint) : null)))),
             h('div', { class: 'fc-act' },
               btn('Άνοιγμα', { cls: 'sm', icon: 'search' }, () => App.openProduct(r.site, r.id)),
+              r.problems.some((x) => x.kind === 'nosku' && x.state !== 'approve' && x.state !== 'done') ? btn('Βρες κωδικό', { cls: 'sm', icon: 'search', title: 'Αναζήτηση στο internet: καταστήματα με το ίδιο προϊόν, ο κωδικός τους με διασταύρωση' }, () => App.POST('/api/codes/find', { site: r.site, id: r.id }).then((job) => App.watchJob(job, { done: () => App.route() })).catch(App.fail)) : null,
               r.problems.some((x) => x.state === 'approve') ? btn('Έγκριση', { cls: 'sm primary', icon: 'fixes' }, () => App.go('fixes', { site: r.site, q: r.sku || r.name })) : null,
               r.problems.some((x) => x.state === 'decide') ? btn('Τιμή', { cls: 'sm primary', icon: 'market' }, () => App.go('market', { site: r.site, q: r.sku || r.name, f: 'all' })) : null)));
         }

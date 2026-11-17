@@ -204,18 +204,6 @@ function safeWitness(p, w) {
   // our title names no colour: maybe a product in one colour, maybe not — at most «look at it»
   return m.coloursOf(p.name).size === 0 ? 'maybe' : false;
 }
-/**
- * Our own code for a product that has none anywhere (no maker's code on our other site, at a supplier or at the shops
- * with the same product): from the SpecialForces number, so the same product gets the same code on both sites
- * («SF-24761»); a product only on the ads site: «ST-…». Never one that is already in use.
- */
-function internalCode(C, site, p) {
-  const sfId = site === 'sf' ? p.id : C.L.stToSf.get(p.id);
-  const base = sfId != null ? 'SF-' + sfId : 'ST-' + p.id;
-  let code = base, i = 1;
-  while (C.skus.sf.has(U.normSku(code)) || C.skus.st.has(U.normSku(code))) code = base + '-' + ++i;
-  return code;
-}
 /** The sizes / colours of a product that have no code yet (WooCommerce variations), by product. */
 function variationsOf(C, site) {
   C.vars = C.vars || {};
@@ -247,6 +235,13 @@ function variationCodes(C, site, p, code) {
     out.push({ id: v.id, label: v.varLabel || '', sku: c });
   });
   return out;
+}
+/** What the shops of the internet say about a product (lib/codefind.js); the same product on SpecialForces counts for the ads site. */
+function webHits(C, site, p) {
+  if (!C.web) C.web = (store.read('web-codes', null) || {}).products || {};
+  let e = C.web[site + ':' + p.id];
+  if (!e && site === 'st') { const sfId = C.L.stToSf.get(p.id); if (sfId != null) e = C.web['sf:' + sfId]; }
+  return e && Array.isArray(e.hits) ? e.hits : [];
 }
 /**
  * A product code as shops write it, cleaned: the first word of «8020860 Katadyn BeFree…»; never an EAN, a long
@@ -480,6 +475,8 @@ function proposalsFor(site, p, C) {
       if (twin && twin.sku) addCode(twin.sku, { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, false);
       if (found && found.data && found.data.code) addCode(found.data.code, found.src, found.src.level !== 'high');
       for (const w of wit) { if (!w.code || !safeWitness(p, w)) continue; addCode(w.code, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, w.byWords || !w.exact); }
+      // …and the shops of the internet that show the same product (searched for the products without a code)
+      for (const h of webHits(C, site, p)) { if (!h.code || !sameColours(p.name, h.name)) continue; addCode(h.code, { kind: 'web', label: `${h.host} (ίδιο προϊόν στο internet)`, url: h.url }, true); }
       const ranked = [...cv.values()].sort((a1, b1) => b1.srcs.length - a1.srcs.length);
       const top = ranked[0];
       // two different codes with the same support: nothing (a wrong code is worse than none)
@@ -493,17 +490,7 @@ function proposalsFor(site, p, C) {
         const clash = cb && U.collapse(p.name).split(' ').map((x) => mk.codeBase(x)).find((x) => x && x.shape === cb.shape && x.base !== cb.base && !(x.run && cb.run && x.run === cb.run));
         if (clash) sure = false;
         const vars = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
-        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Από αντιστοίχιση της έρευνας: έλεγξέ τον.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
-      } else if (!top) {
-        // no maker's code anywhere: our own, unique, the same on both sites (a product of the ads site that follows
-        // SpecialForces gets it from there, with the approval of the SpecialForces one)
-        const sfId = site === 'st' ? C.L.stToSf.get(p.id) : null;
-        const followsSf = sfId != null && !C.banned.has(p.id) && (() => { const sp = oById.get(sfId); return sp && !String(sp.sku || '').trim() && sp.status !== 'draft' && sp.status !== 'private'; })();
-        if (!followsSf) {
-          const code = internalCode(C, site, p);
-          const vars = p.type === 'variable' ? variationCodes(C, site, p, code) : [];
-          add(Object.assign({}, base, { field: 'sku', from: '', to: code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν το προϊόν δεν περνά το 1ο βήμα και δεν γίνεται αντιστοίχιση με τιμοκαταλόγους και ανταγωνιστές. Κωδικός κατασκευαστή δεν βρέθηκε (ούτε στο άλλο site, ούτε σε τιμοκατάλογο, ούτε σε κατάστημα με σίγουρα το ίδιο προϊόν): προτείνεται δικός μας μοναδικός κωδικός, ίδιος και στα δύο sites.' + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : '') + ' Αν βρεις αργότερα τον κωδικό του κατασκευαστή, μπορείς να τον αλλάξεις.', source: { kind: 'rule', label: 'Νέος κωδικός του καταστήματος' }, level: 'high' }));
-        }
+        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Μία μόνο πηγή (κατάστημα με το ίδιο προϊόν): έλεγξέ τον.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
       }
     } else if (p.type === 'variable') {
       // the product has a code, some of its sizes / colours do not
@@ -516,6 +503,7 @@ function proposalsFor(site, p, C) {
       if (found && found.data && found.src.level === 'high') { const g = validGtin(found.data.ean); if (g) gv.set(g, [found.src]); }
       let weak = false;
       for (const w of wit) { const safe = !w.byWords && safeWitness(p, w); if (!safe) continue; const g = validGtin(w.ean); if (!g) continue; if (!gv.has(g)) gv.set(g, []); if (!gv.get(g).some((x) => x.label.startsWith(w.shop))) { gv.get(g).push({ kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }); if (safe === 'maybe') weak = true; } }
+      for (const h of webHits(C, site, p)) { const g = validGtin(h.ean); if (!g || !sameColours(p.name, h.name)) continue; if (!gv.has(g)) gv.set(g, []); if (!gv.get(g).some((x) => x.label.startsWith(h.host))) gv.get(g).push({ kind: 'web', label: `${h.host} (ίδιο προϊόν στο internet)`, url: h.url }); }
       if (gv.size === 1) {
         const [g, srcs] = [...gv][0];
         const sure = srcs.some((x) => x.kind === 'supplier') || (srcs.length >= 2 && !weak);
@@ -1046,4 +1034,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { variationCodes, internalCode, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

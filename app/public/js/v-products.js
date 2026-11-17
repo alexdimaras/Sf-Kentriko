@@ -134,6 +134,7 @@
     const mk = d.market;
     const mkPanel = h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('h2', null, 'Τιμή αγοράς'),
       h('div', { class: 'row tight' }, btn('Νέα έρευνα', { cls: 'sm', icon: 'market' }, () => POST('/api/market/run', { targets: [{ site, id: p.id }] }).then((job) => watchJob(job, { done: () => openProduct(site, id) })).catch(fail)),
+        !p.sku ? btn('Βρες κωδικό', { cls: 'sm', icon: 'search', title: 'Αναζήτηση στο internet: καταστήματα με το ίδιο προϊόν' }, () => POST('/api/codes/find', { site, id: p.id }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις → Κωδικοί, για έγκριση.'); openProduct(site, id); } })).catch(fail)) : null,
         btn('Χειροκίνητη τιμή', { cls: 'sm' }, () => App.manualPrice(site, p.id, () => openProduct(site, id))))));
     if (mk && mk.stats) {
       mkPanel.appendChild(App.marketSummary(mk, p.price, mk.master ? null : { site, id: p.id, refresh: () => openProduct(site, id) }));

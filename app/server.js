@@ -353,6 +353,18 @@ const routes = {
     return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => heldWhile(() => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload })), { heavy: !targets.length });
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
+  // codes (SKU / EAN) from the internet: one product now, or the next ones without a code
+  'POST /api/codes/find': (b) => {
+    const cf = require('./lib/codefind');
+    if (b.site && b.id) {
+      const p = catalog.byId(b.site === 'st' ? 'st' : 'sf').get(Number(b.id));
+      if (!p) throw new Error('Δεν βρέθηκε το προϊόν.');
+      const items = [{ k: (b.site === 'st' ? 'st' : 'sf') + ':' + p.id, name: p.name, brand: p.brand || '', price: p.price || 0 }];
+      return jobs.start('codes', 'Κωδικός από το internet: ' + p.name.slice(0, 60), (job) => webCodes(job, { items }));
+    }
+    return jobs.start('codes', 'Κωδικοί από το internet', (job) => webCodes(job, { max: Math.min(200, Number(b.max) || 25) }));
+  },
+  'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
   'GET /api/flow': (q) => require('./lib/flow').view(q),
   'POST /api/market/manual': (b) => market.addManual(b.site, b.id, b),
   'POST /api/market/ignore': (b) => market.toggleIgnore(b.site, b.id, b.url),
@@ -655,7 +667,7 @@ let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
   'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
-  'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
+  'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
@@ -699,6 +711,25 @@ async function handleWorker(req, res, url, q, key0) {
   }
 }
 /** Are there computers of the shops (paired, not removed)? Then the research is handed to them. */
+/**
+ * Codes (SKU / EAN) of products without one, from the internet: on the shops' computers when there are any (groups
+ * of 20 products, they search from their own connection), else here, a few a day.
+ */
+async function webCodes(job, opts) {
+  const o = opts || {};
+  const cf = require('./lib/codefind');
+  if (!o.items && await useWorkers()) {
+    const items = cf.candidates(o.max || 200);
+    const s = settings.all();
+    const own = ['sf', 'st'].map((x) => { try { return new URL(s.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
+    const day = market.localDay(new Date());
+    let n = 0;
+    for (let i = 0; i < items.length; i += 20) { await coord.enqueue('codes.web', { items: items.slice(i, i + 20), own }, { dedupKey: `codes.web:${day}:${i / 20}`, auto: !!o.auto, priority: o.auto ? 0 : 5 }); n++; }
+    job && job.log(`Κωδικοί από το internet: ${items.length} προϊόντα σε ${n} ομάδες, στους υπολογιστές των μαγαζιών.`);
+    return { queued: items.length };
+  }
+  return cf.run(job, { max: o.max || 25, items: o.items });
+}
 async function useWorkers() { return SERVER && coordReady && (await coord.workersView()).length > 0; }
 /**
  * The price research through the shared queue: one job per competitor (a shop's computer takes it; the cloud only
@@ -837,7 +868,7 @@ const server = http.createServer((req, res) => {
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
   }
   const url = new URL(req.url, 'http://127.0.0.1');
-  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), ext: Math.round(process.memoryUsage().external / 1048576), lag: lagMax() }); }
+  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), ext: Math.round(process.memoryUsage().external / 1048576), lag: lagMax(), store: (() => { const c = cloudsave.status(); return !c.enabled ? 'disk' : c.where === 'βάση δεδομένων' ? (c.error ? 'db-error' : c.loadedAt ? 'db' : 'db-starting') : 'github'; })() }); }
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
   if (url.pathname.startsWith('/api/')) { uiSeen = true; return handleApi(req, res, url); }
   if (url.pathname === '/') uiSeen = true;
@@ -973,6 +1004,8 @@ function afterStart() {
           const res = (await useWorkers()) ? await distributedResearch(job, { auto: true }) : await market.run(null, job, { auto: true });
           // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
           if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
+          // 4. codes (SKU / EAN) of products without one, from the shops of the internet with the same product
+          if (!job.cancelled()) { try { const c = await webCodes(job, { auto: true, max: 25 }); if (c && c.looked != null) job.log(`Κωδικοί από το internet: ${c.looked} προϊόντα, κάτι βρέθηκε για ${c.withCode}.`); } catch (e) { job.log('Κωδικοί από το internet: ' + e.message); } }
           return res;
         }), { heavy: true, auto: true });
       } catch (e) {

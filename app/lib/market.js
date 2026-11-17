@@ -116,7 +116,16 @@ function keyTokens(name, brand) {
   const out = [];
   const toks = tokensOf(name);
   for (let i = 0; i < toks.length; i++) {
-    const t = toks[i];
+    let t = toks[i];
+    // pieces, written in any of the ways shops write them, are one word: 400PCS = 400 PCS = 400 ΤΕΜ. = 400 ΤΜΧ
+    const pcs = t.match(/^(\d+)(PCS|PC|ΤΕΜ|ΤΜΧ|ΤΕΜΑΧΙΑ)\.?$/);
+    if (pcs) t = pcs[1] + 'PCS';
+    if (/^(PCS|PC|ΤΕΜ|ΤΜΧ|ΤΕΜΑΧΙΑ)\.?$/.test(t) && i > 0 && /^\d+$/.test(toks[i - 1])) {
+      const prev = ntok(toks[i - 1]);
+      const at = out.indexOf(prev);
+      if (at >= 0) out[at] = prev + 'PCS'; else out.push(prev + 'PCS');
+      continue;
+    }
     // a unit after a number is one word: 9 MM = 9MM, 100 ML = 100ML
     if (/^(MM|CM|ML|LT|LTR|G|GR|KG|MAH|W|V|OZ|LB|LBS|IN|INCH|LM|M|ΕΚ|ΓΡ|ΜΜ|ΛΙΤΡΑ)\.?$/.test(t) && i > 0 && /^\d+(?:[.,]\d+)?$/.test(toks[i - 1])) {
       const prev = ntok(toks[i - 1]);
@@ -154,6 +163,12 @@ function tokenSet(name, sku) {
   const toks = tokensOf(name + ' ' + (sku || '')).map(ntok).filter(Boolean);
   const set = new Set(toks);
   for (let i = 0; i < toks.length - 1; i++) set.add(toks[i] + toks[i + 1]); // "MH 40" = "MH40", "MAX S" = "MAXS"
+  // pieces, however written: 400PCS = 400 PCS = 400 ΤΕΜ. = 400ΤΜΧ
+  for (let i = 0; i < toks.length; i++) {
+    const m = toks[i].match(/^(\d+)(PCS|PC|ΤΕΜ|ΤΜΧ|ΤΕΜΑΧΙΑ)$/);
+    if (m) set.add(m[1] + 'PCS');
+    if (i > 0 && /^(PCS|PC|ΤΕΜ|ΤΜΧ|ΤΕΜΑΧΙΑ)$/.test(toks[i]) && /^\d+$/.test(toks[i - 1])) set.add(toks[i - 1] + 'PCS');
+  }
   return set;
 }
 
@@ -467,6 +482,41 @@ function* indexGen(compId) {
   return res;
 }
 
+const FEW = 30;
+const FRESH_FOR_FEW_MS = 24 * 36e5;
+/**
+ * A small index of a shop for a few of our products: only the items whose text holds one of their model words or
+ * codes (the same candidates bestIn would find in the whole index, at a fraction of the work).
+ */
+function* quickIndexGen(compId, work) {
+  const cat = compcat.load(compId);
+  const items0 = cat.products || [];
+  const words = new Set(), codes = new Set();
+  for (const w of work) {
+    const f = w.f;
+    for (const k of f.keys) if (k.length >= 2) words.add(k);
+    for (const c of [f.sku, f.gtin, f.code && f.code.base, f.code && f.code.run].concat(f.codes || [])) { const k = String(c || '').replace(/[^A-Z0-9Α-Ω]/g, ''); if (k.length >= 3) codes.add(k); }
+  }
+  const ws = [...words], cs = [...codes];
+  const items = [], feats = [], post = new Map();
+  const put = (k, i) => { let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); };
+  for (let j = 0; j < items0.length; j++) {
+    if (j % 200 === 0) yield;
+    const it = items0[j];
+    const hay = ' ' + tokensOf([it.n, it.s, it.b].filter(Boolean).join(' ')).join(' ') + ' ';
+    const flat = hay.replace(/[^A-Z0-9Α-Ω]/g, '');
+    if (!ws.some((k) => hay.includes(' ' + k + ' ')) && !cs.some((k) => flat.includes(k))) continue;
+    const i = items.length;
+    const cf = candFeatures(it);
+    items.push(it); feats.push(cf);
+    for (const t of cf.set) put(t, i);
+    if (cf.sku) put('#' + cf.sku, i);
+    for (const cb of [cf.code, cf.mpn]) if (cb) { put('~' + cb.base, i); if (cb.run && cb.run !== cb.base) put('~' + cb.run, i); }
+    if (cf.gtin) put('=' + cf.gtin, i);
+  }
+  return { cat, items, feats, post };
+}
+
 /** Best offer of one competitor for one of our products. */
 function bestIn(f, ix, comp, confirmed, ignored) {
   const cand = new Set();
@@ -745,7 +795,12 @@ async function run(targets, job, opts) {
       const tl = targets && targets.length ? targets : targetsAll();
       extra = { want: await wantedPages(tl, { sf: catalog.byId('sf'), st: catalog.byId('st') }), budget: Math.max(20, Number(settings.all().sitemapPages) || 200) };
     }
-    dl = await compcat.syncAll(comps, job, catalog.makeProgress(job), extra);
+    // a few products (a research from a product's page): the shops read in the last day are not read again — the
+    // daily research keeps them fresh; only an old or missing catalog is read now
+    const fresh = (c) => { const at = compcat.load(c.id).at; store.forget('comp-' + c.id); return at && Date.now() - new Date(at).getTime() < FRESH_FOR_FEW_MS; };
+    const toRead = targets && targets.length ? comps.filter((c) => !fresh(c)) : comps;
+    if (toRead.length < comps.length) job && job.log(`${comps.length - toRead.length} από ${comps.length} καταστήματα διαβάστηκαν πρόσφατα: χρησιμοποιείται ο κατάλογός τους.`);
+    if (toRead.length) dl = await compcat.syncAll(toRead, job, catalog.makeProgress(job), extra);
     if (job && job.cancelled()) { const m = store.read('market-meta', {}); m.pausedUntil = new Date(Date.now() + 2 * 36e5).toISOString(); store.write('market-meta', m); return { stopped: true, done: 0, withData: 0, similar: 0, changes: 0, errors: dl.errors }; }
   }
   const withCatalog = comps.filter((c) => (compcat.load(c.id).products || []).length);
@@ -817,7 +872,9 @@ async function run(targets, job, opts) {
     step++;
     const catAt = compcat.load(c.id).at || '';
     if (whole && !opts.fresh && prog.done[c.id] && prog.done[c.id] === catAt) { store.forget('comp-' + c.id); continue; } // already compared with this reading of its catalog
-    const ix = await bg.drain(indexGen(c.id));
+    // a few products: only the shop's items that share a word or a code with them are indexed (a whole index per shop
+    // is the slow part of a research, and pointless for one product)
+    const ix = !whole && work.length <= FEW ? await bg.drain(quickIndexGen(c.id, work)) : await bg.drain(indexGen(c.id));
     for (const w of work) {
       if (pace.due()) { await pace.rest(); if (job && job.cancelled()) break; }
       const o = w.searchable ? bestIn(w.f, ix, c, w.yes, w.no) : null;
@@ -868,7 +925,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 2;
+const MATCH_VERSION = 3; // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
