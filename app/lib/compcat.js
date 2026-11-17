@@ -41,8 +41,12 @@ function fromWoo(p) {
 }
 function fromShopify(p, base) {
   const vs = p.variants || [];
-  const prices = vs.map((v) => U.parseNumber(v.price)).filter((x) => x > 0);
-  const compare = vs.map((v) => U.parseNumber(v.compare_at_price)).filter((x) => x > 0);
+  // the price a buyer can pay today: the cheapest of the sizes / colours IN STOCK (a cheap size sold out is not
+  // the shop's price); none in stock → the product is sold out, shown with its lowest price
+  const avail = vs.filter((v) => v.available !== false);
+  const pool = avail.length ? avail : vs;
+  const prices = pool.map((v) => U.parseNumber(v.price)).filter((x) => x > 0);
+  const compare = pool.map((v) => U.parseNumber(v.compare_at_price)).filter((x) => x > 0);
   const img = (p.images && p.images[0] && p.images[0].src) || '';
   return {
     id: p.id,
@@ -54,7 +58,7 @@ function fromShopify(p, base) {
     p: prices.length ? Math.min(...prices) : 0,
     pm: prices.length ? Math.max(...prices) : 0,
     r: compare.length ? Math.max(...compare) : 0,
-    st: vs.some((v) => v.available !== false),
+    st: avail.length > 0,
     i: img ? img.replace(/(\.[a-z]+)(\?|$)/i, '_200x$1$2') : '',
     c: 'EUR',
   };
@@ -80,8 +84,14 @@ async function wooPages(base, query, gap, onPage, cancelled, headers, map, signa
   // two requests at a time per competitor, with a pause between them: polite, never a load on their shop
   await http.pool(rest, 2, async (pg) => {
     const r = await http.getJson(url(pg), { gap, timeout: 60000, retries: 2, headers, signal });
-    if (Array.isArray(r.json)) { const n = r.json.length; for (const x of conv(r.json)) out.push(x); onPage && onPage(n, 0); }
+    // a page that does not answer with products fails the whole reading: a catalog with a hole is never kept
+    // (the previous, whole one stays until a reading succeeds)
+    if (!Array.isArray(r.json)) throw new Error(`Η σελίδα ${pg} από ${pages} του καταλόγου δεν διαβάστηκε σωστά: κρατιέται ο προηγούμενος κατάλογος.`);
+    const n = r.json.length; for (const x of conv(r.json)) out.push(x); onPage && onPage(n, 0);
   }, cancelled);
+  if (cancelled && cancelled()) return { items: out, total, partial: true };
+  // the shop said how many products it has: a reading with clearly fewer (a page lost on the way) is not kept
+  if (total && out.length < total * 0.98 && pages > 1) throw new Error(`Διαβάστηκαν ${out.length} από ${total} προϊόντα του καταλόγου: κρατιέται ο προηγούμενος κατάλογος.`);
   return { items: out, total };
 }
 
@@ -152,7 +162,7 @@ async function syncSitemap(c, prev, o) {
   const t0 = Date.now();
   const keep = (st, done) => {
     const items = st.products.filter((p) => p.n && p.p > 0 && (!p.c || p.c === 'EUR'));
-    store.write(file(c.id), { kind: 'sitemap', url: c.url, at: U.nowIso(), syncStartedAt: new Date(t0).toISOString(), mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), count: items.length, products: items, pages: st.pages, sitemaps: st.sitemaps, wanted: st.wanted, mapUrls: st.mapUrls, left: st.left, opened: st.opened, complete: !!done && st.left === 0 });
+    store.write(file(c.id), { kind: 'sitemap', url: c.url, at: U.nowIso(), syncStartedAt: new Date(t0).toISOString(), mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), count: items.length, products: items, pages: st.pages, sitemaps: st.sitemaps, wanted: st.wanted, mapUrls: st.mapUrls, left: st.left, opened: st.opened, mapWhole: st.mapWhole !== false, complete: !!done && st.left === 0 && st.mapWhole !== false });
     return items.length;
   };
   let total = 0, shown = 0;
@@ -212,7 +222,7 @@ async function syncAll(comps, job, progress, extra) {
 
 function info(id) {
   const c = load(id);
-  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt, left: c.left, wanted: c.wanted, mapUrls: c.mapUrls };
+  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt, left: c.left, wanted: c.wanted, mapUrls: c.mapUrls, mapWhole: c.mapWhole !== false, complete: c.kind === 'sitemap' ? !!c.complete : true };
 }
 
 module.exports = { load, remove, syncOne, syncAll, info, fromWoo, fromShopify };

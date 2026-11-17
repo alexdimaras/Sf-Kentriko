@@ -84,6 +84,52 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   delete process.env.SFK_TREAT_PUBLIC;
   inner.close(); redir.close();
 
+  section('Τιμές μόνο από ό,τι διατίθεται');
+  const compcat = require(APP + '/lib/compcat');
+  const sh = compcat.fromShopify({ id: 1, title: 'Bag', handle: 'bag', vendor: 'X', images: [], variants: [{ price: '29.90', available: false }, { price: '39.90', available: true }, { price: '44.90', available: true }] }, 'https://s.example');
+  ok(sh.p === 39.9 && sh.st === true, 'Shopify: the price is the cheapest size IN STOCK (29,90 sold out → 39,90)', JSON.stringify([sh.p, sh.st]));
+  const sh2 = compcat.fromShopify({ id: 2, title: 'Bag', handle: 'bag', vendor: 'X', images: [], variants: [{ price: '29.90', available: false }, { price: '39.90', available: false }] }, 'https://s.example');
+  ok(sh2.st === false, 'Shopify: nothing in stock → sold out (does not count in the price)');
+  const sm = require(APP + '/lib/sitemapcat');
+  const ld = (o) => `<script type="application/ld+json">${JSON.stringify(o)}</script>`;
+  const page = '<html><head>' + ld({ '@type': 'Product', name: 'Other bag', url: 'https://x.example/other', offers: { price: '9.00', availability: 'InStock' } }) +
+    ld({ '@type': 'Product', name: 'Our bag', url: 'https://x.example/bag', offers: [{ price: '29.90', availability: 'https://schema.org/OutOfStock' }, { price: '39.90', availability: 'https://schema.org/InStock' }] }) + '</head><body></body></html>';
+  const pp = sm.productOf(page, 'https://x.example/bag');
+  ok(pp && pp.n === 'Our bag' && pp.p === 39.9 && pp.st === true, 'a shop page: its own product (not a related one shown on it) and the price in stock', JSON.stringify(pp && [pp.n, pp.p, pp.st]));
+
+  section('Κατάλογος με «τρύπα» δεν κρατιέται, χάρτης μισός δεν σβήνει προϊόντα');
+  process.env.SFK_ALLOW_PRIVATE = '1';
+  const woo = http.createServer((req, res) => {
+    const pg = Number(new URL(req.url, 'http://x').searchParams.get('page') || 1);
+    if (pg === 2) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html>maintenance</html>'); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'X-WP-Total': '250', 'X-WP-TotalPages': '3' });
+    res.end(JSON.stringify(Array.from({ length: pg === 3 ? 50 : 100 }, (_, i) => ({ id: pg * 1000 + i, name: 'P' + i, prices: { price: '1000', regular_price: '1000', currency_minor_unit: 2 }, is_in_stock: true, permalink: 'https://w.example/p' + i }))));
+  });
+  await new Promise((r) => woo.listen(0, '127.0.0.1', r));
+  const wurl = 'http://127.0.0.1:' + woo.address().port;
+  const before = { kind: 'woo', url: wurl, at: '2026-01-01', products: [{ id: 1, n: 'Old', p: 5 }] };
+  fs.writeFileSync(path.join(process.env.SFK_DATA, 'comp-cw.json'), JSON.stringify(before));
+  store.forget('comp-cw');
+  let wErr = '';
+  try { await compcat.syncOne({ id: 'cw', name: 'w', url: wurl, kind: 'woo' }, { prog: { addTotal() {}, add() {}, note() {} }, full: true }); } catch (e) { wErr = e.message; }
+  store.forget('comp-cw');
+  ok(/σελίδα 2|JSON/.test(wErr) && compcat.load('cw').products.length === 1 && compcat.load('cw').products[0].n === 'Old', 'WooCommerce: one page missing → the reading fails and the previous whole catalog stays', wErr);
+  woo.close();
+  const maps = http.createServer((req, res) => {
+    const base = 'http://127.0.0.1:' + maps.address().port;
+    if (req.url === '/sitemap.xml') { res.writeHead(200, { 'Content-Type': 'application/xml' }); return res.end(`<?xml version="1.0"?><sitemapindex><sitemap><loc>${base}/product-sitemap1.xml</loc></sitemap><sitemap><loc>${base}/product-sitemap2.xml</loc></sitemap></sitemapindex>`); }
+    if (req.url === '/product-sitemap1.xml') { res.writeHead(200, { 'Content-Type': 'application/xml' }); return res.end(`<?xml version="1.0"?><urlset><url><loc>${base}/p/one</loc></url></urlset>`); }
+    if (req.url === '/product-sitemap2.xml') { res.writeHead(500); return res.end('error'); }
+    res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html>' + ld({ '@type': 'Product', name: 'One', offers: { price: '10', availability: 'InStock' } }) + '</html>');
+  });
+  await new Promise((r) => maps.listen(0, '127.0.0.1', r));
+  const mb = 'http://127.0.0.1:' + maps.address().port;
+  const prevMap = { pages: { [mb + '/p/two']: { lm: '', at: new Date().toISOString(), ok: true } }, products: [{ u: mb + '/p/two', n: 'Two', p: 20 }] };
+  const stM = await sm.sync({ url: mb, sitemaps: [mb + '/sitemap.xml'] }, prevMap, { budget: 5, gap: 0 });
+  ok(stM.mapWhole === false && stM.products.some((x) => x.u === mb + '/p/two'), 'a site map read only in part: the products of the part not read are kept (not taken for deleted)', JSON.stringify([stM.mapWhole, stM.products.map((x) => x.n)]));
+  maps.close();
+  delete process.env.SFK_ALLOW_PRIVATE;
+
   console.log(`\n${passes} ok, ${fails} failed`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   process.exit(fails ? 1 : 0);

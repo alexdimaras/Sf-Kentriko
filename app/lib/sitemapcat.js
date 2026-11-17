@@ -83,10 +83,12 @@ async function eachUrl(url, onUrl, opts, depth) {
     rest = last ? '' : rest.slice(end).slice(-200000); // an entry is never longer than this
   };
   try {
-    for await (const chunk of res.body) { quiet(); eat(dec.decode(chunk, { stream: true }), false); if (o.signal && o.signal.aborted) return; }
+    for await (const chunk of res.body) { quiet(); eat(dec.decode(chunk, { stream: true }), false); if (o.signal && o.signal.aborted) { if (o.cut) o.cut(); return; } }
   } catch (e) {
-    if (o.signal && o.signal.aborted) return;
-    // cut by the time limit: what was read is used (the rest of the map is read at the next run)
+    if (o.signal && o.signal.aborted) { if (o.cut) o.cut(); return; }
+    // cut by the time limit: what was read is used (the rest of the map is read at the next run) — but the map is
+    // not whole: nothing may be taken for «deleted» because it was not seen
+    if (o.cut) o.cut();
   } finally { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); }
   eat(dec.decode(), true);
   if (isIndex && (depth || 0) < 2) {
@@ -96,7 +98,12 @@ async function eachUrl(url, onUrl, opts, depth) {
     const pick = prod.length ? prod : children.filter((c) => !skip.test(c.split('?').pop().split('/').pop()) || /product/i.test(c));
     // one language is enough (the Greek pages when there are several)
     const el = pick.filter((c) => /[_/-]el[_/.-]|[?&]lang=el/i.test(c));
-    for (const c of (el.length ? el : pick).slice(0, 40)) await eachUrl(c, onUrl, o, (depth || 0) + 1);
+    // up to 200 maps (a big shop splits its products into many); one that fails makes the reading partial, not wrong
+    const list = (el.length ? el : pick);
+    if (list.length > 200 && o.cut) o.cut();
+    for (const c of list.slice(0, 200)) {
+      try { await eachUrl(c, onUrl, o, (depth || 0) + 1); } catch (e) { if (o.cut) o.cut(); }
+    }
   }
 }
 
@@ -149,10 +156,15 @@ function productOf(html, url) {
   const list = ldProducts(html);
   // the page's own product: the one whose address matches, else the first with an offer
   const offersOf = (x) => [].concat(x.offers || []).flatMap((o) => (o && o.offers ? [].concat(o.offers) : [o])).filter(Boolean);
-  const p = list.find((x) => offersOf(x).length) || list[0];
+  const same = (u) => { if (!u || typeof u !== 'string') return false; try { const a = new URL(u, url), b = new URL(url); return a.host === b.host && a.pathname.replace(/\/$/, '') === b.pathname.replace(/\/$/, ''); } catch (_) { return false; } };
+  const p = list.find((x) => offersOf(x).length && (same(x.url) || same(x['@id'] || '') || offersOf(x).some((o) => same(o.url || '')))) || list.find((x) => offersOf(x).length) || list[0];
   let price = 0, cur = 'EUR', stock = true, high = 0;
   if (p) {
-    const offs = offersOf(p);
+    const all = offersOf(p);
+    const out = (o) => /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || 'InStock'));
+    // the price a buyer can pay today: only the offers in stock (none in stock → sold out, with its lowest price)
+    const inStock = all.filter((o) => !out(o));
+    const offs = inStock.length ? inStock : all;
     const prices = [];
     for (const o of offs) {
       const v = U.parseNumber(o.price != null ? o.price : o.lowPrice != null ? o.lowPrice : (o.priceSpecification && [].concat(o.priceSpecification)[0] && [].concat(o.priceSpecification)[0].price));
@@ -161,7 +173,7 @@ function productOf(html, url) {
       if (o.priceCurrency) cur = String(o.priceCurrency).toUpperCase();
     }
     if (prices.length) { price = Math.min(...prices); high = Math.max(high, Math.max(...prices)); }
-    if (offs.length) stock = offs.some((o) => !/OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || 'InStock')));
+    if (all.length) stock = inStock.length > 0;
   }
   // shops whose block has no price: the meta tags Facebook reads
   if (!(price > 0)) {
@@ -198,22 +210,24 @@ async function sync(c, prev, opts) {
   // 1. the site map: which addresses look like our products, and when each last changed
   o.onProgress && o.onProgress(0, 0, 'χάρτης του site…');
   const wanted = new Map(); // url → lastmod
-  let seen = 0;
+  let seen = 0, whole = true; // whole: every map read to its end (only then is «not in the map» = deleted)
+  const cut = () => { whole = false; };
   for (const m of maps) {
-    if (stopped()) break;
+    if (stopped()) { whole = false; break; }
     try {
       await eachUrl(m, (loc, lm) => {
         seen++;
         if (otherLanguage(loc) || wanted.has(loc)) return;
         if (!o.want || o.want(slugTokens(loc))) wanted.set(loc, lm || '');
-      }, { signal: o.signal });
-    } catch (e) { if (stopped()) break; if (!wanted.size && m === maps[maps.length - 1]) throw e; }
+      }, { signal: o.signal, cut });
+    } catch (e) { whole = false; if (stopped()) break; if (!wanted.size && m === maps[maps.length - 1]) throw e; }
   }
   const pages = Object.assign({}, (prev && prev.pages) || {}); // url → { lm, at, ok }
   const byUrl = new Map(((prev && prev.products) || []).map((p) => [p.u, p]));
   if (stopped() && !wanted.size) return state();
   // pages that left the site map (deleted products) leave the catalog
-  if (wanted.size) for (const u of Object.keys(pages)) if (!wanted.has(u)) { delete pages[u]; byUrl.delete(u); }
+  // (only after a whole reading of the map: a map cut short says nothing about what it did not reach)
+  if (wanted.size && whole) for (const u of Object.keys(pages)) if (!wanted.has(u)) { delete pages[u]; byUrl.delete(u); }
   // 2. what to open in this run: never opened → changed by the shop → the oldest (a price may change without the date)
   const fresh = [], changed = [], old = [];
   for (const [u, lm] of wanted) {
@@ -229,7 +243,7 @@ async function sync(c, prev, opts) {
   let opened = 0, found = 0, errors = 0, lastSave = Date.now();
   function state() {
     const products = [...byUrl.values()];
-    return { products, pages, sitemaps: maps, mapUrls: seen, wanted: wanted.size, left: Math.max(0, queue.length - opened), opened, found, count: products.length };
+    return { products, pages, sitemaps: maps, mapUrls: seen, wanted: wanted.size, left: Math.max(0, queue.length - opened), opened, found, count: products.length, mapWhole: whole };
   }
   for (const u of todo) {
     if (stopped()) break;
