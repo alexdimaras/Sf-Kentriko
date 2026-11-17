@@ -55,11 +55,13 @@ function web() {
   const srv = http.createServer((req, res) => {
     const port = srv.address().port;
     if (req.url.startsWith('/ddg')) { state.searches++; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(`<html><body><div class="result"><a class="result__a" href="http://127.0.0.2:${port}/shop1/glove">a</a></div><div class="result"><a class="result__a" href="http://localhost:${port}/shop2/glove">b</a></div></body></html>`); }
+    if (req.url === '/ollama/api/tags') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] })); }
+    if (req.url === '/ollama/api/generate') { let b = ''; req.on('data', (c) => { b += c; }); return req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ response: 'Απάντηση: ' + JSON.parse(b).model })); }); }
     if (req.url.startsWith('/bing')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body></body></html>'); }
     if (req.url.startsWith('/shop1/') || req.url.startsWith('/shop2/')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(page(req.url.startsWith('/shop1/') ? 1 : 2).replace(/PORT/g, port)); }
     res.writeHead(404); res.end();
   });
-  return new Promise((r) => srv.listen(0, '0.0.0.0', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
+  return new Promise((r) => srv.listen(0, '0.0.0.0', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_OLLAMA_URL = b + '/ollama'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
 }
 
 (async () => {
@@ -151,6 +153,12 @@ function web() {
     const gl = (await get('/api/market?site=sf&q=GLOVE')).rows[0];
     const wo = gl && gl.competitors.filter((c) => c.web);
     ok(gl && wo.length === 2 && wo.every((c) => c.match === 'exact' && c.price === 27.9) && gl.stats.count >= 1, 'a product no competitor sells gets its prices from the shops of the internet (2 shops, the same product) → it has a market price (a shop with an English-only page counts as foreign)', JSON.stringify(gl && [gl.stats.count, wo.map((c) => c.shop)]));
+
+    section('Το AI (Ollama) του υπολογιστή, για το πρόγραμμα στο cloud');
+    const ai = await until(async () => { const r = await fetch(base + '/api/ai/status', { headers: H }); const j = await r.json(); return j && j.models && j.models.length ? j : null; }, 30000);
+    ok(ai && ai.models.includes('qwen2.5:7b'), '«Δοκιμή» στις Ρυθμίσεις → AI βρίσκει το Ollama του υπολογιστή (όχι του cloud)', JSON.stringify(ai));
+    const aij = (await get('/api/jobs')).find((x) => x.distributed && /AI/.test(x.label || ''));
+    ok(!aij || aij.worker === os.hostname(), 'the question went to the computer');
 
     section('Υπολογιστής που σβήνει στη μέση');
     // the next day's research (a new day: the note of the day is reset)

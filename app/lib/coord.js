@@ -93,16 +93,20 @@ function fits(w, j) {
  * A worker asks for work. → up to `max` jobs, now its own until their lease ends. The best job first: the highest
  * priority, what a person asked for before what the program queued, the oldest.
  */
-async function claim(workerId, max) {
+// quick work (a question to the AI of a computer): a lane of its own on each computer, never behind the long jobs
+const QUICK = new Set(['ai.call']);
+async function claim(workerId, max, types) {
   const w = await backend.worker(workerId);
   if (!w || w.revoked) return [];
   await touchWorker(w, {});
-  const room = Math.max(0, Math.min(Number(max) || 1, (Number(w.caps.slots) || 1) - (await backend.byWorker(w.id)).length));
+  const only = Array.isArray(types) && types.length ? new Set(types.map(String)) : null;
+  const quick = only && [...only].every((t) => QUICK.has(t));
+  const room = quick ? 1 : Math.max(0, Math.min(Number(max) || 1, (Number(w.caps.slots) || 1) - (await backend.byWorker(w.id)).filter((x) => !QUICK.has(x.type)).length));
   if (!room) return [];
   const out = [];
   // the backend hands a job to one worker only, even when two ask at the same moment (PostgreSQL: SKIP LOCKED)
   for (let i = 0; i < room; i++) {
-    const j = await backend.takeNext((x) => fits(w, x) && (!x.notBefore || x.notBefore <= now()), (x) => {
+    const j = await backend.takeNext((x) => fits(w, x) && (!only || only.has(x.type)) && (!x.notBefore || x.notBefore <= now()), (x) => {
       x.status = 'assigned'; x.workerId = w.id; x.workerName = w.name; x.attempts++; x.leaseUntil = now() + LEASE_MS;
       x.startedAt = iso(); x.progress = { done: 0, total: 0, msg: 'Ξεκινάει στο ' + w.name };
     });

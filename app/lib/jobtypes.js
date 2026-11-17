@@ -18,6 +18,7 @@ const localIO = {
 
 function register() {
   registerCodes();
+  registerAI();
   // ---- the price research for ONE competitor: read its catalog (or part of its site map), compare with ours ----
   coord.register('market.shop', {
     label: 'Έρευνα τιμών σε ένα κατάστημα',
@@ -72,6 +73,28 @@ function register() {
       const m = await require('./research').mergeShop(comp.id, String(r.catAt || ''), offers);
       return { offers: Object.keys(offers).length, products: m.touched, changes: m.changes, read: r.read || null };
     },
+  });
+}
+
+function registerAI() {
+  // ---- the free AI (Ollama) of a shop's computer, for the program in the cloud: one question, one answer ----
+  coord.register('ai.call', {
+    label: 'Τοπικό AI (Ollama)',
+    needs: { ramMB: 4000 },
+    cloudOk: false,
+    maxAttempts: 1,
+    async run(payload, api) {
+      const path = payload.path === '/api/tags' ? '/api/tags' : payload.path === '/api/generate' ? '/api/generate' : null;
+      if (!path) throw new Error('Άγνωστη ερώτηση προς το AI.');
+      api.progress(0, 1, 'Το AI του υπολογιστή γράφει…');
+      const base = String(process.env.SFK_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+      const body = path === '/api/generate' ? Object.assign({}, payload.body, { stream: false }) : null;
+      const r = await fetch(base + path, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(240000) });
+      if (!r.ok) throw new Error('Το Ollama του υπολογιστή απάντησε με σφάλμα ' + r.status + '.');
+      const j = await r.json();
+      return path === '/api/tags' ? { models: (j.models || []).map((x) => ({ name: x.name })) } : { response: String(j.response || '') };
+    },
+    async apply(job, result) { const r = result || {}; return r.models ? { models: r.models.slice(0, 50).map((x) => ({ name: String(x.name || '').slice(0, 100) })) } : { response: String(r.response || '').slice(0, 40000) }; },
   });
 }
 

@@ -134,6 +134,12 @@ function shop() {
   ok(kinds.sameStem('ΣΑΚΙΔΙΑ', 'ΣΑΚΙΔΙΟ') && kinds.sameStem('ΖΩΝΕΣ', 'ΖΩΝΗ') && kinds.sameStem('ΣΟΥΓΙΑΔΕΣ', 'ΣΟΥΓΙΑΣ') && !kinds.sameStem('ΣΤΟΛΕΣ', 'ΣΤΟΧΟΣ'), 'plural and singular of a kind are the same word; look-alikes are not');
   ok(drafts.guessType('12ΒΟΛΑ FEDERAL F130 POWER SHOCK C12', '') === 'ΦΥΣΙΓΓΙΑ', 'a new product named «12ΒΟΛΑ FEDERAL…» gets the kind ΦΥΣΙΓΓΙΑ', drafts.guessType('12ΒΟΛΑ FEDERAL F130 POWER SHOCK C12', ''));
   const market = require(APP + '/lib/market');
+  {
+    const r1 = market.score({ name: 'ΦΥΣΙΓΓΙΑ ΜΟΝΟΒΟΛΑ RIO ROYAL STAR 32gr 5τμχ', brand: '', sku: '', price: 20 }, { name: 'RIO Royal Star 32gr Μονόβολα 5τμχ', brand: 'RIO', sku: '', price: 19 });
+    const r2 = market.score({ name: 'ΦΥΣΙΓΓΙΑ ΜΟΝΟΒΟΛΑ RIO ROYAL STAR 32gr 5τμχ', brand: '', sku: '', price: 20 }, { name: 'RIO Royal Star 34gr Μονόβολα 5τμχ', brand: 'RIO', sku: '', price: 19 });
+    const r3 = market.score({ name: 'ΜΠΛΟΥΖΑ ΠΟΛΟ ΥΑΤ QUICK DRY', brand: '', sku: '', price: 20 }, { name: 'Polo Quick Dry Pentagon', brand: 'Pentagon', sku: '', price: 19 });
+    ok(r1.match === 'exact' && r1.ev.some((x) => /μάρκα στον τίτλο μας: RIO/.test(x)) && r2.match !== 'exact' && r3.match !== 'exact', 'a product without a brand: their brand counts when our title names it too (RIO … 32gr = exact; 34gr no; a brand not in our title no)', JSON.stringify([r1.match, r2.match, r3.match]));
+  }
   const sc = market.score({ name: '12ΒΟΛΑ FEDERAL F130 POWER SHOCK C12', brand: 'FEDERAL', sku: 'F130 00', price: 12.4 }, { name: 'ΘΗΚΗ FEDERAL F130 POWER SHOCK', brand: 'FEDERAL', sku: '', price: 12 });
   ok(sc.match === 'none', 'in the price research a cartridge is never "the same" as another kind of product with the same words', sc.match);
   const cat = one(267335, 'cats');

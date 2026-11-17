@@ -326,7 +326,8 @@ function titleFix(p, ctx) {
   }
   if (kinds.startsWithoutKind(t)) {
     const sug = ctx.suggestType(Object.assign({}, p, { name: t }));
-    if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: 'medium', how: sug.how }); }
+    // a trade name of one kind only (12ΒΟΛΑ → ΦΥΣΙΓΓΙΑ) or the kind already in the title: a rule, sure
+    if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: sug.how === 'compound' || sug.how === 'title' ? 'high' : 'medium', how: sug.how }); }
   }
   return { fix: U.collapse(t), steps };
 }

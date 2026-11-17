@@ -361,10 +361,11 @@ function autoTodo() {
     return b.status === 'nothing' && (!b.searchedAt || new Date(b.searchedAt).getTime() < old);
   });
 }
+// (once a month: suppliers seldom change; a search for one brand can be run at any time from Αντιπρόσωποι)
 function weeklyDue() {
   const d = data();
   if (d.blocked) { if (Date.now() - new Date(d.blocked.at).getTime() <= 6 * 36e5) return false; }
-  else if (d.lastRun && Date.now() - new Date(d.lastRun).getTime() <= 7 * 864e5) return false;
+  else if (d.lastRun && Date.now() - new Date(d.lastRun).getTime() <= 30 * 864e5) return false;
   return autoTodo().length > 0;
 }
 

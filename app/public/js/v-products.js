@@ -115,6 +115,28 @@
     const body = h('div');
     const imgs = p.images || [];
     body.appendChild(dlgHead(p.name, null, drawer));
+    // what this product still needs: from the code to the photos, with the ready changes approvable right here
+    if (d.todo) {
+      const t = d.todo;
+      const STEP = ['', 'Κωδικός', 'Στοιχεία', 'Περιγραφή και φωτογραφίες', 'Τιμή', 'Έτοιμο'];
+      const box = h('div', { class: 'panel todo-box' + (t.stage >= 5 && !t.fixes.length ? ' done' : '') },
+        h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } },
+          h('h3', { style: { margin: 0 } }, t.stage >= 5 && !t.fixes.length ? '✓ Το προϊόν είναι έτοιμο' : 'Τι θέλει αυτό το προϊόν'),
+          h('span', { class: 'pill' }, 'Βήμα ' + Math.min(5, t.stage || 5) + ': ' + STEP[Math.min(5, t.stage || 5)])));
+      if (t.problems.length) box.appendChild(h('ul', { class: 'todo-list' }, t.problems.map((x) => h('li', { class: x.state === 'approve' ? 'warn' : x.state === 'manual' ? 'crit' : '' }, h('b', null, `${STEP[x.stage] || ''}: `), x.text, x.hint ? h('div', { class: 'faint' }, x.hint) : null))));
+      if (t.fixes.length) {
+        box.appendChild(h('div', { class: 'faint', style: { margin: '8px 0 4px' } }, 'Έτοιμες αλλαγές για έγκριση:'));
+        box.appendChild(h('ul', { class: 'todo-list' }, t.fixes.map((c) => h('li', null,
+          h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+            h('span', null, h('b', null, c.label), c.to ? ' → ' + c.to : '', ' ', h('span', { class: 'pill ' + (c.level === 'high' ? 'ok' : 'warn') }, (c.confidence || '') + '%')),
+            btn('Έγκριση', { cls: 'sm primary', icon: 'check' }, () => POST('/api/fixes/decide', { ids: [c.id], status: 'approved' }).then(() => { toast('Εγκρίθηκε: ' + c.label + '.'); openProduct(site, id); }).catch(fail))),
+          h('div', { class: 'faint' }, c.why)))));
+        box.appendChild(h('div', { class: 'row tight', style: { marginTop: '8px' } },
+          btn('Έγκριση όλων', { cls: 'sm', icon: 'check' }, () => POST('/api/fixes/decide', { ids: t.fixes.map((c) => c.id), status: 'approved' }).then(() => { toast('Εγκρίθηκαν όλες οι αλλαγές του προϊόντος.'); openProduct(site, id); }).catch(fail)),
+          btn('Πριν / Μετά αναλυτικά', { cls: 'sm ghost' }, () => { drawer.close(); go('fixes', { site, q: p.sku || p.name }); })));
+      } else if (t.stage < 5) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0 0' } }, 'Καμία έτοιμη αλλαγή ακόμα: η έρευνα στο internet και στους αντιπροσώπους συνεχίζει μόνη της. «Βρες κωδικό» / «Νέα έρευνα» πιο κάτω για τώρα.'));
+      body.appendChild(box);
+    }
     body.appendChild(h('div', { class: 'p-hero' },
       imgs[0] ? h('img', { class: 'img', src: imgs[0], alt: '', referrerpolicy: 'no-referrer' }) : h('div', { class: 'img thumb none', style: { width: '200px', height: '200px' } }, 'Χωρίς φωτογραφία'),
       h('div', { class: 'stack s' },

@@ -318,7 +318,21 @@ function features(p, extra) {
     group: (() => { const g = typeGroupsOf(toks.slice(0, 1)); return g.size ? [...g][0] : -1; })(),
     groups: typeGroupsOf(toks), colors, used: USED.test(up), flags: flagsOf(up),
     women: WOMEN.test(up), kids: KIDS.test(up),
+    src: p, extra: extra || null, tokSet: new Set(toks.map(ntok).filter(Boolean)),
   };
+}
+/**
+ * Our product has no brand, but their brand is written in our title as well (RIO, XTAR, LAMBRO…): then that IS our
+ * brand — the two titles agree on it — and the matching goes on as for a product with a brand (memoized per brand).
+ */
+function withTheirBrand(f, brand) {
+  if (f.bt.length || !brand || !f.src) return null;
+  const bt = brandTokens(brand);
+  if (!bt.length || bt.join('').length < 3 || !bt.every((t) => f.tokSet.has(t))) return null;
+  f._wb = f._wb || new Map();
+  const k = U.foldKey(brand);
+  if (!f._wb.has(k)) { const g = features(Object.assign({}, f.src, { brand }), f.extra); g.brandFromTitle = brand; f._wb.set(k, g); }
+  return f._wb.get(k);
 }
 /** The same for a competitor product (computed once per catalog). */
 function candFeatures(c) {
@@ -341,6 +355,11 @@ function candFeatures(c) {
  * a believable price. similar = probably, but something is missing → the user decides.
  */
 function compare(f, cand, cf) {
+  // no brand on our side: theirs, if our title says it too
+  if (!f.bt.length && cand && cand.b) {
+    const g = withTheirBrand(f, cand.b);
+    if (g) { const r = compare(g, cand, cf); if (r && r.ev && r.match !== 'none') r.ev = r.ev.concat(['μάρκα στον τίτλο μας: ' + g.brandFromTitle]); return r; }
+  }
   const brandOk = f.bt.length ? (f.bt.some((b) => cf.set.has(b)) || (f.brandKey && (cf.brandKey === f.brandKey || cf.nameKey.includes(' ' + f.brandKey + ' ')))) : false;
   if (f.bt.length && cf.brandKey && !brandOk) return { match: 'none', score: 0 }; // another brand
   // the same EAN is the same product, whatever the titles say
@@ -965,7 +984,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 3; // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
+const MATCH_VERSION = 4; // 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }

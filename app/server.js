@@ -180,7 +180,10 @@ const routes = {
 
   // Sync
   'POST /api/sync': (b, _q, _ctx, o) => {
-    const sites = (b.sites && b.sites.length ? b.sites : ['sf', 'st']).filter((x) => catalog.SITES.includes(x));
+    // the site never read (or read longest ago) first: a restart in the middle never leaves the same one behind twice
+    const sum0 = catalog.summary();
+    const age = (x) => { const t = sum0[x] && sum0[x].syncedAt ? new Date(sum0[x].syncedAt).getTime() : 0; return t; };
+    const sites = (b.sites && b.sites.length ? b.sites : ['sf', 'st']).filter((x) => catalog.SITES.includes(x)).sort((x, y) => age(x) - age(y));
     return jobs.start('sync', b.full ? 'Πλήρης ανάγνωση προϊόντων' : 'Ανάγνωση προϊόντων', async (job) => {
       const out = {};
       await engine.ready();
@@ -223,7 +226,23 @@ const routes = {
 
   // Products
   'GET /api/products': (q) => catalog.productsView(q),
-  'GET /api/product': (q) => catalog.productDetail(q.site === 'st' ? 'st' : 'sf', q.id) || Promise.reject(new Error('Δεν βρέθηκε το προϊόν.')),
+  'GET /api/product': (q) => {
+    const site = q.site === 'st' ? 'st' : 'sf';
+    const d = catalog.productDetail(site, q.id);
+    if (!d) return Promise.reject(new Error('Δεν βρέθηκε το προϊόν.'));
+    // what this product still needs, in one list: the steps of the work flow and the ready changes waiting for a yes
+    try {
+      const id = Number(q.id);
+      const row = require('./lib/flow').compute().rows.get(site + ':' + id);
+      const fx = fixes.compute().items.filter((c) => c.site === site && c.pid === id && c.status === 'pending');
+      d.todo = {
+        stage: row ? row.stage : 5,
+        problems: row ? row.problems.filter((x) => x.state !== 'done').map((x) => ({ stage: x.stage, text: x.text, state: x.state, hint: x.hint || '', field: x.field || '' })) : [],
+        fixes: fx.map((c) => ({ id: c.id, field: c.field, label: c.label, level: c.level, confidence: c.confidence || 0, why: String(c.why || '').slice(0, 300), to: typeof c.to === 'string' ? c.to.slice(0, 200) : c.field === 'images' ? `${(c.to || []).length} φωτογραφίες` : c.field === 'desc' ? 'νέα περιγραφή' : '' })),
+      };
+    } catch (e) { d.todo = null; }
+    return d;
+  },
   'POST /api/link': (b) => { catalog.setManualLink(num(b.sfId), b.stId === null ? null : num(b.stId)); checks.invalidate(); fixes.invalidate(); return { ok: true }; },
   'GET /api/categories': (q) => { const site = q.site === 'st' ? 'st' : 'sf'; const idx = catalog.categoryIndex(site); const lv = catalog.categoryAdLevels(site); return idx.cats.map((c) => ({ id: c.id, name: c.name, parent: c.parent, count: c.count, path: idx.pathOf(c.id).join(' › '), ads: lv.get(c.id) || 'ok', regulated: lv.get(c.id) === 'banned' })).sort((a, b) => a.path.localeCompare(b.path, 'el')); },
   'GET /api/brands': () => catalog.brandsList(),
@@ -773,7 +792,7 @@ async function handleWorker(req, res, url, q, key0) {
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : 256 * 1024) : {};
     if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
-    if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max) });
+    if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) });
     if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log));
     if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
     if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
@@ -802,6 +821,31 @@ async function webCodes(job, opts) {
   }
   return cf.run(job, { max: o.max || 25, items: o.items });
 }
+/**
+ * The free AI (Ollama) in server mode: the cloud has none, so a question goes to a shop's computer that has it
+ * (first in its queue) and the answer comes back here. No computer with Ollama on: said plainly.
+ */
+async function askComputerAI(pathName, body, timeout) {
+  if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');
+  const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('ai.call'));
+  if (!ws.length) {
+    const any = (await coord.workersView()).filter((w) => w.online).length;
+    throw new Error(any
+      ? 'Ο υπολογιστής που βοηθά δεν βλέπει το Ollama. Στο PC: άνοιξε το Ollama (εικονίδιο κάτω δεξιά), περίμενε 1 λεπτό και ξαναδοκίμασε. Χρειάζεται και η νέα έκδοση του φακέλου SF-Kentro-Worker.'
+      : 'Το Ollama είναι στο PC σου, όχι στο cloud: άνοιξε στο PC το SF-Kentro-Worker (Ρυθμίσεις → Υπολογιστές) και το Ollama, και ξαναδοκίμασε.');
+  }
+  const j = await coord.enqueue('ai.call', { path: pathName, body: body || null }, { priority: 50, label: 'Τοπικό AI (Ollama)' });
+  const until = Date.now() + (timeout || 240000) + 60000;
+  for (;;) {
+    const v = await coord.job(j.id);
+    if (v && v.status === 'completed') return v.result || {};
+    if (v && (v.status === 'failed' || v.status === 'cancelled')) throw new Error(v.error || 'Το AI του υπολογιστή δεν απάντησε.');
+    if (Date.now() > until) { await coord.cancel(j.id).catch(() => {}); throw new Error('Το AI του υπολογιστή άργησε πολύ (ίσως είναι απασχολημένοι όλοι οι εργάτες). Δοκίμασε ξανά.'); }
+    await new Promise((x) => setTimeout(x, 1000));
+  }
+}
+if (SERVER) localai.setRemote(askComputerAI);
+
 async function feedWebResearch() {
   if (!coordReady) return;
   const live = await coord.liveOf('codes.web');
@@ -1092,7 +1136,7 @@ function afterStart() {
         if (busy) return;
         // once a week, after the daily research: look for suppliers of brands without one (for approval)
         if (!market.dailyDue()) {
-          if (settings.all().supplierFindAuto !== false && supplierfind.weeklyDue() && catalog.load('sf').products.length) jobs.start('supplierfind', 'Εβδομαδιαία αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { limit: 40, auto: true, yieldTo: 'supplierfind-one' }), { heavy: true, auto: true });
+          if (settings.all().supplierFindAuto !== false && supplierfind.weeklyDue() && catalog.load('sf').products.length) jobs.start('supplierfind', 'Μηνιαία αναζήτηση αντιπροσώπων', (job) => supplierfind.run(job, { limit: 40, auto: true, yieldTo: 'supplierfind-one' }), { heavy: true, auto: true });
           return;
         }
         if (!catalog.load('sf').products.length) return;

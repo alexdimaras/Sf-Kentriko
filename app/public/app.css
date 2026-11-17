@@ -917,3 +917,11 @@ ol.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; color:
 @media (max-width: 900px) { .savepill { top: auto; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); right: 12px; font-size: 12.5px; } .savepill .sp-sub { display: none; } }
 @media (prefers-reduced-motion: reduce) { .savepill.flash, .savepill.wait .sp-dot { animation: none; } }
 @media (max-width: 900px) { #main { padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)) !important; } .savepill { padding: 5px 6px 5px 10px; } }
+
+/* product card: what it still needs */
+.todo-box { margin-bottom: 14px; border-left: 4px solid #c8902e; }
+.todo-box.done { border-left-color: #4f8a5b; }
+.todo-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.todo-list li { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); overflow-wrap: anywhere; }
+.todo-list li.crit { border-left: 3px solid #c0533a; }
+.todo-list li.warn { border-left: 3px solid #c8902e; }

@@ -23,7 +23,7 @@ fs.mkdirSync(process.env.SFK_DATA, { recursive: true });
 const CONF = path.join(HOME, 'worker.json');
 const POLL = Number(process.env.SFK_POLL_MS) || 15000;
 // a shop's own connection: the searches can come a little faster than from the cloud (each engine 2.5–4 s apart)
-process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '900';
+process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '600';
 
 const store = require('./lib/store');
 const coord = require('./lib/coord');
@@ -52,11 +52,22 @@ function caps() {
   return {
     cpus: cpus.length, cpuModel: (cpus[0] && cpus[0].model) || '', ramMB: ram, freeMB: Math.round(os.freemem() / 1048576), version: VERSION, platform: process.platform + '-' + process.arch,
     // the internet search reads web pages: it needs the page reader (in the full program folder)
-    types: ['market.shop'].concat(canRead() ? ['codes.web'] : []),
+    types: ['market.shop'].concat(canRead() ? ['codes.web'] : [], ollama.ok ? ['ai.call'] : []),
+    ollama: ollama.ok ? ollama.models.slice(0, 20) : null,
     // as many jobs side by side as the computer can carry: one per core, ~1 GB each
     slots: slotsOf(),
     battery: onBattery(),
   };
+}
+// the free AI of this computer (Ollama), if it runs here: the cloud may ask it questions
+const ollama = { ok: false, models: [], at: 0 };
+async function probeOllama() {
+  try {
+    const r = await fetch(String(process.env.SFK_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '') + '/api/tags', { signal: AbortSignal.timeout(3000) });
+    const j = r.ok ? await r.json() : null;
+    ollama.ok = !!j; ollama.models = j ? (j.models || []).map((m) => m.name) : [];
+  } catch (_) { ollama.ok = false; ollama.models = []; }
+  ollama.at = Date.now();
 }
 function slotsOf() {
   if (Number(process.env.SFK_SLOTS) > 0) return Math.min(32, Math.floor(Number(process.env.SFK_SLOTS)));
@@ -161,6 +172,7 @@ async function runJob(api, conf, j) {
 
 // ---------- a runner: one job at a time, in its own process (one per core) ----------
 const toParent = (m) => { try { if (process.send) process.send(m); } catch (_) { /* parent gone */ } };
+const LANE = process.env.SFK_RUNNER_LANE || ''; // '' = any work; 'ai.call' = only quick questions to the AI
 async function runnerLoop() {
   const conf = readConf();
   if (!conf || !conf.token) process.exit(2);
@@ -175,7 +187,7 @@ async function runnerLoop() {
   for (;;) {
     try {
       if (!paused && running === 0) {
-        const r = await api.call('POST', '/api/worker/claim', { max: 1 });
+        const r = await api.call('POST', '/api/worker/claim', LANE ? { max: 1, types: [LANE] } : { max: 1 });
         const j = (r.jobs || [])[0];
         if (j) {
           running++;
@@ -183,7 +195,7 @@ async function runnerLoop() {
           await runJob(api, conf, j).finally(() => { running--; toParent({ t: 'job', job: null }); toParent({ t: 'count', k: 'job' }); });
           wait = 300;
         } else wait = POLL;
-      } else wait = POLL;
+      } else wait = LANE ? 1500 : POLL;
     } catch (e) {
       if (e.fatal) { log(e.message); process.exit(3); }
       log('σύνδεση: ' + e.message);
@@ -206,12 +218,12 @@ async function supervise() {
   const counts = []; // [time, kind]
   // the pace of the searches adapts: a little faster while the engines answer, twice slower after a refusal
   const MIN_GAP = Number(process.env.SFK_SEARCH_GAP_MS) || 900, MAX_GAP = 8000;
-  const gapBy = { ddg: 1500, bing: 1500 };
+  const gapBy = { ddg: 1000, bing: 1000 };
   let okSince = Date.now();
   const lastBy = {}, pausedUntil = {};
   let stopping = false, paused = false;
-  const start = (i) => {
-    const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i) }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  const start = (i, lane) => {
+    const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i), SFK_RUNNER_LANE: lane || '' }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const r = { p, rss: 0, job: null };
     runners.set(i, r);
     p.on('message', (m) => {
@@ -235,11 +247,13 @@ async function supervise() {
       runners.delete(i);
       if (stopping) return;
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
-      setTimeout(() => start(i), 5000);
+      setTimeout(() => start(i, lane), 5000);
     });
     if (paused) p.send({ t: 'pause', on: true });
   };
   for (let i = 0; i < K; i++) start(i);
+  // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
+  start(K, 'ai.call');
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(0); });
 
   // the load, every 3 seconds: processor and memory of the whole computer, what each runner does, how fast
@@ -267,6 +281,7 @@ async function supervise() {
   // «I am here, this is what I can do», once a minute; on battery the runners take no new work
   for (;;) {
     try {
+      await probeOllama();
       const c = caps();
       if (c.battery !== paused) { paused = c.battery; for (const r of runners.values()) r.p.send({ t: 'pause', on: paused }); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
       await api.call('POST', '/api/worker/hello', { caps: c });

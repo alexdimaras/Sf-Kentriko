@@ -5,7 +5,11 @@ const U = require('./util');
 
 function cfg() { return settings.all().localAI || {}; }
 
+// The program in the cloud has no Ollama: it asks a shop's computer that has one (server.js sets this)
+let remote = null;
+function setRemote(fn) { remote = fn; }
 async function call(path, body, timeout) {
+  if (remote) return remote(path, body, timeout);
   const c = cfg();
   const base = String(c.url || 'http://127.0.0.1:11434').replace(/\/+$/, '');
   const ctl = new AbortController();
@@ -78,4 +82,4 @@ ${text}`;
   return toHtml(await generate(prompt));
 }
 
-module.exports = { status, generate, describe, translate };
+module.exports = { setRemote, status, generate, describe, translate };
