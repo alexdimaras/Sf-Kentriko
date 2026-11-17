@@ -304,7 +304,7 @@
     const tb = h('tbody');
     for (const c of list) {
       const k = KIND[c.kind || 'auto'] || KIND.auto;
-      tb.appendChild(h('tr', null,
+      tb.appendChild(h('tr', { class: 'comp-row' },
         h('td', { class: 'w-check' }, h('input', { type: 'checkbox', checked: c.enabled !== false, title: 'Ενεργό', onchange: (e) => POST('/api/competitors', Object.assign({}, c, { enabled: e.target.checked })).catch(fail) })),
         h('td', { class: 'title' }, c.name, h('div', { class: 'faint', style: { fontWeight: 400 } }, c.url)),
         h('td', null, h('span', { class: 'badge ' + k[1] }, k[0]), c.status ? h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.status) : null),
@@ -316,6 +316,6 @@
     const auto = list.filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify' || c.kind === 'sitemap')).length;
     main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('div', { class: 'row' }, url, name, btn('Προσθήκη', { cls: 'primary', icon: 'new' }, () => POST('/api/competitors', { url: url.value, name: name.value }).then(() => App.route()).catch(fail)), btn('Έλεγχος όλων', { icon: 'sync' }, () => POST('/api/competitors/detect').then((job) => watchJob(job, { done: () => { toast('Ο έλεγχος ολοκληρώθηκε.'); App.route(); } })).catch(fail))),
       h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${auto} από ${list.length} διαβάζονται αυτόματα. WooCommerce / Shopify: κατεβαίνει όλος ο κατάλογός τους. Τα υπόλοιπα («σταδιακά»): διαβάζονται από τον χάρτη του site τους, λίγες σελίδες κάθε μέρα, μόνο όσες μοιάζουν με δικά σας προϊόντα — η πρώτη φορά θέλει μέρες, μετά ανοίγουν μόνο όσες αλλάζουν. Όσα δεν διαβάζονται καθόλου ανοίγουν για χειροκίνητο έλεγχο.`)));
-    main.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Κατάστημα'), h('th', null, 'Ανάγνωση'), h('th', { class: 'num' }, 'Προϊόντα'), h('th', null, ''))), tb)));
+    main.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl comps' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Κατάστημα'), h('th', null, 'Ανάγνωση'), h('th', { class: 'num' }, 'Προϊόντα'), h('th', null, ''))), tb)));
   }
 })();
