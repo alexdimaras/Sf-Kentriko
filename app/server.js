@@ -237,7 +237,7 @@ const routes = {
   'POST /api/fixes/decide': (b, _, ctx) => fixes.decide(b.ids || [], b.status, ctx.user ? ctx.user.name : '', b.edited),
   'POST /api/fixes/approve-sure': (b, _, ctx) => fixes.approveSure(b.site === 'st' ? 'st' : b.site === 'sf' ? 'sf' : '', b.group || '', ctx.user ? ctx.user.name : ''),
   'POST /api/fixes/export': (b, _, ctx) => { const site = b.site === 'st' ? 'st' : 'sf'; const r = fixes.exportFile(site, ctx.user ? ctx.user.name : ''); return Object.assign({ count: r.count, products: r.products, changes: r.changes, site, gtin: r.gtin }, saveExport(r.name, r.csv)); },
-  'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) }), { heavy: true }),
+  'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => heldWhile(() => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) })), { heavy: true }),
   'POST /api/fixes/page': (b) => fixes.fromPage(b.site === 'st' ? 'st' : 'sf', b.id, b.url),
   'POST /api/fixes/translate': (b) => fixes.translate(b.site === 'st' ? 'st' : 'sf', b.id),
   'GET /api/checks/ignored': (q) => checks.ignoredItems(q.id),
@@ -345,7 +345,7 @@ const routes = {
   // research for every product (or only the given ones): refresh competitor catalogs, compare locally
   'POST /api/market/run': (b) => {
     const targets = (b.targets || []).filter((t) => t && catalog.SITES.includes(t.site));
-    return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload }), { heavy: !targets.length });
+    return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => heldWhile(() => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload })), { heavy: !targets.length });
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
   'GET /api/flow': (q) => require('./lib/flow').view(q),
@@ -728,7 +728,7 @@ const server = http.createServer((req, res) => {
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
   }
   const url = new URL(req.url, 'http://127.0.0.1');
-  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), lag: lagMax() }); }
+  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), lag: lagMax() }); }
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
   if (url.pathname.startsWith('/api/')) { uiSeen = true; return handleApi(req, res, url); }
   if (url.pathname === '/') uiSeen = true;
@@ -786,6 +786,15 @@ let lagAt = Date.now();
 setInterval(() => { const now = Date.now(); lags.push([now, Math.max(0, now - lagAt - 500)]); lagAt = now; while (lags.length && now - lags[0][0] > 60000) lags.shift(); }, 500).unref();
 function lagMax() { let m = 0; for (const [, v] of lags) if (v > m) m = v; return m; }
 
+/**
+ * A long job that changes what the screens show (research, sources): nothing is built again while it runs, and the
+ * fixes are built ONCE at its end — two builds at the same time took the small cloud machine over its 512 MB.
+ */
+async function heldWhile(fn) {
+  engine.hold();
+  try { return await fn(); } finally { engine.release(); }
+}
+
 function afterStart() {
   cloudsave.start();
   jobs.setHeavyLimit(SMALL ? 1 : 2);
@@ -834,7 +843,7 @@ function afterStart() {
         const sealed = pricelist.autoSources().some((x) => x.catalogMode === 'b2b' && String(x.b2bPass || '').startsWith('vault:'));
         if (sealed && !security.status().vaultOpen && Date.now() - STARTED_AT < 3 * 36e5) return;
         console.log('daily market research');
-        jobs.start('market', 'Ημερήσια ενημέρωση (αντιπρόσωποι και τιμές αγοράς)', async (job) => {
+        jobs.start('market', 'Ημερήσια ενημέρωση (αντιπρόσωποι και τιμές αγοράς)', (job) => heldWhile(async () => {
           // 1. suppliers with a feed / catalog / B2B: fresh prices and costs
           for (const s of pricelist.autoSources()) {
             if (job.cancelled()) return null;
@@ -845,7 +854,7 @@ function afterStart() {
           // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
           if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
           return res;
-        }, { heavy: true, auto: true });
+        }), { heavy: true, auto: true });
       } catch (e) {
         // the same problem is written once an hour, not every minute
         const msg = e && e.message ? e.message : String(e);

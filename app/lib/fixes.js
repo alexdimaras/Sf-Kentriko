@@ -875,7 +875,8 @@ async function findSources(job, opts) {
   ec.at = U.nowIso();
   store.write(CACHE, ec);
   invalidate();
-  await rebuild();
+  // on the server the engine builds it once, when the job ends (a build here as well = two at once on a small machine)
+  if (!lazy) await rebuild();
   // decisions about changes that no longer exist (fixed on the site, product gone) are forgotten after 2 weeks
   const alive = new Set(compute().items.map((c) => c.id));
   store.update(KEY, {}, (d) => { for (const [id, x] of Object.entries(d)) if (!alive.has(id) && now - new Date(x.at).getTime() > 14 * 864e5) delete d[id]; return d; });
