@@ -18,7 +18,7 @@ const SEED = [
   'kopelakis.gr', 'no80511.gr', 'hellenic-arms.gr', 'sergeant.gr', 'hardgearhellas.gr', 'armyland.gr', 'armyaction.gr', 'polimprizo.gr', 'ergo-rocket.gr', 'espithas.gr',
   'diamanco.gr', 'gkioulekas.com.gr', 'airguncenter.gr', 'airgunshop.gr', 'kkeses.com', 'vasadis.shop', 'all4hobby.gr',
 ];
-const SEED_VERSION = 2;
+const SEED_VERSION = 3; // 3: shops that could not be read are checked once more (they may be readable through their site map)
 
 // ---------- Competitors ----------
 function competitors() {
@@ -27,6 +27,8 @@ function competitors() {
   if (!c || (meta.seed || 0) < SEED_VERSION) {
     c = c || [];
     const have = new Set(c.map((x) => U.hostOf(x.url).replace(/^www\./, '')));
+    // shops marked «only by hand» before the site-map reader existed are looked at again at the next research
+    if ((meta.seed || 0) < 3) for (const x of c) if (x.kind === 'manual' && !/Cloudflare/.test(x.status || '')) { x.kind = 'auto'; x.status = 'Θα ελεγχθεί ξανά στην επόμενη έρευνα'; }
     for (const d of SEED) if (!have.has(d)) c.push({ id: U.uid('c'), name: d.replace(/\.(gr|com|shop)$/, '').replace(/\.com$/, ''), url: 'https://' + d, kind: 'auto', enabled: true, searchUrl: '', status: '', checkedAt: null });
     store.write('competitors', c);
     store.write('competitors-meta', { seed: SEED_VERSION });
@@ -64,6 +66,11 @@ async function detect(c) {
     const r = await http.getJson(`${c.url}/products.json?limit=1`, { retries: 0, timeout: 15000 });
     if (r.json && Array.isArray(r.json.products)) return { kind: 'shopify', status: 'Αυτόματα (Shopify)' };
   } catch (_) { /* not shopify */ }
+  // neither: most shops still publish a site map and the standard product data on each page (see lib/sitemapcat.js)
+  try {
+    const r = await require('./sitemapcat').probe(c, {});
+    if (r.ok) return { kind: 'sitemap', sitemaps: r.sitemaps, status: 'Αυτόματα, σταδιακά (χάρτης του site): διαβάζονται οι σελίδες που μοιάζουν με δικά μας προϊόντα' };
+  } catch (e) { if (/Cloudflare/.test(e.message)) return { kind: 'manual', status: 'Μπλοκάρει την αυτόματη ανάγνωση (Cloudflare) — μόνο χειροκίνητα' }; }
   return { kind: 'manual', status: 'Δεν έχει δημόσιο κατάλογο — μόνο χειροκίνητα (άνοιγμα αναζήτησης)' };
 }
 async function detectAll(job, only) {
@@ -479,7 +486,7 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   }
   if (!best) return null;
   const c = best.c;
-  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: (ix.cat && ix.cat.at) || U.nowIso() };
+  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso() };
 }
 
 // ---------- Stats & decision ----------
@@ -679,7 +686,34 @@ function targetsAll() {
   return t;
 }
 
-function readable() { return competitors().filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify')); }
+function readable() { return competitors().filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify' || c.kind === 'sitemap')); }
+
+/**
+ * Which pages of a shop's site map are worth opening: those whose address names one of OUR products — a brand of
+ * ours together with a model word of a product of that brand, or one of our codes. Returns want(tokens of an address).
+ */
+async function wantedPages(list, byId) {
+  const pace = require('./bg').pacer();
+  const byBrand = new Map(), codes = new Set();
+  for (const t of list) {
+    if (pace.due()) await pace.rest();
+    const p = byId[t.site] && byId[t.site].get(Number(t.id));
+    if (!p) continue;
+    const f = features(p);
+    const keys = f.alpha.filter((k) => k.length >= 3 && !WEAK.has(k) && !MODIFIERS.has(k));
+    for (const b of f.bt) { if (b.length < 3) continue; let set = byBrand.get(b); if (!set) byBrand.set(b, (set = new Set())); for (const k of keys) set.add(k); }
+    for (const c of f.codes) codes.add(c);
+    if (f.code && f.code.base.length >= 5) codes.add(f.code.base);
+  }
+  return (tokens) => {
+    for (const t of tokens) {
+      if (codes.has(t)) return true;
+      const ks = byBrand.get(t);
+      if (ks) for (const k of tokens) if (ks.has(k)) return true;
+    }
+    return false;
+  };
+}
 
 /**
  * Full research: refresh the competitor catalogs, then compare every product (or only `targets`).
@@ -700,7 +734,13 @@ async function run(targets, job, opts) {
   let dl = { done: [], errors: [] };
   if (!opts.skipDownload) {
     job && job.log(`Ενημέρωση καταλόγων ${comps.length} ανταγωνιστών…`);
-    dl = await compcat.syncAll(comps, job, catalog.makeProgress(job));
+    // shops read through their site map open only the pages that look like our products, a limited number per run
+    let extra = null;
+    if (comps.some((c) => c.kind === 'sitemap')) {
+      const tl = targets && targets.length ? targets : targetsAll();
+      extra = { want: await wantedPages(tl, { sf: catalog.byId('sf'), st: catalog.byId('st') }), budget: Math.max(20, Number(settings.all().sitemapPages) || 200) };
+    }
+    dl = await compcat.syncAll(comps, job, catalog.makeProgress(job), extra);
     if (job && job.cancelled()) { const m = store.read('market-meta', {}); m.pausedUntil = new Date(Date.now() + 2 * 36e5).toISOString(); store.write('market-meta', m); return { stopped: true, done: 0, withData: 0, similar: 0, changes: 0, errors: dl.errors }; }
   }
   const withCatalog = comps.filter((c) => (compcat.load(c.id).products || []).length);
@@ -1054,5 +1094,6 @@ function setCost(site, id, cost, source, rrp) {
 
 module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
+  wantedPages,
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

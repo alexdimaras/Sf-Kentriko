@@ -86,6 +86,69 @@ function shop(n, tag) {
   ok(err && err.cancelled && Date.now() - t1 < 1000, 'a request to a shop that does not answer is cut at once (not after its 20 s limit and 2 more tries)', `${Date.now() - t1} ms`);
   hang.close(); if (hang.closeAllConnections) hang.closeAllConnections();
 
+  section('Ανταγωνιστές χωρίς WooCommerce: ανάγνωση από τον χάρτη του site, σταδιακά');
+  {
+    // a little shop like the real ones (OpenCart / PrestaShop): a site map with dates, product pages with the standard block
+    const sm = require(APP + '/lib/sitemapcat');
+    const shopState = { hits: [], lastmod: {}, price: {} };
+    const names = ['fakos-nitecore-mh40-pro', 'sakidio-mil-tec-assault-20l-olive', 'pantelonia-pentagon-ranger-k05007', 'zoni-condor-rigger', 'machairi-morakniv-eldris', 'thiki-5-11-flex-56649', 'skini-campus-rio', 'gantia-mechanix-m-pact'];
+    const page = (slug) => `<!doctype html><html><head><title>${slug}</title><script type="application/ld+json">{"@type":"Organization","name":"Shop"}</script>
+      <script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: slug.replace(/-/g, ' ').toUpperCase(), sku: 'S-' + slug.length, mpn: 'M' + slug.length, gtin13: '4046872358951', brand: { '@type': 'Brand', name: slug.split('-')[1] }, image: ['https://shop.example/' + slug + '.webp'], offers: { '@type': 'Offer', priceCurrency: 'EUR', price: String(shopState.price[slug] || 40), availability: slug === 'skini-campus-rio' ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock' } })}</script></head><body>${'x'.repeat(2000)}</body></html>`;
+    const srv = http.createServer((req, res) => {
+      const u = req.url;
+      shopState.hits.push(u);
+      const host = 'http://127.0.0.1:' + srv.address().port;
+      if (u === '/robots.txt') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('User-agent: *\nSitemap: ' + host + '/sitemap.xml\n'); }
+      if (u === '/sitemap.xml') { res.writeHead(200, { 'Content-Type': 'application/xml' }); return res.end(`<?xml version="1.0"?><sitemapindex><sitemap><loc>${host}/sitemap/categories.xml</loc></sitemap><sitemap><loc>${host}/sitemap/products.xml</loc></sitemap></sitemapindex>`); }
+      if (u === '/sitemap/products.xml') {
+        res.writeHead(200, { 'Content-Type': 'application/xml' });
+        return res.end('<?xml version="1.0"?><urlset>' + names.map((n) => `<url><loc>${host}/el/eidi/${n}</loc><lastmod>${shopState.lastmod[n] || '2026-11-01T10:00:00Z'}</lastmod></url><url><loc>${host}/en/gear/${n}</loc><lastmod>2026-11-01T10:00:00Z</lastmod></url>`).join('') + `<url><loc>${host}/el/eidi/arthro-gia-to-camping</loc><lastmod>2026-11-01T10:00:00Z</lastmod></url></urlset>`);
+      }
+      const slug = u.split('/').pop();
+      if (slug === 'arthro-gia-to-camping') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body>Άρθρο</body></html>'); }
+      if (!names.includes(slug)) { res.writeHead(404); return res.end('no'); }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(page(slug));
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const c = { id: 'smx', name: 'shop', url: 'http://127.0.0.1:' + srv.address().port, kind: 'sitemap' };
+    const pagesHit = () => shopState.hits.filter((h) => h.startsWith('/el/') || h.startsWith('/en/')).length;
+    const pr = await sm.probe(c, {});
+    ok(pr.ok && pr.sitemaps.length === 1 && pr.sample && pr.sample.p === 40, 'a shop without a product list is recognised by its site map and the standard product block of its pages', JSON.stringify(pr).slice(0, 160));
+    shopState.hits = [];
+    // only pages that look like our products: everything but the tent and the belt
+    const want = (t) => !(t.has('SKINI') || t.has('ZONI') || t.has('ARTHRO'));
+    let st = await sm.sync(c, null, { want, budget: 3, gap: 0 });
+    ok(st.opened === 3 && st.products.length === 3 && st.left === 3 && st.wanted === 6, 'a run opens only as many pages as it is allowed (3 of the 6 that look like our products), and says how many are left', JSON.stringify([st.opened, st.products.length, st.left, st.wanted]));
+    ok(!shopState.hits.some((h) => h.startsWith('/en/')) && !shopState.hits.some((h) => /skini|zoni|arthro/.test(h)), 'pages in another language and pages that do not look like our products are never opened');
+    const p0 = st.products[0];
+    ok(p0.n && p0.s && p0.m && p0.g === '4046872358951' && p0.b && p0.p === 40 && p0.st === true && /\.webp$/.test(p0.i) && p0.t, 'each product comes with name, code, maker code, EAN, brand, price, stock and photo', JSON.stringify(p0).slice(0, 200));
+    // the next run goes on with the rest and opens nothing twice
+    let before = pagesHit();
+    st = await sm.sync(c, st, { want, budget: 10, gap: 0 });
+    ok(st.products.length === 6 && st.left === 0 && pagesHit() - before === 3, 'the next run goes on with the pages that were left; nothing is opened twice', JSON.stringify([st.products.length, st.left, pagesHit() - before]));
+    // nothing changed in the shop: nothing is opened
+    before = pagesHit();
+    st = await sm.sync(c, st, { want, budget: 10, gap: 0 });
+    ok(pagesHit() === before && st.products.length === 6, 'when the shop has changed nothing (dates in its site map), no page is opened again');
+    // the shop changes one price: only that page is opened
+    shopState.lastmod['machairi-morakniv-eldris'] = '2026-11-16T09:00:00Z'; shopState.price['machairi-morakniv-eldris'] = 33;
+    before = pagesHit();
+    st = await sm.sync(c, st, { want, budget: 10, gap: 0 });
+    ok(pagesHit() - before === 1 && st.products.find((x) => /ELDRIS/.test(x.n)).p === 33, 'a page the shop changed is opened again, and only that one: the new price is read', String(pagesHit() - before));
+    // stopped in the middle: what was read stays
+    let saved = null, stop = false;
+    const first = await sm.sync(c, null, { want, budget: 10, gap: 0, cancelled: () => stop, onProgress: (d) => { if (d >= 2) stop = true; }, save: async (x) => { saved = x; } });
+    ok(first.opened >= 2 && first.opened < 6 && first.products.length === first.opened, 'stopped in the middle: the pages read so far are kept (the run can go on later)', JSON.stringify([first.opened, first.products.length]));
+    // a product taken off the shop's site map leaves the catalog
+    names.splice(names.indexOf('gantia-mechanix-m-pact'), 1);
+    st = await sm.sync(c, st, { want, budget: 10, gap: 0 });
+    ok(!st.products.some((x) => /MECHANIX/.test(x.n)) && st.products.length === 5, 'a product the shop removed leaves the catalog');
+    ok(sm.productOf('<html><meta property="og:title" content="Φακός X"><meta property="product:price:amount" content="19.90"><meta property="product:availability" content="out of stock"></html>', 'u').st === false && sm.productOf('<html><body>article</body></html>', 'u') === null, 'a page with the price only in its meta tags is read too; a page without a product gives nothing');
+    void saved;
+    srv.close(); if (srv.closeAllConnections) srv.closeAllConnections();
+  }
+
   section('Ανάγνωση των δύο sites: το καθένα ξεχωριστά');
   const sf = await shop(250, 'sf'), st = await shop(180, 'st');
   fs.writeFileSync(path.join(process.env.SFK_DATA, 'settings.json'), JSON.stringify({ firstRunDone: true, sites: { sf: { name: 'SpecialForces', url: sf.url }, st: { name: 'Στρατιωτικά Είδη', url: st.url } } }));

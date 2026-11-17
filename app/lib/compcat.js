@@ -143,12 +143,36 @@ async function syncShopify(c, prev, opts) {
   return { items, mode: 'full', full: true, started };
 }
 
+/**
+ * A shop without a public product list (PrestaShop, OpenCart, Joomla…): read little by little through its site map
+ * (lib/sitemapcat.js). What is read is written every few pages, so nothing is lost when the run is stopped.
+ */
+async function syncSitemap(c, prev, o) {
+  const sm = require('./sitemapcat');
+  const t0 = Date.now();
+  const keep = (st, done) => {
+    const items = st.products.filter((p) => p.n && p.p > 0 && (!p.c || p.c === 'EUR'));
+    store.write(file(c.id), { kind: 'sitemap', url: c.url, at: U.nowIso(), syncStartedAt: new Date(t0).toISOString(), mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), count: items.length, products: items, pages: st.pages, sitemaps: st.sitemaps, wanted: st.wanted, mapUrls: st.mapUrls, left: st.left, opened: st.opened, complete: !!done && st.left === 0 });
+    return items.length;
+  };
+  let total = 0;
+  const st = await sm.sync(c, prev.kind === 'sitemap' ? prev : null, {
+    want: o.want, budget: o.budget, gap: Math.max(1200, o.gap), signal: o.signal, cancelled: o.cancelled, headers: o.headers,
+    onProgress: (done, tot, note) => { if (note) { o.prog.note(note); return; } if (tot && !total) { total = tot; o.prog.note(''); o.prog.addTotal(tot); } },
+    save: async (s2) => { keep(s2, false); },
+  });
+  o.prog.add(Math.max(0, st.opened));
+  const count = keep(st, true);
+  return { id: c.id, name: c.name, count, mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), left: st.left, opened: st.opened, wanted: st.wanted };
+}
+
 /** Download (or update) one competitor's catalog. */
 async function syncOne(c, opts) {
   const prev = load(c.id);
   const t0 = Date.now();
   const gap = Math.max(300, Number(settings.all().competitorGap) || 900);
   const o = Object.assign({ gap }, opts);
+  if (c.kind === 'sitemap') return syncSitemap(c, prev, o);
   const r = c.kind === 'shopify' ? await syncShopify(c, prev, o) : await syncWoo(c, prev, o);
   if (o.cancelled && o.cancelled()) return null;
   // keep only products with a price, in euro
@@ -163,15 +187,15 @@ async function syncOne(c, opts) {
 }
 
 /** Update every readable competitor, several at the same time (each one politely, one after the other page). */
-async function syncAll(comps, job, progress) {
+async function syncAll(comps, job, progress, extra) {
   const out = [];
   const errors = [];
   await http.pool(comps, 5, async (c) => {
     if (job && job.cancelled()) return;
     const prog = progress.site('c-' + c.id, c.name);
     try {
-      const r = await syncOne(c, { prog, cancelled: () => !!(job && job.cancelled()), full: false, signal: job && job.signal });
-      if (r) { out.push(r); job && job.log(`${c.name}: ${r.count.toLocaleString('el-GR')} προϊόντα (${r.mode === 'full' ? 'πλήρης' : 'αλλαγές'}, ${r.seconds} δευτ.)`); }
+      const r = await syncOne(c, Object.assign({ prog, cancelled: () => !!(job && job.cancelled()), full: false, signal: job && job.signal }, extra || {}));
+      if (r) { out.push(r); job && job.log(r.mode === 'staged' ? `${c.name}: ${r.count.toLocaleString('el-GR')} προϊόντα ως τώρα (χάρτης του site: άνοιξαν ${r.opened} σελίδες${r.left ? ', μένουν ' + r.left.toLocaleString('el-GR') + ' για τις επόμενες φορές' : ', όλες όσες μας αφορούν'})` : `${c.name}: ${r.count.toLocaleString('el-GR')} προϊόντα (${r.mode === 'full' ? 'πλήρης' : 'αλλαγές'}, ${r.seconds} δευτ.)`); }
       prog.note('έτοιμο');
     } catch (e) {
       if (e && e.cancelled) return; // stopped by the person: not a failure of the shop
@@ -185,7 +209,7 @@ async function syncAll(comps, job, progress) {
 
 function info(id) {
   const c = load(id);
-  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt };
+  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt, left: c.left, wanted: c.wanted, mapUrls: c.mapUrls };
 }
 
 module.exports = { load, remove, syncOne, syncAll, info, fromWoo, fromShopify };

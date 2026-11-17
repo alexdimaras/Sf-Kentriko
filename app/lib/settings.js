@@ -18,6 +18,7 @@ const DEFAULTS = {
   suspectPct: 30,
   marketGreekOnly: true,
   competitorGap: 900, // ms between requests to the same competitor
+  sitemapPages: 300, // shops read through their site map: how many product pages may be opened per shop in one run
   syncVariations: true,
   autoSyncHours: 12,
   descMinChars: 150,
@@ -60,6 +61,7 @@ function save(patch) {
   next.minShops = Math.round(clampNum(next.minShops, 1, 5, 2));
   next.suspectPct = clampNum(next.suspectPct, 10, 60, 30);
   next.competitorGap = clampNum(next.competitorGap, 200, 10000, 900);
+  next.sitemapPages = clampNum(next.sitemapPages, 20, 3000, 300);
   next.autoSyncHours = clampNum(next.autoSyncHours, 0, 720, 12);
   next.descMinChars = clampNum(next.descMinChars, 0, 5000, 150);
   next.marketHour = clampNum(next.marketHour, 0, 23, 0);

@@ -300,7 +300,7 @@
 
   async function renderCompetitors(main) {
     const list = await GET('/api/competitors');
-    const KIND = { woo: ['Αυτόματα · WooCommerce', 'ok'], shopify: ['Αυτόματα · Shopify', 'ok'], manual: ['Μόνο χειροκίνητα', 'med'], auto: ['Δεν ελέγχθηκε ακόμα', ''] };
+    const KIND = { woo: ['Αυτόματα · WooCommerce', 'ok'], shopify: ['Αυτόματα · Shopify', 'ok'], sitemap: ['Αυτόματα · σταδιακά', 'ok'], manual: ['Μόνο χειροκίνητα', 'med'], auto: ['Δεν ελέγχθηκε ακόμα', ''] };
     const tb = h('tbody');
     for (const c of list) {
       const k = KIND[c.kind || 'auto'] || KIND.auto;
@@ -308,14 +308,14 @@
         h('td', { class: 'w-check' }, h('input', { type: 'checkbox', checked: c.enabled !== false, title: 'Ενεργό', onchange: (e) => POST('/api/competitors', Object.assign({}, c, { enabled: e.target.checked })).catch(fail) })),
         h('td', { class: 'title' }, c.name, h('div', { class: 'faint', style: { fontWeight: 400 } }, c.url)),
         h('td', null, h('span', { class: 'badge ' + k[1] }, k[0]), c.status ? h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.status) : null),
-        h('td', { class: 'num' }, c.catalog && c.catalog.count ? h('div', null, h('b', null, fmt.num(c.catalog.count)), h('div', { class: 'faint', style: { fontSize: '12.5px' } }, fmt.ago(c.catalog.at))) : h('span', { class: 'faint' }, '—')),
+        h('td', { class: 'num' }, c.catalog && c.catalog.count ? h('div', null, h('b', null, fmt.num(c.catalog.count)), h('div', { class: 'faint', style: { fontSize: '12.5px' } }, fmt.ago(c.catalog.at)), c.kind === 'sitemap' && c.catalog.wanted ? h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.catalog.left ? `μένουν ${fmt.num(c.catalog.left)} από ${fmt.num(c.catalog.wanted)} σελίδες` : `όλες οι ${fmt.num(c.catalog.wanted)} σελίδες που μας αφορούν`) : null) : h('span', { class: 'faint' }, c.kind === 'sitemap' ? 'στην επόμενη έρευνα' : '—')),
         h('td', null, h('div', { class: 'row tight' }, btn('Άνοιγμα', { cls: 'sm', icon: 'ext' }, () => App.openUrl(c.url)), btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox('Αφαίρεση ' + c.name + ';', null, 'Αφαίρεση', true)) POST('/api/competitors/delete', { id: c.id }).then(() => App.route()).catch(fail); })))));
     }
     const name = h('input', { type: 'text', placeholder: 'Όνομα' });
     const url = h('input', { type: 'url', placeholder: 'https://κατάστημα.gr' });
-    const auto = list.filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify')).length;
+    const auto = list.filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify' || c.kind === 'sitemap')).length;
     main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('div', { class: 'row' }, url, name, btn('Προσθήκη', { cls: 'primary', icon: 'new' }, () => POST('/api/competitors', { url: url.value, name: name.value }).then(() => App.route()).catch(fail)), btn('Έλεγχος όλων', { icon: 'sync' }, () => POST('/api/competitors/detect').then((job) => watchJob(job, { done: () => { toast('Ο έλεγχος ολοκληρώθηκε.'); App.route(); } })).catch(fail))),
-      h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${auto} από ${list.length} διαβάζονται αυτόματα (WooCommerce / Shopify): κατεβαίνει όλος ο κατάλογός τους και συγκρίνεται με όλα τα προϊόντα σας. Τα υπόλοιπα ανοίγουν για χειροκίνητο έλεγχο. Η λίστα βρέθηκε με αναζήτηση ελληνικών καταστημάτων του χώρου — βγάλε όποιο δεν είναι ανταγωνιστής.`)));
+      h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${auto} από ${list.length} διαβάζονται αυτόματα. WooCommerce / Shopify: κατεβαίνει όλος ο κατάλογός τους. Τα υπόλοιπα («σταδιακά»): διαβάζονται από τον χάρτη του site τους, λίγες σελίδες κάθε μέρα, μόνο όσες μοιάζουν με δικά σας προϊόντα — η πρώτη φορά θέλει μέρες, μετά ανοίγουν μόνο όσες αλλάζουν. Όσα δεν διαβάζονται καθόλου ανοίγουν για χειροκίνητο έλεγχο.`)));
     main.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Κατάστημα'), h('th', null, 'Ανάγνωση'), h('th', { class: 'num' }, 'Προϊόντα'), h('th', null, ''))), tb)));
   }
 })();
