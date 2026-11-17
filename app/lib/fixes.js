@@ -219,6 +219,7 @@ function variationsOf(C, site) {
  * («SF-24761-XL», «K07014-MAVRO-42»). The same labels give the same codes on both sites. → [{ id, label, sku }]
  */
 function variationCodes(C, site, p, code) {
+  if (settings.all().variantSku !== 'suffix') return []; // one code for the product and all its sizes / colours
   const vs = (variationsOf(C, site).get(p.id) || []).filter((v) => !String(v.sku || '').trim());
   if (!vs.length || !code) return [];
   const taken = new Set();

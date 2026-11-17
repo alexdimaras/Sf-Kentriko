@@ -216,7 +216,7 @@
         const ids = cd.changes.map((c) => c.id);
         const el = h('div', { class: 'panel fx-card' });
         el.appendChild(h('div', { class: 'fx-card-head' }, thumb(cd.img),
-          h('div', { class: 'grow', style: { minWidth: 0 } }, h('a', { href: '#', class: 'fx-title', onclick: (e) => { e.preventDefault(); App.openProduct(cd.site, cd.pid); } }, cd.name),
+          h('div', { class: 'grow', style: { minWidth: 0 } }, h('a', { href: '#', class: 'fx-title', onclick: (e) => { e.preventDefault(); App.openProduct(cd.site, cd.pid); } }, cd.name), ' ', App.backendBtn(cd.site, cd.pid),
             h('div', { class: 'faint', style: { fontSize: '12.5px' } }, sitePill(cd.site), cd.sku ? ' · ' + cd.sku : '', ' · ', fmt.plural(cd.changes.length, 'αλλαγή', 'αλλαγές'))),
           h('div', { class: 'row tight' },
             status === 'pending' ? btn('Έγκριση όλων', { cls: 'sm primary', icon: 'check' }, () => decide(ids.filter((id) => (cd.changes.find((c) => c.id === id) || {}).exportable !== false), 'approved')) : btn('Επαναφορά', { cls: 'sm' }, () => decide(ids, 'pending')),

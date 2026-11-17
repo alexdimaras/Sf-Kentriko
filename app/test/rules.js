@@ -186,7 +186,10 @@ function shop() {
   const attrsOf = (r) => [1, 2, 3, 4].map((n) => [r[`Attribute ${n} name`], r[`Attribute ${n} value(s)`]]).filter((x) => x[0]);
   ok(rows[0].Type === 'variable' && attrsOf(rows[0]).some(([, v]) => v === 'M, L') && rows.filter((r) => r.Type === 'variation').length === 2, 'sizes become a WooCommerce attribute with one variation each');
   ok(attrsOf(rows[0]).some(([, v]) => /ΜΑΥΡΟ|Black/i.test(v)), 'a product in one colour keeps the colour as an attribute (not only in the title)', JSON.stringify(attrsOf(rows[0])));
-  ok(rows.filter((r) => r.Type === 'variation').every((r) => r.Parent === 'K05007' && r.SKU && attrsOf(r).length >= 1), 'each variation has its own code and its size attribute');
+  ok(rows.filter((r) => r.Type === 'variation').every((r) => r.Parent === 'K05007' && !r.SKU && attrsOf(r).length >= 1), 'each variation belongs to the product\'s one code (no code of its own) and has its size attribute');
+  require(APP + '/lib/settings').save({ variantSku: 'suffix' });
+  ok(wooexport.draftRows(d, 'sf').filter((r) => r.Type === 'variation').every((r) => r.SKU), 'with «own code per size/colour» each variation gets its code');
+  require(APP + '/lib/settings').save({ variantSku: 'same' });
 
   section('Έρευνα αγοράς: όλα τα προϊόντα, κατάστημα-κατάστημα, χωρίς να χάνεται η πρόοδος');
   {
@@ -313,8 +316,11 @@ function shop() {
     const fakeC = { skus: { sf: new Set(['K07014XL']), st: new Set() }, vars: { sf: new Map([[50, [
       { id: 51, type: 'variation', parent: 50, varLabel: 'Μέγεθος: XL', sku: '' }, { id: 52, type: 'variation', parent: 50, varLabel: 'Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο', sku: '' },
       { id: 53, type: 'variation', parent: 50, varLabel: '', sku: '' }, { id: 54, type: 'variation', parent: 50, varLabel: 'Μέγεθος: L', sku: 'K07014-L' }]]]) } };
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014').length === 0, 'by default every size / colour keeps the product\'s one code (no K07014-SAND / K07014-MAVRO)');
+    require(APP + '/lib/settings').save({ variantSku: 'suffix' });
     const vc = fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014');
-    ok(vc.length === 3 && vc[0].sku === 'K07014-XL-2' && vc[1].sku === 'K07014-43UK812-MAVRO' && vc[2].sku === 'K07014-3' && new Set(vc.map((v) => v.sku)).size === 3, 'sizes/colours without a code: «K07014-MAVRO»-style codes, never one already used, the ones with a code left alone', JSON.stringify(vc.map((v) => v.sku)));
+    require(APP + '/lib/settings').save({ variantSku: 'same' });
+    ok(vc.length === 3 && vc[0].sku === 'K07014-XL-2' && vc[1].sku === 'K07014-43UK812-MAVRO' && vc[2].sku === 'K07014-3' && new Set(vc.map((v) => v.sku)).size === 3, 'with the setting «own code per size/colour»: «K07014-MAVRO»-style codes, never one already used, the ones with a code left alone', JSON.stringify(vc.map((v) => v.sku)));
   }
 
   console.log(`\n${passes} ok, ${fails} failed`);

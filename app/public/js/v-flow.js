@@ -61,7 +61,7 @@
           box.appendChild(h('div', { class: 'flow-card' },
             h('div', { class: 'fc-thumb' }, App.thumb(r.img)),
             h('div', { class: 'fc-main' },
-              h('div', { class: 'fc-title' }, h('b', null, r.name), ' ', sitePill(r.site)),
+              h('div', { class: 'fc-title' }, h('b', null, App.productName(r.site, r.id, r.name)), ' ', sitePill(r.site)),
               h('div', { class: 'faint' }, [r.sku ? 'Κωδικός ' + r.sku : 'Χωρίς κωδικό', r.price ? fmt.money(r.price) : 'Χωρίς τιμή'].join(' · ')),
               h('ul', { class: 'fc-problems' }, r.problems.map((x) => h('li', { class: STATE[x.state] ? STATE[x.state][1] : '' },
                 h('span', { class: 'fc-state' }, (STATE[x.state] || [''])[0]), ' ', x.text,

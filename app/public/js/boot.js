@@ -9,6 +9,7 @@
     started = true;
     window.addEventListener('hashchange', () => App.route());
     await App.route();
+    App.startSaveSign();
   };
   try {
     if (App.MODE === 'server') {

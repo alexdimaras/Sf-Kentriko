@@ -85,7 +85,7 @@
         tbody.appendChild(h('tr', null,
           c.fix ? h('td', { class: 'w-check' }, cb) : null,
           h('td', { style: { width: '52px' } }, thumb(i.img)),
-          h('td', { class: 'title' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openProduct(i.site, i.id); } }, i.name), i.why ? h('div', { class: 'faint', style: { fontWeight: 400, fontSize: '12.5px' } }, i.why) : null),
+          h('td', { class: 'title' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openProduct(i.site, i.id); } }, i.name), ' ', App.backendBtn(i.site, i.id), i.why ? h('div', { class: 'faint', style: { fontWeight: 400, fontSize: '12.5px' } }, i.why) : null),
           hasFix ? h('td', { class: 'title', style: { color: 'var(--ok)', minWidth: editable ? '320px' : null } }, fixCell) : null,
           h('td', { class: 'mono' }, i.sku || ''),
           h('td', { class: 'num' }, fmt.money(i.price))));

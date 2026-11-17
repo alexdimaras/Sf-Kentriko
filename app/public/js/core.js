@@ -497,6 +497,71 @@ function confirmBox(title, text, okLabel, danger) {
   });
 }
 
+// ---------- the save sign, on every screen ----------
+// «Όλα αποθηκευμένα · 12:31» (green), «Αποθηκεύεται…» (amber), «Δεν αποθηκεύτηκε» (red); a click saves now.
+let saveSt = null, saveEl = null, saveBusy = false;
+function drawSave(flash) {
+  if (!saveEl) { saveEl = h('button', { type: 'button', class: 'savepill', onclick: saveNow }); document.body.appendChild(saveEl); }
+  const st = saveSt;
+  clear(saveEl);
+  let cls = 'ok', text = 'Όλα αποθηκευμένα', sub = '';
+  if (!st) { cls = 'wait'; text = 'Έλεγχος αποθήκευσης…'; }
+  else if (!st.enabled) { cls = 'ok'; text = 'Αποθηκευμένα'; }
+  else if (st.error || st.blocked) { cls = 'bad'; text = 'Δεν αποθηκεύτηκε'; sub = 'πάτα για ξανά'; }
+  else if (saveBusy || st.pending) { cls = 'wait'; text = 'Αποθηκεύεται…'; sub = st.savedAt ? 'τελευταία ' + fmt.ago(st.savedAt) : ''; }
+  else { sub = st.savedAt ? new Date(st.savedAt).toLocaleTimeString('el-GR', { hour: '2-digit', minute: '2-digit' }) : ''; }
+  saveEl.className = 'savepill ' + cls + (flash ? ' flash' : '');
+  saveEl.title = st && st.enabled ? `Τα δεδομένα φυλάγονται ${st.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (Supabase) και κάθε μέρα αντίγραφο στο GitHub' : 'στο ιδιωτικό GitHub'}. Πάτα για αποθήκευση τώρα.` + (st.error ? ' Σφάλμα: ' + st.error : '') : 'Πάτα για αποθήκευση τώρα.';
+  saveEl.appendChild(h('span', { class: 'sp-dot', 'aria-hidden': 'true' }));
+  saveEl.appendChild(h('span', { class: 'sp-text' }, text));
+  if (sub) saveEl.appendChild(h('span', { class: 'sp-sub' }, sub));
+  saveEl.appendChild(h('span', { class: 'sp-btn' }, cls === 'bad' ? 'Ξανά' : 'Αποθήκευση'));
+}
+async function pollSave() {
+  try {
+    const prev = saveSt;
+    saveSt = await GET('/api/save-status');
+    // a save just went through: the sign says so for a moment, wherever you are
+    drawSave(!!(prev && prev.pending && !saveSt.pending && !saveSt.error && saveSt.savedAt !== prev.savedAt));
+  } catch (_) { /* signed out or the program restarts: the sign stays as it was */ }
+}
+async function saveNow() {
+  if (saveBusy) return;
+  saveBusy = true; drawSave();
+  try {
+    const r = await POST('/api/save-now');
+    saveSt = Object.assign({}, saveSt || {}, { savedAt: r.savedAt, pending: r.pending, error: r.error, enabled: r.enabled, where: r.where });
+    if (!r.enabled) toast('✓ Αποθηκευμένα (σε αυτόν τον υπολογιστή).');
+    else if (r.ok) toast(`✓ Αποθηκεύτηκαν όλα ${r.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων' : 'στο GitHub'}` + (r.savedAt ? ' · ' + new Date(r.savedAt).toLocaleTimeString('el-GR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '') + '.');
+    else toast('Δεν αποθηκεύτηκε: ' + (r.error || 'άγνωστο σφάλμα') + '. Τα δεδομένα μένουν στον διακομιστή· ξαναδοκιμάζει μόνο του.', { err: true, ms: 9000 });
+  } catch (e) { fail(e); }
+  saveBusy = false; drawSave(true);
+}
+function startSaveSign() {
+  if (MODE !== 'server' || startSaveSign.on) return;
+  startSaveSign.on = true;
+  drawSave(); pollSave();
+  setInterval(() => { if (!document.hidden) pollSave(); }, 8000);
+}
+
+/** The product's edit page in WordPress (the shop's back office): opens in a new tab. */
+function wpEditUrl(site, id) {
+  const s = App.state && App.state.settings.sites[site];
+  const base = s && s.url ? s.url.replace(/\/+$/, '') : '';
+  return base && id ? `${base}/wp-admin/post.php?post=${id}&action=edit` : '';
+}
+/** A small button next to a product's name: straight to its page in the WordPress back office. */
+function backendBtn(site, id) {
+  const u = wpEditUrl(site, id);
+  if (!u) return null;
+  return h('button', { type: 'button', class: 'wp-btn', title: 'Άνοιγμα για επεξεργασία στο WordPress (backend)', 'aria-label': 'Άνοιγμα στο WordPress', onclick: (e) => { e.preventDefault(); e.stopPropagation(); openUrl(u); } }, icon('edit'), h('span', null, 'WP'));
+}
+/** A product's name that opens it (its card in the program), with the WordPress button beside it. */
+function productName(site, id, name, opts) {
+  const o = opts || {};
+  return h('span', { class: 'pname' }, h('a', { href: '#', class: 'plink' + (o.cls ? ' ' + o.cls : ''), title: 'Άνοιγμα του προϊόντος', onclick: (e) => { e.preventDefault(); e.stopPropagation(); App.openProduct(site, id); } }, name || '—'), ' ', backendBtn(site, id));
+}
+
 /** After a WooCommerce file is created: where it is and how to import it. */
 function fileReady(r, opts) {
   opts = opts || {};
@@ -857,4 +922,4 @@ function newVersion(v) {
   } else reload();
 }
 
-Object.assign(App, { readInfo, readsCard, renderNav, renderSyncBox, kept, keep, setToken, setGate, shell, newVersion, preparing, waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });
+Object.assign(App, { startSaveSign, saveNow, wpEditUrl, backendBtn, productName, readInfo, readsCard, renderNav, renderSyncBox, kept, keep, setToken, setGate, shell, newVersion, preparing, waking, qrSvg, installed, menu, MODE, live, showLogin, logout, openUrl, openFile, showLock, whenUnlocked, reportButtons, adPill, AD, h, add, clear, $, $$, icon, btn, fmt, api, GET, POST, toast, fail, drawer, modal, dlgHead, confirmBox, fileReady, fileToBase64, dropZone, thumb, sandboxPreview, copyText, debounce, select, seg, pageHead, watchJob, startSync, go, refreshState, refreshBadges, siteName, sitePill, SITE_SHORT, parseHash });

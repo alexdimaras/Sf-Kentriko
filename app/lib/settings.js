@@ -14,6 +14,9 @@ const DEFAULTS = {
   floorMargin: 25,
   // the price changes only when at least this many shops (in stock, not suspect) agree
   minShops: 2,
+  // sizes / colours of a product: 'same' = the product's one code for all of them (the colour / size stays an attribute);
+  // 'suffix' = their own code, the product's code with the colour / size at the end (K13079-SAND)
+  variantSku: 'same',
   // a competitor price this many % under the others (or under the supplier's retail price) is suspect: old stock, mistake
   suspectPct: 30,
   marketGreekOnly: true,
@@ -67,6 +70,7 @@ function save(patch) {
   next.marketHour = clampNum(next.marketHour, 0, 23, 0);
   next.marketAuto = !!next.marketAuto;
   next.supplierFindAuto = next.supplierFindAuto !== false;
+  next.variantSku = next.variantSku === 'suffix' ? 'suffix' : 'same';
   if (!['90', '99', '00', 'none'].includes(String(next.rounding))) next.rounding = '90';
   if (!['median_minus', 'median', 'min', 'min_minus'].includes(next.strategy)) next.strategy = 'median_minus';
   store.write('settings', next);

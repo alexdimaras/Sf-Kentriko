@@ -82,7 +82,7 @@ function registerCodes() {
       const sfind = require('./supplierfind');
       const extract = require('./extract');
       const state = { blocked: new Set(), used: new Set(), signal: api.signal };
-      const io = { own: new Set(payload.own || []), search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500 }), cancelled: api.cancelled, parallel: 4 };
+      const io = { own: new Set(payload.own || []), search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500 }), cancelled: api.cancelled, parallel: 6 };
       const results = {};
       const items = (payload.items || []).slice(0, 40);
       let i = 0;

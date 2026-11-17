@@ -108,6 +108,7 @@
         const status = select([['draft', 'Ως πρόχειρα (τα δημοσιεύεις εσύ)'], ['publish', 'Δημοσιευμένα αμέσως']], s.newProduct.status, null);
         const tag = select([['h2', 'Επικεφαλίδα (H2) — καλό για Google'], ['h3', 'Μικρότερη επικεφαλίδα (H3)'], ['p', 'Έντονο κείμενο']], s.newProduct.titleTag, null);
         const footer = h('textarea', { rows: 2, value: s.newProduct.footer });
+        const vsku = select([['same', 'Ένας κωδικός για όλα (το χρώμα / μέγεθος μένει ιδιότητα) — προτείνεται'], ['suffix', 'Δικός του κωδικός ανά χρώμα / μέγεθος (π.χ. K13079-SAND)']], s.variantSku || 'same', null);
         const seo = {}, attrs = {};
         const attrNames = { sf: await GET('/api/attributes', { site: 'sf' }), st: await GET('/api/attributes', { site: 'st' }) };
         const sum = App.state.summary;
@@ -121,10 +122,11 @@
         }
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αρχεία νέων προϊόντων'),
           h('div', { class: 'grid2' }, field('Τα νέα προϊόντα μπαίνουν', status), field('Τίτλος στην αρχή της περιγραφής', tag)),
-          h('div', { style: { marginTop: '10px' } }, field('Κείμενο στο τέλος της αυτόματης περιγραφής', footer))));
+          h('div', { style: { marginTop: '10px' } }, field('Κείμενο στο τέλος της αυτόματης περιγραφής', footer)),
+          h('div', { style: { marginTop: '10px' } }, field('Κωδικοί για χρώματα και μεγέθη', vsku, 'Με «ένας κωδικός» κανένα χρώμα ή μέγεθος δεν παίρνει πρόσθετο κωδικό: όλα έχουν τον κωδικό του προϊόντος.'))));
         box.appendChild(h('div', { class: 'grid2' }, ['sf', 'st'].map((site) => h('div', { class: 'panel' }, h('h2', null, siteName(site)),
           h('div', { class: 'stack s' }, field('Πρόσθετο SEO', seo[site], 'Για meta description και λέξη-κλειδί στο αρχείο.'), field('Ιδιότητα μάρκας', attrs[site].brand), field('Ιδιότητα μεγέθους', attrs[site].size), field('Ιδιότητα χρώματος', attrs[site].color))))));
-        box.appendChild(saveBtn(() => ({ newProduct: { status: status.value, titleTag: tag.value, footer: footer.value }, seo: { sf: seo.sf.value, st: seo.st.value }, attributes: { sf: { brand: attrs.sf.brand.value, size: attrs.sf.size.value, color: attrs.sf.color.value }, st: { brand: attrs.st.brand.value, size: attrs.st.size.value, color: attrs.st.color.value } } })));
+        box.appendChild(saveBtn(() => ({ variantSku: vsku.value, newProduct: { status: status.value, titleTag: tag.value, footer: footer.value }, seo: { sf: seo.sf.value, st: seo.st.value }, attributes: { sf: { brand: attrs.sf.brand.value, size: attrs.sf.size.value, color: attrs.sf.color.value }, st: { brand: attrs.st.brand.value, size: attrs.st.size.value, color: attrs.st.color.value } } })));
       }
 
       if (tab === 'cats') {

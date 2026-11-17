@@ -23,7 +23,7 @@ fs.mkdirSync(process.env.SFK_DATA, { recursive: true });
 const CONF = path.join(HOME, 'worker.json');
 const POLL = Number(process.env.SFK_POLL_MS) || 15000;
 // a shop's own connection: the searches can come a little faster than from the cloud (each engine 2.5–4 s apart)
-process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '2000';
+process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '900';
 
 const store = require('./lib/store');
 const coord = require('./lib/coord');
@@ -43,7 +43,7 @@ function caps() {
     cpus: cpus.length, cpuModel: (cpus[0] && cpus[0].model) || '', ramMB: ram, freeMB: Math.round(os.freemem() / 1048576), version: VERSION, platform: process.platform + '-' + process.arch,
     // the internet search reads web pages: it needs the page reader (in the full program folder)
     types: ['market.shop'].concat(canRead() ? ['codes.web'] : []),
-    // as many jobs side by side as the computer can carry: one per core (one core left for the person), ~1,5 GB each
+    // as many jobs side by side as the computer can carry: one per core, ~1 GB each
     slots: slotsOf(),
     battery: onBattery(),
   };
@@ -52,7 +52,9 @@ function slotsOf() {
   if (Number(process.env.SFK_SLOTS) > 0) return Math.min(32, Math.floor(Number(process.env.SFK_SLOTS)));
   const cpus = (os.cpus() || []).length || 1;
   const ramGB = os.totalmem() / 1073741824;
-  return Math.max(1, Math.min(cpus > 1 ? cpus - 1 : 1, Math.floor(ramGB / 1.5) || 1, 16));
+  // every core (the work is mostly waiting for the internet; the runners have low priority, the person comes first),
+  // about 1 GB of memory each, at most 24
+  return Math.max(1, Math.min(cpus, Math.floor(ramGB / 1.0) || 1, 24));
 }
 function canRead() { try { require('./lib/extract'); return true; } catch (_) { return false; } }
 let batteryAt = 0, batteryVal = false;
@@ -192,7 +194,10 @@ async function supervise() {
   const { fork } = require('child_process');
   const runners = new Map(); // index → { p, rss, job }
   const counts = []; // [time, kind]
-  const gap = Number(process.env.SFK_SEARCH_GAP_MS) || 2000;
+  // the pace of the searches adapts: a little faster while the engines answer, twice slower after a refusal
+  const MIN_GAP = Number(process.env.SFK_SEARCH_GAP_MS) || 900, MAX_GAP = 8000;
+  const gapBy = { ddg: 1500, bing: 1500 };
+  let okSince = Date.now();
   const lastBy = {}, pausedUntil = {};
   let stopping = false, paused = false;
   const start = (i) => {
@@ -204,11 +209,14 @@ async function supervise() {
       if (m.t === 'mem') r.rss = Number(m.rss) || 0;
       else if (m.t === 'job') r.job = m.job || null;
       else if (m.t === 'count') counts.push([Date.now(), String(m.k)]);
-      else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά`); }
+      else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || 1500) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
       else if (m.t === 'permit') {
         // one search at a time per engine for the whole computer, at a steady pace
         if ((pausedUntil[m.eng] || 0) > Date.now()) { p.send({ t: 'permit', id: m.id, ok: false }); return; }
-        const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + gap + Math.random() * gap * 0.4);
+        // ten minutes without a refusal: 10% faster (never below the floor)
+        if (Date.now() - okSince > 10 * 60000) { for (const e of Object.keys(gapBy)) gapBy[e] = Math.max(MIN_GAP, Math.round(gapBy[e] * 0.9)); okSince = Date.now(); }
+        const gap = gapBy[m.eng] || 1500;
+        const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + gap + Math.random() * gap * 0.3);
         lastBy[m.eng] = at;
         setTimeout(() => { try { p.send({ t: 'permit', id: m.id, ok: true }); } catch (_) { /* gone */ } }, at - Date.now());
       }
@@ -240,6 +248,7 @@ async function supervise() {
       jobs: [...runners.values()].filter((r) => r.job).map((r) => r.job.label).slice(0, 16),
       perHour: { products: per('product'), pages: per('page'), searches: per('search'), jobs: per('job') },
       engines: Object.fromEntries(['ddg', 'bing'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
+      gaps: Object.assign({}, gapBy),
       battery: paused,
     };
     try { await api.call('POST', '/api/worker/load', { load }); } catch (e) { if (e.fatal) { stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(3); } }
