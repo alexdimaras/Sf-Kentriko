@@ -254,6 +254,21 @@ function shop() {
     ok(g15 && g15.to === '5205550001117' && !g16, 'only the base of the code in common: the EAN goes to the black bag (same colour), never to the olive one', JSON.stringify([g15 && g15.to, g16 && g16.to]));
     ok(!pick(5, 'gtin'), 'an offer matched by words only gives nothing (no EAN, no photo, no brand)');
     ok(items.filter((c) => ['brand', 'gtin', 'images'].includes(c.field)).every((c) => c.source && c.source.label && ['high', 'medium'].includes(c.level)), 'every such proposal has a source and a confidence');
+    // codes (SKU) and photos from the matches of the research, ready for a yes
+    const s14 = pick(14, 'sku');
+    ok(!s14, 'a product that has a code gets no other one');
+    store.write('market', {
+      'sf:7': entry(7, [off('a', { name: 'Pentagon Zero Hour Poncho', brand: 'Pentagon', mpn: 'K07012-13', sku: '99881', how: 'words', ev: ['ίδια μάρκα', 'λέξεις μοντέλου: ZERO HOUR'], img: 'https://a.example/wp-content/uploads/k07012-poncho-300x300.jpg' }),
+        off('b', { name: 'PENTAGON ZERO HOUR PONCHO', brand: 'PENTAGON', sku: 'K07012-13', how: 'words', ev: ['ίδια μάρκα', 'λέξεις μοντέλου: ZERO HOUR'], img: 'https://b.example/img/k07012-poncho.jpg' })]),
+      'sf:6': entry(6, [off('c', { name: 'Morakniv Fire Kit', brand: 'Morakniv', sku: '3498.vs1', how: 'words', ev: ['ίδια μάρκα', 'λέξεις μοντέλου: FIRE KIT'] })]),
+    });
+    const c7 = catalog.byId('sf').get(7); const s7sku = c7.sku; c7.sku = ''; // as if it had none
+    fixes.invalidate();
+    const items2 = fixes.compute().items;
+    const k7 = items2.find((c) => c.pid === 7 && c.field === 'sku');
+    ok(k7 && k7.to === 'K07012-13' && k7.level === 'high' && (k7.sources || []).length === 1, 'a missing code comes from the research: two shops give the same maker code → sure, both named', JSON.stringify(k7 && [k7.to, k7.level, k7.source.label]));
+    ok(!items2.find((c) => c.pid === 6 && c.field === 'sku'), 'a shop\'s own variation number («3498.vs1») is never proposed as our code');
+    c7.sku = s7sku;
     store.write('market', {}); fixes.invalidate();
   }
 

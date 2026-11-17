@@ -42,8 +42,19 @@ const unxml = (s) => U.decodeEntities(String(s).replace(/^<!\[CDATA\[|\]\]>$/g, 
 async function eachUrl(url, onUrl, opts, depth) {
   const o = opts || {};
   if (o.signal && o.signal.aborted) return;
-  const res = await fetch(url, { redirect: 'follow', signal: o.signal, headers: Object.assign({ 'User-Agent': http.UA, 'Accept-Language': 'el-GR,el;q=0.9' }, UA_HEADERS) });
-  if (!res.ok || !res.body) throw new Error(`Ο χάρτης του site δεν διαβάστηκε (${res.status}).`);
+  // never waits for ever: 4 minutes for a whole map, 45 seconds of silence at most (a stalled site held the research)
+  const ctl = new AbortController();
+  const stopAll = () => { try { ctl.abort(); } catch (_) { /* ignore */ } };
+  if (o.signal) { if (o.signal.aborted) return; o.signal.addEventListener('abort', stopAll, { once: true }); }
+  const IDLE = o.idleMs || 45000;
+  let idle = setTimeout(stopAll, IDLE);
+  const whole = setTimeout(stopAll, o.totalMs || 240000);
+  const quiet = () => { clearTimeout(idle); idle = setTimeout(stopAll, IDLE); };
+  let res;
+  try {
+    res = await fetch(url, { redirect: 'follow', signal: ctl.signal, headers: Object.assign({ 'User-Agent': http.UA, 'Accept-Language': 'el-GR,el;q=0.9' }, UA_HEADERS) });
+  } catch (e) { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); if (o.signal && o.signal.aborted) return; throw new Error('Ο χάρτης του site δεν απάντησε εγκαίρως.'); }
+  if (!res.ok || !res.body) { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); throw new Error(`Ο χάρτης του site δεν διαβάστηκε (${res.status}).`); }
   const dec = new TextDecoder('utf-8');
   let rest = '', children = [], isIndex = null;
   const eat = (text, last) => {
@@ -62,7 +73,12 @@ async function eachUrl(url, onUrl, opts, depth) {
     }
     rest = last ? '' : rest.slice(end).slice(-200000); // an entry is never longer than this
   };
-  for await (const chunk of res.body) { eat(dec.decode(chunk, { stream: true }), false); if (o.signal && o.signal.aborted) return; }
+  try {
+    for await (const chunk of res.body) { quiet(); eat(dec.decode(chunk, { stream: true }), false); if (o.signal && o.signal.aborted) return; }
+  } catch (e) {
+    if (o.signal && o.signal.aborted) return;
+    // cut by the time limit: what was read is used (the rest of the map is read at the next run)
+  } finally { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); }
   eat(dec.decode(), true);
   if (isIndex && (depth || 0) < 2) {
     // product maps first; maps that are clearly something else are skipped
@@ -163,7 +179,8 @@ function productOf(html, url) {
  * Returns the new state { products, pages, sitemaps, left, opened, … }.
  */
 async function sync(c, prev, opts) {
-  const o = Object.assign({ budget: 150, gap: 1500 }, opts || {});
+  const o = Object.assign({ budget: 150, gap: 1500, maxMs: 6 * 60000 }, opts || {});
+  const t0 = Date.now();
   const now = Date.now();
   const stopped = () => !!((o.cancelled && o.cancelled()) || (o.signal && o.signal.aborted));
   const base = c.url.replace(/\/+$/, '');
@@ -207,6 +224,8 @@ async function sync(c, prev, opts) {
   }
   for (const u of todo) {
     if (stopped()) break;
+    // one shop never holds the research for long: what is left is read at the next run (nothing is lost)
+    if (Date.now() - t0 > o.maxMs) break;
     o.onProgress && o.onProgress(opened, todo.length, '');
     try {
       const r = await http.get(u, { gap: o.gap, timeout: 40000, retries: 1, signal: o.signal, headers: o.headers });

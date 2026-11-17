@@ -155,6 +155,21 @@ function shop(n, tag) {
     st = await sm.sync(c, st, { want, budget: 10, gap: 0 });
     ok(!st.products.some((x) => /MECHANIX/.test(x.n)) && st.products.length === 5, 'a product the shop removed leaves the catalog');
     ok(sm.productOf('<html><meta property="og:title" content="Φακός X"><meta property="product:price:amount" content="19.90"><meta property="product:availability" content="out of stock"></html>', 'u').st === false && sm.productOf('<html><body>article</body></html>', 'u') === null, 'a page with the price only in its meta tags is read too; a page without a product gives nothing');
+    // a site that stops sending its map in the middle never holds the research
+    {
+      const stall = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/xml' }); res.write('<?xml version="1.0"?><urlset>' + '<url><loc>http://x/el/a/fakos-nitecore-mh40</loc></url>'.repeat(3)); /* …and nothing more, never ends */ });
+      await new Promise((r) => stall.listen(0, '127.0.0.1', r));
+      const got = [];
+      const t3 = Date.now();
+      await sm.eachUrl('http://127.0.0.1:' + stall.address().port + '/sitemap.xml', (loc) => got.push(loc), { idleMs: 400 });
+      ok(Date.now() - t3 < 3000 && got.length === 3, 'a site map that stops in the middle: what came is kept, and the reading goes on after a short wait (not for ever)', `${Date.now() - t3} ms, ${got.length} addresses`);
+      stall.close(); if (stall.closeAllConnections) stall.closeAllConnections();
+    }
+    // a slow shop gets a time limit per run; the rest of its pages wait for the next run
+    {
+      const slowState = await sm.sync(c, null, { want, budget: 10, gap: 0, maxMs: 1 });
+      ok(slowState.opened <= 1 && slowState.left >= 4, 'a shop that takes long stops at its time limit and keeps the rest for the next run', JSON.stringify([slowState.opened, slowState.left]));
+    }
     void saved;
     srv.close(); if (srv.closeAllConnections) srv.closeAllConnections();
   }

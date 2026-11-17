@@ -155,13 +155,15 @@ async function syncSitemap(c, prev, o) {
     store.write(file(c.id), { kind: 'sitemap', url: c.url, at: U.nowIso(), syncStartedAt: new Date(t0).toISOString(), mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), count: items.length, products: items, pages: st.pages, sitemaps: st.sitemaps, wanted: st.wanted, mapUrls: st.mapUrls, left: st.left, opened: st.opened, complete: !!done && st.left === 0 });
     return items.length;
   };
-  let total = 0;
+  let total = 0, shown = 0;
   const st = await sm.sync(c, prev.kind === 'sitemap' ? prev : null, {
     want: o.want, budget: o.budget, gap: Math.max(1200, o.gap), signal: o.signal, cancelled: o.cancelled, headers: o.headers,
-    onProgress: (done, tot, note) => { if (note) { o.prog.note(note); return; } if (tot && !total) { total = tot; o.prog.note(''); o.prog.addTotal(tot); } },
+    // page by page on the screen (it used to stay at 0 until the whole shop was read: it looked stuck)
+    onProgress: (done, tot, note) => { if (note) { o.prog.note(note); return; } if (tot && !total) { total = tot; o.prog.note(''); o.prog.addTotal(tot); } if (done > shown) { o.prog.add(done - shown); shown = done; } },
     save: async (s2) => { keep(s2, false); },
   });
-  o.prog.add(Math.max(0, st.opened));
+  if (st.opened > shown) o.prog.add(st.opened - shown);
+  if (total > st.opened) o.prog.add(total - st.opened); // stopped at its time limit: the bar ends full (the rest next time)
   const count = keep(st, true);
   return { id: c.id, name: c.name, count, mode: 'staged', seconds: Math.round((Date.now() - t0) / 1000), left: st.left, opened: st.opened, wanted: st.wanted };
 }

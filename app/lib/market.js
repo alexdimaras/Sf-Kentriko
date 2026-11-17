@@ -491,7 +491,7 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   }
   if (!best) return null;
   const c = best.c;
-  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso() };
+  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, mpn: c.m || '', brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso() };
 }
 
 // ---------- Stats & decision ----------

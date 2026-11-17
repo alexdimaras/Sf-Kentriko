@@ -20,9 +20,9 @@ const PAGE_DAYS = 30;
 
 const FIELD = {
   name: 'Τίτλος', desc: 'Περιγραφή', short: 'Σύντομη περιγραφή', images: 'Φωτογραφίες', brand: 'Μάρκα', gtin: 'EAN / GTIN',
-  price: 'Τιμή', cats: 'Κατηγορία', published: 'Δημοσίευση', gla: 'Google Shopping',
+  price: 'Τιμή', cats: 'Κατηγορία', published: 'Δημοσίευση', gla: 'Google Shopping', sku: 'Κωδικός (SKU)',
 };
-const GROUP = { name: 'titles', desc: 'content', short: 'content', images: 'content', brand: 'content', gtin: 'content', price: 'prices', cats: 'cats', published: 'ads', gla: 'ads' };
+const GROUP = { name: 'titles', desc: 'content', short: 'content', images: 'content', brand: 'content', gtin: 'content', price: 'prices', cats: 'cats', published: 'ads', gla: 'ads', sku: 'content' };
 const GROUPS = { content: 'Περιεχόμενο', titles: 'Τίτλοι', prices: 'Τιμές', cats: 'Κατηγορίες', ads: 'Διαφημίσεις' };
 
 /** Meta description for Google: the text after the title heading, cut at ~155 characters on a word. */
@@ -165,13 +165,16 @@ function witnessesFor(C, site, pid) {
   const out = [];
   for (const c of e.competitors) {
     if (c.ignored || c.manual || c.match !== 'exact') continue;
-    const proof = c.confirmed ? 'το επιβεβαίωσες εσύ' : c.how === 'ean' ? 'ίδιο EAN' : c.how === 'sku' ? 'ίδιος κωδικός' : '';
+    let proof = c.confirmed ? 'το επιβεβαίωσες εσύ' : c.how === 'ean' ? 'ίδιο EAN' : c.how === 'sku' ? 'ίδιος κωδικός' : '';
+    // matched by the words of the title (brand + model): good enough for a code or a photo to look at, never for sure
+    const byWords = !proof && (c.ev || []).includes('ίδια μάρκα') && (c.ev || []).some((x) => /^λέξεις μοντέλου/.test(x));
+    if (byWords) proof = 'ίδια μάρκα και μοντέλο';
     if (!proof) continue;
     // «exact»: the whole code, the EAN, or a person's yes — not only the base of a code (that one is shared by every
     // colour and size of a model: good enough for the brand, never for an EAN or a photo)
     const ev = c.ev || [];
     const exact = !!c.confirmed || c.how === 'ean' || ev.includes('ίδιος κωδικός');
-    out.push({ shop: c.shop, url: c.url, brand: c.brand || '', ean: c.ean || '', img: c.img || '', proof: exact || c.how !== 'sku' ? proof : 'ίδιος κωδικός μοντέλου', exact, name: c.name || '' });
+    out.push({ shop: c.shop, url: c.url, brand: c.brand || '', ean: c.ean || '', img: c.img || '', proof: exact || c.how !== 'sku' || byWords ? proof : 'ίδιος κωδικός μοντέλου', exact: exact && !byWords, byWords, name: c.name || '', code: c.mpn || c.sku || '' });
   }
   return out;
 }
@@ -200,6 +203,28 @@ function safeWitness(p, w) {
   if (m.coloursOf(p.name).size > 0 && m.coloursOf(w.name).size > 0) return 'sure';
   // our title names no colour: maybe a product in one colour, maybe not — at most «look at it»
   return m.coloursOf(p.name).size === 0 ? 'maybe' : false;
+}
+/**
+ * A product code as shops write it, cleaned: the first word of «8020860 Katadyn BeFree…»; never an EAN, a long
+ * internal number of a shop (10+ digits), or a word without digits. For a product with sizes/colours: the model part.
+ */
+function codeOf(raw, variable) {
+  let t = U.collapse(U.decodeEntities(String(raw || ''))).replace(/[–—]/g, '-');
+  if (!t) return '';
+  const words = t.split(' ');
+  if (words.length > 2) t = words[0];
+  if (t.length < 3 || t.length > 40 || !/\d/.test(t)) return '';
+  if (/^\d+$/.test(t) && (t.length >= 9 || t.length <= 3)) return '';
+  if (validGtin(t)) return '';
+  if (/\.vs\d+$/i.test(t)) return ''; // a shop's own number for a variation (amerikaniki-agora: «3498.vs1»), not the maker's code
+  if (variable) { const cb = require('./market').codeBase(t); if (cb && cb.base.length >= 4 && cb.base !== U.normSku(t)) return baseText(t, cb.base); }
+  return t;
+}
+/** The part of a written code that makes its base (K09012-01 → K09012, MORA-12210-B → MORA-12210). */
+function baseText(t, base) {
+  let acc = '';
+  for (let i = 0; i < t.length; i++) { const ch = t[i].toUpperCase(); if (/[A-Z0-9]/.test(ch)) acc += ch; if (acc === base) return t.slice(0, i + 1); }
+  return t;
 }
 /** No colour named on one side that the other does not name (a black and a green bag share the model, not the EAN). */
 function sameColours(a, b) {
@@ -252,7 +277,7 @@ function categoryGuesser(site, isDefault) {
 // yes never recalculates anything here — on a small cloud machine that used to take half a minute per approval.
 const bg = require('./bg');
 const TITLE_CHECKS = ['broken', 'mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'];
-const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin'];
+const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin', 'sku'];
 const QK = ['desc', 'images', 'brand', 'short', 'title', 'sku'];
 const QW = [30, 25, 10, 10, 15, 10];
 
@@ -273,7 +298,8 @@ function buildCtx() {
   const checks = require('./checks');
   const wx = require('./wooexport');
   const L = catalog.links();
-  const C = { s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands() };
+  const C = { s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
+  for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) C.skus[st].add(U.normSku(x.sku));
   for (const site of catalog.SITES) {
     const cat = catalog.load(site);
     if (!cat.syncedAt) continue;
@@ -366,10 +392,10 @@ function proposalsFor(site, p, C) {
       let cand = twinMore ? twin.images : found && found.data ? found.data.images || [] : [];
       if (fromTwin) { imgSource = { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }; imgLevel = 'high'; }
       else if (cand.length) { imgSource = found.src; imgLevel = found.src.level; }
-      else if (!(p.images || []).length) {
-        // only the photo of a shop that has the SAME product (code / EAN), never of a look-alike
+      else if ((p.images || []).length < 2) {
+        // only the photo of a shop that has the SAME product (code / EAN, or brand + model + colour), never of a look-alike
         const byKey = new Map();
-        for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const u = fullImage(w.img); const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe') e.weak = true; byKey.set(k, e); }
+        for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
         const best = [...byKey.values()].sort((a1, b1) => b1.shops.length - a1.shops.length)[0];
         if (best) {
           cand = [best.u];
@@ -377,7 +403,7 @@ function proposalsFor(site, p, C) {
           imgSource = { kind: 'competitor', label: `Φωτογραφία του ίδιου προϊόντος στο ${w0.shop} (${w0.proof})`, url: w0.url };
           imgLevel = best.shops.length >= 2 && !best.weak ? 'high' : 'medium';
           for (const w of best.shops.slice(1)) imgAlso.push({ kind: 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url });
-          imgWhy = best.shops.length >= 2 ? ` Η ίδια φωτογραφία (ίδιο αρχείο) σε ${best.shops.length} καταστήματα: είναι του κατασκευαστή.` : ' Είναι φωτογραφία άλλου καταστήματος: δες ότι είναι του κατασκευαστή (χωρίς λογότυπο καταστήματος) πριν την έγκριση.';
+          imgWhy = (best.shops.length >= 2 ? ` Η ίδια φωτογραφία (ίδιο αρχείο) σε ${best.shops.length} καταστήματα: είναι του κατασκευαστή.` : ' Είναι φωτογραφία άλλου καταστήματος: δες ότι είναι του κατασκευαστή (χωρίς λογότυπο καταστήματος) πριν την έγκριση.') + ((p.images || []).length ? ' Προστίθεται δίπλα στην υπάρχουσα: δες ότι δεν είναι η ίδια λήψη.' : '');
         }
       }
       for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u))) extraImgs.push(u);
@@ -393,7 +419,7 @@ function proposalsFor(site, p, C) {
       const votes = new Map();
       const vote = (raw, src, weight) => { const b = brandName(raw, C.brands); if (!b) return; const e = votes.get(b.key) || { name: b.name, known: b.known, n: 0, srcs: [] }; e.n += weight; e.srcs.push(src); votes.set(b.key, e); };
       if (found && found.data && found.data.brand) vote(found.data.brand, found.src, found.src.level === 'high' ? 2 : 1);
-      for (const w of wit) if (w.brand) vote(w.brand, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, 1);
+      for (const w of wit) if (w.brand && !w.byWords) vote(w.brand, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, 1);
       const ranked = [...votes.values()].sort((a1, b1) => b1.n - a1.n);
       const top = ranked[0];
       // two sources that disagree (and neither is clearly ahead): nothing is proposed — a wrong brand is worse than none
@@ -403,12 +429,34 @@ function proposalsFor(site, p, C) {
         add(Object.assign({}, base, { field: 'brand', from: '', to: top.name, why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (top.srcs.length > 1 ? ` Συμφωνούν ${top.srcs.length} πηγές.` : '') + (top.known ? '' : ' (Νέα μάρκα για το κατάστημα: έλεγξε τη γραφή.)') + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium', exportable }));
       }
     }
+    if (!String(p.sku || '').trim()) {
+      // Code: our other site → the supplier's list → the shops with the same product (their maker's code)
+      const cv = new Map();
+      const addCode = (raw, src, weak) => { const c = codeOf(raw, p.type === 'variable'); if (!c) return; const k = U.normSku(c); const e = cv.get(k) || { code: c, srcs: [], weak: false }; if (!e.srcs.some((x) => x.label === src.label)) e.srcs.push(src); if (weak) e.weak = true; cv.set(k, e); };
+      if (twin && twin.sku) addCode(twin.sku, { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, false);
+      if (found && found.data && found.data.code) addCode(found.data.code, found.src, found.src.level !== 'high');
+      for (const w of wit) { if (!w.code || !safeWitness(p, w)) continue; addCode(w.code, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, w.byWords || !w.exact); }
+      const ranked = [...cv.values()].sort((a1, b1) => b1.srcs.length - a1.srcs.length);
+      const top = ranked[0];
+      // two different codes with the same support: nothing (a wrong code is worse than none)
+      if (top && !(ranked[1] && ranked[1].srcs.length >= top.srcs.length) && !C.skus[site].has(U.normSku(top.code))) {
+        const fromUs = top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier');
+        // sure: our own other site, a sure supplier source, or two shops that give the same code on their own
+        let sure = top.srcs.some((x) => x.kind === 'twin') || (fromUs && !top.weak) || top.srcs.length >= 2;
+        // the title names another code of the same shape (… MK II 7664 / code 7265): one of the two is wrong
+        const mk = require('./market');
+        const cb = mk.codeBase(top.code);
+        const clash = cb && U.collapse(p.name).split(' ').map((x) => mk.codeBase(x)).find((x) => x && x.shape === cb.shape && x.base !== cb.base && !(x.run && cb.run && x.run === cb.run));
+        if (clash) sure = false;
+        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Από αντιστοίχιση της έρευνας: έλεγξέ τον.'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
+      }
+    }
     if (p.type === 'simple' && !p.ean) {
       // EAN: from the supplier (sure source) and from the shops with the same product; different EANs → nothing
       const gv = new Map();
       if (found && found.data && found.src.level === 'high') { const g = validGtin(found.data.ean); if (g) gv.set(g, [found.src]); }
       let weak = false;
-      for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const g = validGtin(w.ean); if (!g) continue; if (!gv.has(g)) gv.set(g, []); if (!gv.get(g).some((x) => x.label.startsWith(w.shop))) { gv.get(g).push({ kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }); if (safe === 'maybe') weak = true; } }
+      for (const w of wit) { const safe = !w.byWords && safeWitness(p, w); if (!safe) continue; const g = validGtin(w.ean); if (!g) continue; if (!gv.has(g)) gv.set(g, []); if (!gv.get(g).some((x) => x.label.startsWith(w.shop))) { gv.get(g).push({ kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }); if (safe === 'maybe') weak = true; } }
       if (gv.size === 1) {
         const [g, srcs] = [...gv][0];
         const sure = srcs.some((x) => x.kind === 'supplier') || (srcs.length >= 2 && !weak);
@@ -474,8 +522,9 @@ function* proposalsGen() {
   const seenG = new Map();
   // (the same product on our two sites is one product)
   const one = (k) => { const [st, id] = k.split(':'); const sfId = st === 'st' ? C.L.stToSf.get(Number(id)) : null; return sfId != null ? 'sf:' + sfId : k; };
-  for (const [k, list] of byProduct) for (const c of list) if (c.field === 'gtin') { const a = seenG.get(c.to) || []; a.push(k); seenG.set(c.to, a); }
-  for (const [, keys] of seenG) if (new Set(keys.map(one)).size > 1) for (const k of keys) { const l = byProduct.get(k).filter((c) => c.field !== 'gtin'); if (l.length) byProduct.set(k, l); else byProduct.delete(k); }
+  // …and so does a code (SKU): one proposed for two of our products is dropped from both
+  for (const [k, list] of byProduct) for (const c of list) if (c.field === 'gtin' || c.field === 'sku') { const id = c.field + ':' + (c.field === 'sku' ? U.normSku(c.to) : c.to); const a = seenG.get(id) || []; a.push(k); seenG.set(id, a); }
+  for (const [id, keys] of seenG) if (new Set(keys.map(one)).size > 1) { const field = id.split(':')[0]; for (const k of keys) { const l = (byProduct.get(k) || []).filter((c) => c.field !== field); if (l.length) byProduct.set(k, l); else byProduct.delete(k); } }
   return { at: U.nowIso(), cacheAt: C.ec.at || null, byProduct, tw: C.tw, q, qv, rev: 0, C };
 }
 function proposals() {
@@ -631,7 +680,7 @@ function view(q) {
   // one card per product, the products with the most (and surest) changes first
   const by = new Map();
   for (const c of list) { const k = c.site + ':' + c.pid; if (!by.has(k)) by.set(k, { site: c.site, pid: c.pid, name: c.name, img: c.img, url: c.url, sku: c.sku, changes: [] }); by.get(k).changes.push(c); }
-  const order = { desc: 0, images: 1, name: 2, price: 3, published: 4, gla: 5, short: 6, brand: 7, cats: 8, gtin: 9 };
+  const order = { desc: 0, images: 1, name: 2, price: 3, published: 4, gla: 5, short: 6, brand: 7, cats: 8, gtin: 9, sku: 10 };
   const cards = [...by.values()];
   for (const cd of cards) cd.changes.sort((a, b) => order[a.field] - order[b.field]);
   cards.sort((a, b) => b.changes.filter((c) => c.level === 'high').length - a.changes.filter((c) => c.level === 'high').length || b.changes.length - a.changes.length);
@@ -702,6 +751,7 @@ function exportFile(site, by) {
     else if (c.field === 'published') set(r, 'Published', -1);
     else if (c.field === 'gla') set(r, wx.GLA, 'dont-sync-and-show');
     else if (c.field === 'gtin') set(r, 'GTIN, UPC, EAN, or ISBN', c.to);
+    else if (c.field === 'sku') set(r, 'SKU', c.to);
     else if (c.field === 'brand') { wx.setAttrs(r, [{ name: brandAttr, values: [c.to], visible: true, global: true }]); for (const k of ['Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global']) cols.add(k); }
     else if (c.field === 'price') {
       if (p.type === 'variable') {
@@ -717,7 +767,7 @@ function exportFile(site, by) {
       } else { set(r, 'Regular price', Number(c.to.regular).toFixed(2)); set(r, 'Sale price', c.to.sale ? Number(c.to.sale).toFixed(2) : ''); }
     }
   }
-  const order = ['Name', 'Published', 'Short description', 'Description', 'Regular price', 'Sale price', 'Categories', 'Images', 'GTIN, UPC, EAN, or ISBN', 'Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global'];
+  const order = ['SKU', 'Name', 'Published', 'Short description', 'Description', 'Regular price', 'Sale price', 'Categories', 'Images', 'GTIN, UPC, EAN, or ISBN', 'Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global'];
   const columns = order.filter((k) => cols.has(k)).concat([...cols].filter((k) => !order.includes(k)));
   const all = [...rows.values()].filter((r) => Object.keys(r).length > 1).concat(extraRows);
   if (!all.length) throw new Error('Δεν βγήκε καμία γραμμή για το αρχείο.');

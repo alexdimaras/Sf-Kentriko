@@ -88,7 +88,7 @@ function* buildGen() {
       if (!k) {
         const other = site === 'sf' ? L.sfToSt : L.stToSf;
         const o = other.get(p.id) != null ? bySite[site === 'sf' ? 'st' : 'sf'].get(other.get(p.id)) : null;
-        problem(site, p.id, 1, 'nosku', 'Χωρίς κωδικό (SKU)', '', o && o.sku ? { hint: `Το ίδιο προϊόν στο άλλο site έχει κωδικό ${o.sku}`, suggest: o.sku } : {});
+        problem(site, p.id, 1, 'nosku', 'Χωρίς κωδικό (SKU)', 'sku', o && o.sku ? { hint: `Το ίδιο προϊόν στο άλλο site έχει κωδικό ${o.sku}`, suggest: o.sku } : {});
       } else if (seen.get(k).length > 1) {
         problem(site, p.id, 1, 'dupsku', `Ο ίδιος κωδικός «${p.sku}» υπάρχει σε ${seen.get(k).length} προϊόντα`, '', { hint: 'Κάθε προϊόν χρειάζεται δικό του κωδικό (εκτός αν είναι το ίδιο προϊόν δύο φορές).' });
       }
