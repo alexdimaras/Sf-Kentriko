@@ -855,6 +855,8 @@ async function run(targets, job, opts) {
   store.write('market-meta', meta);
   // the competitor catalogs are big: free the memory until the next run
   idxCache.clear();
+  // the fixes take brands, EANs and photos from the shops with the same product: built again (in the background)
+  try { require('./fixes').invalidate(); } catch (_) { /* not loaded */ }
   if (stopped) { job && job.log(`Σταμάτησε: ${meta.progress ? meta.progress.done : compared} από ${withCatalog.length} καταστήματα είναι φυλαγμένα· η επόμενη έρευνα συνεχίζει από εκεί.`); return { done, withData, similar, changes: prog.changes, errors: dl.errors, stopped: true, shops: meta.progress }; }
   job && job.progress(list.length, list.length, `Έτοιμο: ${withData.toLocaleString('el-GR')} από ${done.toLocaleString('el-GR')} προϊόντα έχουν τιμές αγοράς.`);
   return { done, withData, similar, changes: prog.changes, errors: dl.errors, shops: meta.progress, resumed };
@@ -1094,6 +1096,6 @@ function setCost(site, id, cost, source, rrp) {
 
 module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
-  wantedPages,
+  wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

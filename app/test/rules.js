@@ -63,6 +63,9 @@ function shop() {
     api('ΘΗΚΗ SAFARILAND 6360', { id: 191690, sku: 'SE &#8211; 40403', brand: 'SAFARILAND' }),
     api('ΑΝΙΧΝΕΥΤΗΣ ΜΕΤΑΛΛΩΝ GARRETT ACE 300', { id: 127416, brand: 'GARRETT', desc: '<p>' + '&Alpha;&nu;&iota;&chi;&nu;&epsilon;&upsilon;&tau;ή&sigmaf; &mu;&epsilon;&tau;ά&lambda;&lambda;&omega;&nu; &gamma;&iota;&alpha; &alpha;&rho;&chi;ά&rho;&iota;&omicron;&upsilon;&sigmaf; &kappa;&alpha;&iota; &pi;&rho;&omicron;&chi;&omega;&rho;&eta;&mu;έ&nu;&omicron;&upsilon;&sigmaf;. '.repeat(6) + '</p>' }),
     api('CHAMP; ΑΝΤΑΛΛΑΚΤΙΚΟ', { id: 13 }),
+    api('ΦΑΚΟΣ LUMOS X100', { id: 14, sku: 'LX-100' }),
+    api('ΣΑΚΙΔΙΟ PENTAGON RUSH 8 BLACK', { id: 15, brand: 'PENTAGON', sku: 'K16099-01' }),
+    api('ΣΑΚΙΔΙΟ PENTAGON RUSH 8 OLIVE', { id: 16, brand: 'PENTAGON', sku: 'K16099-06' }),
   );
   return list;
 }
@@ -225,6 +228,33 @@ function shop() {
     W('competitors', ['cA', 'cB'].map((id) => ({ id, name: 'shop-' + id, url: `https://${id}.example`, kind: 'woo', enabled: true })));
     res = await market.run(null, null, { skipDownload: true });
     ok(Object.values(store.read('market', {})).every((e) => e.competitors.every((c) => c.competitorId !== 'cC')), 'a shop taken off the list no longer counts in any product');
+  }
+
+  section('Μάρκα, EAN, φωτογραφίες από πολλές πηγές: μόνο από καταστήματα με το ΙΔΙΟ προϊόν, με πηγή και σιγουριά');
+  {
+    const off = (shop, o) => Object.assign({ shop, competitorId: shop, url: `https://${shop}.example/p`, price: 20, inStock: true, match: 'exact', how: 'sku', ev: ['ίδιος κωδικός', 'ίδια μάρκα'], country: 'GR', seenAt: new Date().toISOString() }, o);
+    const entry = (id, offers) => ({ at: new Date().toISOString(), name: catalog.byId('sf').get(id).name, competitors: offers, stats: { count: offers.length } });
+    store.write('market', {
+      'sf:14': entry(14, [off('a', { name: 'Lumos X100 φακός', brand: 'Lumos', ean: '4046872358951', img: 'https://a.example/wp-content/uploads/lumos-x100-black-300x300.jpg' }), off('b', { name: 'LUMOS X100', brand: 'LUMOS', ean: '4046872358951', img: 'https://b.example/img/lumos-x100-black.jpg' })]),
+      'sf:15': entry(15, [off('a', { name: 'Pentagon Rush 8 Black', brand: 'Pentagon', ean: '5205550001117', how: 'sku', ev: ['ίδιος κωδικός μοντέλου (K16099)', 'ίδια μάρκα'] })]),
+      'sf:16': entry(16, [off('a', { name: 'Pentagon Rush 8 Black', brand: 'Pentagon', ean: '5205550001117', how: 'sku', ev: ['ίδιος κωδικός μοντέλου (K16099)', 'ίδια μάρκα'] })]),
+      'sf:5': entry(5, [off('c', { name: 'Opinel Carbon 07', brand: 'Opinel', ean: '3123840790010', how: 'words', ev: ['ίδια μάρκα', 'λέξεις μοντέλου: CARBON'] })]),
+    });
+    fixes.invalidate();
+    const items = fixes.compute().items;
+    const pick = (pid, field) => items.find((c) => c.site === 'sf' && c.pid === pid && c.field === field);
+    const b14 = pick(14, 'brand');
+    ok(b14 && /^lumos$/i.test(b14.to) && b14.source.kind === 'competitor' && (b14.sources || []).length === 1, 'a missing brand comes from the shops that have the same product (same code), each one named as a source', JSON.stringify(b14 && [b14.to, b14.source, b14.sources]));
+    ok(b14 && b14.level === 'medium' && /Νέα μάρκα/.test(b14.why), 'a brand the shop has never used is only «look at it», even when two shops agree', b14 && b14.level);
+    const g14 = pick(14, 'gtin');
+    ok(g14 && g14.to === '4046872358951' && g14.level === 'high' && /2 πηγές/.test(g14.why), 'the same EAN at two shops with the same code → sure', JSON.stringify(g14 && [g14.to, g14.level]));
+    const i14 = pick(14, 'images');
+    ok(!i14, 'a product that already has photos gets none from other shops');
+    const g15 = pick(15, 'gtin'), g16 = pick(16, 'gtin');
+    ok(g15 && g15.to === '5205550001117' && !g16, 'only the base of the code in common: the EAN goes to the black bag (same colour), never to the olive one', JSON.stringify([g15 && g15.to, g16 && g16.to]));
+    ok(!pick(5, 'gtin'), 'an offer matched by words only gives nothing (no EAN, no photo, no brand)');
+    ok(items.filter((c) => ['brand', 'gtin', 'images'].includes(c.field)).every((c) => c.source && c.source.label && ['high', 'medium'].includes(c.level)), 'every such proposal has a source and a confidence');
+    store.write('market', {}); fixes.invalidate();
   }
 
   console.log(`\n${passes} ok, ${fails} failed`);

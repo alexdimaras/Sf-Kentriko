@@ -190,7 +190,8 @@ async function syncOne(c, opts) {
 async function syncAll(comps, job, progress, extra) {
   const out = [];
   const errors = [];
-  await http.pool(comps, 5, async (c) => {
+  // on a small machine (512 MB) one shop at a time: five catalogs and site maps being read together took ~490 MB
+  await http.pool(comps, require('./bg').small ? 1 : 5, async (c) => {
     if (job && job.cancelled()) return;
     const prog = progress.site('c-' + c.id, c.name);
     try {

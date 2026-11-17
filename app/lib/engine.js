@@ -38,7 +38,7 @@ function stepsDone(label) { step(''); if (took.length) console.log(`${label}: ${
 function signature() {
   const meta = store.read('catalog-meta', null) || {};
   const ec = store.read(fixes.CACHE, null) || {};
-  return crypto.createHash('sha1').update(JSON.stringify([FORMAT, (meta.sf || {}).syncedAt || '', (meta.st || {}).syncedAt || '', settings.all(), store.read('links', {}), ec.at || '', (store.read('types', null) || {}).at || ''])).digest('hex');
+  return crypto.createHash('sha1').update(JSON.stringify([FORMAT, (meta.sf || {}).syncedAt || '', (meta.st || {}).syncedAt || '', settings.all(), store.read('links', {}), ec.at || '', (store.read('types', null) || {}).at || '', ((store.read('market-meta', null) || {}).progress || {}).at || ''])).digest('hex');
 }
 
 // the checks as one long list of rows (written and read in slices) instead of 45 lists inside each other
