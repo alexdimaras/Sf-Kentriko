@@ -166,7 +166,7 @@ function supplierCounts() {
   supCounts = { key, counts };
   return counts;
 }
-async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running().concat(coordReady ? await coord.live() : []), workers: coordReady && SERVER ? await coord.stats() : null, strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
+async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running().concat(coordReady ? (await coord.live()).filter((j) => !(j.auto && j.type === 'codes.web')) : []), workers: coordReady && SERVER ? await coord.stats() : null, strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
 
 // ---------- API ----------
 const routes = {
@@ -510,7 +510,10 @@ const routes = {
   'GET /api/jobs': async () => jobs.recent().concat(coordReady ? await coord.recent(10) : []).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0)).slice(0, 15),
   'POST /api/jobs/cancel': (b) => (String(b.id || '').startsWith('q') && coordReady ? coord.cancel(b.id) : jobs.cancel(b.id)),
   // the computers of the shops (administrators)
-  'GET /api/workers': async () => ({ workers: await coord.workersView(), stats: await coord.stats(), store: (() => { const c = cloudsave.status(); return !c.enabled ? 'στον φάκελο του διακομιστή' : c.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (και αντίγραφο στο GitHub κάθε μέρα)' : 'στο ιδιωτικό αποθετήριο GitHub'; })() }),
+  'GET /api/workers': async () => {
+    const ws = (await coord.workersView()).map((w) => { const l = workerLoad.get(w.id); return Object.assign({}, w, { load: l && Date.now() - l.at < 20000 ? l : null }); });
+    return { workers: ws, stats: await coord.stats(), research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
+  },
   'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
   'POST /api/workers/revoke': async (b) => ({ ok: await coord.revoke(String(b.id || '')) }),
   'GET /api/audit': (q) => audit.list(Math.min(1000, Number(q.n) || 200)),
@@ -672,6 +675,30 @@ const AUDITED = {
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
 };
+// how hard each computer works right now (kept in memory only: it changes every 3 seconds)
+const workerLoad = new Map();
+const lnum = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : 0; };
+function cleanLoad(l) {
+  l = l && typeof l === 'object' ? l : {};
+  const ph = l.perHour && typeof l.perHour === 'object' ? l.perHour : {};
+  const eng = l.engines && typeof l.engines === 'object' ? l.engines : {};
+  return {
+    at: Date.now(), cpu: lnum(l.cpu, 100), ram: lnum(l.ram, 100), ramTotalMB: lnum(l.ramTotalMB, 1e7), procMB: lnum(l.procMB, 1e6),
+    runners: lnum(l.runners, 64), slots: lnum(l.slots, 64), busy: lnum(l.busy, 64), battery: !!l.battery,
+    jobs: (Array.isArray(l.jobs) ? l.jobs : []).slice(0, 16).map((x) => String(x || '').slice(0, 80)),
+    perHour: { products: lnum(ph.products, 1e6), pages: lnum(ph.pages, 1e6), searches: lnum(ph.searches, 1e6), jobs: lnum(ph.jobs, 1e6) },
+    engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok' },
+  };
+}
+function storeName() { return (() => { const c = cloudsave.status(); return !c.enabled ? 'στον φάκελο του διακομιστή' : c.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (και αντίγραφο στο GitHub κάθε μέρα)' : 'στο ιδιωτικό αποθετήριο GitHub'; })(); }
+let researchMemo = { at: 0, v: null };
+/** The research on the internet as a whole: how many products are left, how fast the computers go, how long it takes. */
+function researchView(loads) {
+  if (Date.now() - researchMemo.at > 30000 || !researchMemo.v) { try { researchMemo = { at: Date.now(), v: require('./lib/codefind').status() }; } catch (_) { researchMemo = { at: Date.now(), v: { looked: 0, withCode: 0, waiting: 0 } }; } }
+  const st = researchMemo.v;
+  const perHour = loads.reduce((a, l) => a + (l.perHour.products || 0), 0);
+  return { looked: st.looked || 0, found: st.withCode || 0, waiting: st.waiting || 0, perHour, hoursLeft: perHour > 0 ? Math.round((st.waiting / perHour) * 10) / 10 : null };
+}
 async function handleWorker(req, res, url, q, key0) {
   if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
   try {
@@ -701,6 +728,7 @@ async function handleWorker(req, res, url, q, key0) {
     }
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 80 * 1024 * 1024 : 256 * 1024) : {};
     if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name }); }
+    if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max) });
     if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log));
     if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
@@ -735,7 +763,8 @@ async function feedWebResearch() {
   const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('codes.web') && !w.caps.battery);
   if (!ws.length) return;
   const live = await coord.liveOf('codes.web');
-  const want = ws.length * 2 - live.filter((j) => j.status === 'queued').length;
+  // every runner of every computer busy, and two groups more waiting for each computer
+  const want = ws.reduce((n, w) => n + (Number(w.caps.slots) || 1) + 2, 0) - live.length;
   if (want <= 0) return;
   const busy = new Set();
   for (const j of live) for (const it of (j.payload && j.payload.items) || []) busy.add(it.k);
@@ -963,8 +992,8 @@ function afterStart() {
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)
     if (SERVER) setInterval(() => { coord.cloudTick().catch((e) => console.error('queue (cloud):', e.message)); }, 10000).unref();
-    // While a shop's computer that can search is switched on, the research on the internet never stops: two groups of
-    // 20 products waiting for each such computer, fed again as they are taken (like a clock, not once a day).
+    // While a shop's computer that can search is switched on, the research on the internet never stops: a group of 20
+    // products for each of its runners and two more waiting, fed again as they are taken (like a clock, not once a day).
     if (SERVER) setInterval(() => { feedWebResearch().catch((e) => console.error('internet research:', e.message)); }, Number(process.env.SFK_FEED_MS) || 30000).unref();
   })().catch((e) => console.error('queue start:', e.message));
   jobs.setHeavyLimit(SMALL ? 1 : 2);

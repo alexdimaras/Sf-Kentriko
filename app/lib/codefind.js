@@ -102,7 +102,7 @@ async function lookUp(it, io) {
     await pool(pages, io.parallel || 2, async (pg0) => {
       if (io.cancelled && io.cancelled()) return;
       let pg;
-      try { pg = await io.page(pg0.url); read++; } catch (_) { return; }
+      try { pg = await io.page(pg0.url); read++; sfind.count('page'); } catch (_) { return; }
       if (!pg || !pg.name) return;
       // the same product: the same code as ours, or the matching of the price research says «exact»
       const theirs = [pg.code, pg.mpn].map((x) => U.normSku(x || '')).filter((x) => x.length >= 4);

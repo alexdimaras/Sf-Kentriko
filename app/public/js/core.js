@@ -453,6 +453,9 @@ const POST = (p, b) => api('POST', p, b || {});
 // ---------- toasts ----------
 function toast(msg, opts) {
   opts = opts || {};
+  // a missing value never shows as «null» / «undefined»
+  if (typeof msg === 'string') msg = msg.replace(/:\s*(null|undefined)\b/g, ': δεν δόθηκε λόγος').replace(/\b(null|undefined)\b/g, '—');
+  if (msg == null || msg === '') msg = 'Κάτι δεν πήγε καλά.';
   const t = h('div', { class: 'toast' + (opts.err ? ' err' : '') }, h('div', { class: 't-body' }, msg), opts.action ? h('button', { onclick: () => { opts.action.fn(); t.remove(); }, style: { opacity: 1, fontWeight: 650, textDecoration: 'underline' } }, opts.action.label) : null, h('button', { onclick: () => t.remove(), 'aria-label': 'Κλείσιμο' }, '✕'));
   $('#toasts').appendChild(t);
   setTimeout(() => t.remove(), opts.err ? 9000 : (opts.ms || 4500));
@@ -589,12 +592,20 @@ function watchJob(job, handlers) {
     if (w.h.progress) w.h.progress(j);
     if (j.status === 'running' || j.status === 'queued') { setTimeout(tick, j.status === 'queued' ? 1500 : 800); return; }
     watching.delete(job.id); renderJobs();
-    if (j.status === 'done') { w.h.done ? w.h.done(j.result, j) : toast(j.label + ': ολοκληρώθηκε.'); }
-    else if (j.status === 'cancelled') toast(j.label + ': σταμάτησε.');
-    else { if (w.h.error) w.h.error(j.error); else toast(j.label + ': ' + j.error, { err: true }); }
+    // a job of the shops' computers ends as «completed» (the program's own as «done»): both are a success
+    if (j.status === 'done' || j.status === 'completed') { w.h.done ? w.h.done(j.result, j) : (j.auto ? null : toast(j.label + ': ολοκληρώθηκε.' + resultNote(j.result))); }
+    else if (j.status === 'cancelled') { if (!j.auto) toast(j.label + ': σταμάτησε.'); }
+    else { const msg = j.error || 'δεν ολοκληρώθηκε'; if (w.h.error) w.h.error(msg); else toast(j.label + ': ' + msg, { err: true }); }
     if (w.h.always) w.h.always(j);
   };
   setTimeout(tick, 500);
+}
+/** A few words about what a finished job brought (the research on the internet, a shop of the price research). */
+function resultNote(r) {
+  if (!r || typeof r !== 'object') return '';
+  if (r.products != null && r.withCode != null) return ` ${fmt.num(r.products)} προϊόντα, το ίδιο προϊόν βρέθηκε σε άλλα καταστήματα για ${fmt.num(r.withCode)}.`;
+  if (r.offers != null) return ` ${fmt.num(r.offers)} τιμές.`;
+  return '';
 }
 function renderJobs() {
   const box = $('#jobs');
@@ -608,10 +619,10 @@ function renderJobs() {
     // stopping shows at once, before the program answers: the button never looks dead
     const stop = () => { if (w.stopping) return; w.stopping = true; renderJobs(); POST('/api/jobs/cancel', { id: job.id }).then((j) => { if (j && watching.has(job.id)) { watching.get(job.id).job = j; renderJobs(); } }).catch(() => { w.stopping = false; renderJobs(); }); };
     box.appendChild(h('div', { class: 'jobcard' + (stopping ? ' stopping' : '') + (queued ? ' queued' : '') },
-      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', null, job.label),
+      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', null, job.label || 'Εργασία'),
         stopping ? h('span', { class: 'jobstate' }, 'σταματάει…') : h('button', { class: 'x', style: { color: 'inherit', padding: '2px' }, title: queued ? 'Να μη γίνει' : 'Διακοπή', 'aria-label': 'Διακοπή: ' + job.label, onclick: stop }, icon('x'))),
       queued ? null : h('div', { class: 'progress' + (job.total && !stopping ? '' : ' indet') }, h('i', { style: { width: pct + '%' } })),
-      h('div', { class: 'msg', title: job.msg }, stopping ? 'Σταματάει: ό,τι διαβάστηκε ως τώρα μένει.' : job.total ? `${fmt.num(job.done)}/${fmt.num(job.total)} · ${job.msg}` : job.msg)));
+      h('div', { class: 'msg', title: job.msg || '' }, stopping ? 'Σταματάει: ό,τι διαβάστηκε ως τώρα μένει.' : job.total ? `${fmt.num(job.done || 0)}/${fmt.num(job.total)}` + (job.msg ? ' · ' + job.msg : '') : job.msg || (queued ? 'Περιμένει σειρά…' : 'Ξεκινάει…'))));
   }
 }
 
@@ -718,7 +729,7 @@ function readInfo(site) {
   const dur = (sec) => (sec >= 90 ? `${Math.round(sec / 60)} λεπτά` : sec ? `${sec} δευτ.` : '');
   const kept = s.syncedAt ? ` Ισχύουν τα στοιχεία της ${fmt.dateTime(s.syncedAt)} (${counts}).` : ' Δεν υπάρχουν ακόμα στοιχεία.';
   if (r && r.state === 'running') return { state: 'running', title: 'Διαβάζεται τώρα', text: (r.full ? 'Πλήρης ανάγνωση' : 'Ανάγνωση αλλαγών') + ` — ξεκίνησε ${fmt.ago(r.startedAt)}.` + (s.syncedAt ? kept : ''), counts };
-  if (r && r.state === 'failed') return { state: 'failed', title: 'Η ανάγνωση απέτυχε', text: `${fmt.ago(r.endedAt)}: ${r.error}` + kept, counts };
+  if (r && r.state === 'failed') return { state: 'failed', title: 'Η ανάγνωση απέτυχε', text: `${fmt.ago(r.endedAt)}: ${r.error || 'άγνωστο σφάλμα'}` + kept, counts };
   if (r && r.state === 'cancelled') return { state: 'cancelled', title: 'Η ανάγνωση σταμάτησε', text: `${fmt.ago(r.endedAt)}, πριν τελειώσει.` + kept, counts };
   if (!s.syncedAt) return { state: 'never', title: 'Δεν έχει διαβαστεί', text: 'Πάτα «Ανάγνωση» για να διαβαστούν τα προϊόντα του.', counts: '' };
   const old = (Date.now() - new Date(s.syncedAt).getTime()) / 36e5 > 36;

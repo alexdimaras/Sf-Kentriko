@@ -165,38 +165,82 @@
       if (tab === 'phone') await phoneTab(box, server, admin);
 
       if (tab === 'workers' && server && admin) {
-        // the computers of the shops that do the heavy work (lib/coord.js, app/worker.js)
-        const d = await GET('/api/workers');
-        const st = d.stats || {};
-        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Υπολογιστές που δουλεύουν για το πρόγραμμα'),
-          h('p', { class: 'muted' }, 'Τα PC των μαγαζιών κάνουν τη βαριά δουλειά (σήμερα: την έρευνα τιμών, ένα κατάστημα ανταγωνιστή τη φορά) και στέλνουν το αποτέλεσμα. Το πρόγραμμα στο cloud αποφασίζει τι είναι σωστό και το κρατά. Αν κλείσει ένα PC, η δουλειά του πάει σε άλλο· αν δεν υπάρχει κανένα για 10 λεπτά, την κάνει το cloud (πιο αργά).'),
-          h('div', { class: 'kpis wk-kpis' },
-            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.online || 0) + ' / ' + fmt.num(st.workers || 0)), h('span', null, 'ανοιχτά τώρα')),
-            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.running || 0)), h('span', null, 'τρέχουν')),
-            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.queued || 0)), h('span', null, 'περιμένουν'))),
-          h('p', { class: 'faint', style: { margin: '10px 0 0' } }, 'Τα δεδομένα φυλάγονται: ' + d.store + '.')));
-        const list = h('div', { class: 'stack s' });
-        for (const w of d.workers) {
-          const c = w.caps || {};
-          list.appendChild(h('div', { class: 'panel worker-card' },
-            h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
-              h('div', null, h('h3', { style: { margin: 0 } }, h('span', { class: 'dot ' + (w.online ? '' : 'off'), 'aria-hidden': 'true' }), ' ', w.name),
-                h('div', { class: 'faint' }, (w.online ? 'σε λειτουργία' : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${c.cpus || '?'} πυρήνες · ${fmt.num(Math.round((c.ramMB || 0) / 1024))} GB μνήμη · έκδοση ${c.version || '?'}` + (c.battery ? ' · σε μπαταρία (δεν παίρνει δουλειά)' : ''))),
-              btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox(`Αφαίρεση του «${w.name}»;`, 'Ο υπολογιστής δεν θα μπορεί πια να συνδεθεί. Οι εργασίες του γυρίζουν στη σειρά. Για να ξαναμπεί θέλει νέο κωδικό σύζευξης.', 'Αφαίρεση', true)) POST('/api/workers/revoke', { id: w.id }).then(() => App.route()).catch(fail); })),
-            w.jobs.length ? h('ul', { class: 'why' }, w.jobs.map((j) => h('li', null, `${j.label}: ${j.msg || ''}`))) : h('div', { class: 'faint', style: { marginTop: '6px' } }, 'Χωρίς εργασία αυτή τη στιγμή.')));
-        }
-        if (!d.workers.length) list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Κανένας υπολογιστής ακόμα'), h('p', null, 'Όλη η δουλειά γίνεται στο cloud. Πρόσθεσε ένα PC του μαγαζιού για να γίνεται πιο γρήγορα.')));
-        box.appendChild(list);
-        const codeBox = h('div');
-        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προσθήκη υπολογιστή'),
-          h('ol', { class: 'steps' },
-            h('li', null, 'Στο PC του μαγαζιού (Windows 10/11, 64-bit), στον φάκελο του SF Κέντρο, διπλό κλικ στο «SF-Kentro-Worker.cmd».'),
-            h('li', null, 'Πάτα «Νέος κωδικός» εδώ και γράψε τη διεύθυνση και τον κωδικό στο παράθυρο που ανοίγει εκεί. Ο κωδικός ισχύει 15 λεπτά και μία φορά.'),
-            h('li', null, 'Τέλος: ο υπολογιστής ξεκινά μόνος του με τα Windows, στο παρασκήνιο, με χαμηλή προτεραιότητα, και δεν παίρνει δουλειά όταν είναι σε μπαταρία.')),
-          h('div', { class: 'row' }, btn('Νέος κωδικός', { cls: 'primary', icon: 'new' }, () => POST('/api/workers/pair').then((r) => {
-            clear(codeBox);
-            codeBox.appendChild(h('div', { class: 'pair-code' }, h('div', { class: 'faint' }, 'Διεύθυνση'), h('b', { class: 'mono' }, location.origin), h('div', { class: 'faint' }, `Κωδικός (ισχύει ${r.minutes} λεπτά)`), h('b', { class: 'mono big' }, r.code)));
-          }).catch(fail))), codeBox));
+        // the computers of the shops that do the heavy work (lib/coord.js, app/worker.js) — live, every 3 seconds
+        const root = h('div', { class: 'stack' });
+        box.appendChild(root);
+        const hist = App.workerHist || (App.workerHist = new Map()); // id → last CPU readings (for the line)
+        const nz = (v) => fmt.num(Number(v) || 0);
+        const lvl = (pct) => (pct >= 90 ? 'hot' : pct >= 65 ? 'warm' : 'ok');
+        const bar = (label, pct, text) => h('div', { class: 'gauge ' + lvl(pct) }, h('div', { class: 'gauge-top' }, h('span', null, label), h('b', null, text)), h('div', { class: 'gauge-bar' }, h('i', { style: { width: Math.max(0, Math.min(100, Number(pct) || 0)) + '%' } })));
+        const spark = (vals) => {
+          const W = 160, H = 34, n = vals.length;
+          if (n < 2) return h('div', { class: 'spark empty' });
+          const pts = vals.map((v, k) => `${Math.round((k / (n - 1)) * W)},${Math.round(H - (Math.max(0, Math.min(100, v)) / 100) * (H - 2) - 1)}`).join(' ');
+          const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('class', 'spark'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('preserveAspectRatio', 'none');
+          svg.innerHTML = `<polyline points="0,${H} ${pts} ${W},${H}" class="fill"/><polyline points="${pts}" class="line"/>`;
+          return svg;
+        };
+        const hours = (x) => (x == null ? '—' : x < 1 ? `${Math.max(1, Math.round(x * 60))} λεπτά` : `${String(x).replace('.', ',')} ώρες`);
+        const pairBox = h('div');
+        const draw = (d) => {
+          clear(root);
+          const rs = d.research || { looked: 0, found: 0, waiting: 0, perHour: 0, hoursLeft: null };
+          const st = d.stats || {};
+          const total = (rs.looked || 0) + (rs.waiting || 0);
+          const pct = total ? Math.round(((rs.looked || 0) / total) * 100) : 0;
+          root.appendChild(h('div', { class: 'panel research-live' },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', { style: { margin: 0 } }, 'Έρευνα στο internet'), h('span', { class: 'live-dot' + (rs.perHour ? ' on' : '') }, rs.perHour ? 'σε εξέλιξη' : 'σε αναμονή')),
+            h('p', { class: 'muted' }, 'Κωδικοί (SKU), EAN, φωτογραφίες και μάρκα για ό,τι λείπει, από καταστήματα με το ίδιο ακριβώς προϊόν. Τα αποτελέσματα πάνε στις Διορθώσεις, για έγκριση.'),
+            h('div', { class: 'kpis wk-kpis four' },
+              h('div', { class: 'kpi' }, h('b', null, nz(rs.waiting)), h('span', null, 'προϊόντα μένουν')),
+              h('div', { class: 'kpi' }, h('b', null, nz(rs.perHour)), h('span', null, 'προϊόντα / ώρα')),
+              h('div', { class: 'kpi' }, h('b', null, hours(rs.hoursLeft)), h('span', null, 'μέχρι να τελειώσουν')),
+              h('div', { class: 'kpi' }, h('b', null, nz(rs.found)), h('span', null, 'βρέθηκαν σε άλλα καταστήματα'))),
+            h('div', { class: 'gauge ok', style: { marginTop: '12px' } }, h('div', { class: 'gauge-top' }, h('span', null, `Ελέγχθηκαν ${nz(rs.looked)} από ${nz(total)}`), h('b', null, pct + '%')), h('div', { class: 'gauge-bar' }, h('i', { style: { width: pct + '%' } }))),
+            rs.perHour ? null : h('p', { class: 'faint', style: { margin: '10px 0 0' } }, (st.online || 0) ? 'Οι υπολογιστές ξεκινούν· ο ρυθμός φαίνεται μετά από λίγα λεπτά.' : 'Κανένας υπολογιστής ανοιχτός: το πρόγραμμα στο cloud κάνει 25 προϊόντα τη μέρα. Άνοιξε έναν υπολογιστή που βοηθά για συνεχή, γρήγορη έρευνα.')));
+          for (const w of d.workers || []) {
+            const c = w.caps || {};
+            const L = w.load;
+            if (L) { const a = hist.get(w.id) || []; a.push(L.cpu); while (a.length > 60) a.shift(); hist.set(w.id, a); }
+            const slots = L ? L.slots || c.slots || 1 : c.slots || 1;
+            const busy = L ? L.busy || 0 : (w.jobs || []).length;
+            root.appendChild(h('div', { class: 'panel worker-card' },
+              h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
+                h('div', { style: { minWidth: 0 } }, h('h3', { style: { margin: 0 } }, h('span', { class: 'dot ' + (w.online ? '' : 'off'), 'aria-hidden': 'true' }), ' ', w.name || 'Υπολογιστής'),
+                  h('div', { class: 'faint' }, (w.online ? 'σε λειτουργία' : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${nz(c.cpus)} πυρήνες · ${nz(Math.round((c.ramMB || 0) / 1024))} GB · έκδοση ${c.version || '—'}` + (L && L.battery ? ' · σε μπαταρία (καμία νέα εργασία)' : ''))),
+                btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox(`Αφαίρεση του «${w.name}»;`, 'Ο υπολογιστής δεν θα μπορεί πια να συνδεθεί. Οι εργασίες του γυρίζουν στη σειρά. Για να ξαναμπεί θέλει νέο κωδικό σύζευξης.', 'Αφαίρεση', true)) POST('/api/workers/revoke', { id: w.id }).then(() => App.route()).catch(fail); })),
+              L ? h('div', { class: 'wk-live' },
+                h('div', { class: 'wk-gauges' },
+                  bar('Επεξεργαστής', L.cpu, `${nz(L.cpu)}%`),
+                  bar('Μνήμη', L.ram, `${nz(L.ram)}% · πρόγραμμα ${nz(L.procMB)} MB`),
+                  h('div', { class: 'gauge' }, h('div', { class: 'gauge-top' }, h('span', null, 'Εργάτες'), h('b', null, `${nz(busy)} / ${nz(slots)} δουλεύουν`)), h('div', { class: 'slots' }, Array.from({ length: slots }, (_, k) => h('i', { class: k < busy ? 'on' : '' }))))),
+                h('div', { class: 'wk-side' }, spark(hist.get(w.id) || []), h('div', { class: 'faint', style: { fontSize: '12px' } }, 'επεξεργαστής, τελευταία 3 λεπτά'))) : null,
+              L ? h('div', { class: 'wk-rates' },
+                h('span', null, h('b', null, nz(L.perHour.products)), ' προϊόντα/ώρα'), h('span', null, h('b', null, nz(L.perHour.pages)), ' σελίδες/ώρα'), h('span', null, h('b', null, nz(L.perHour.searches)), ' αναζητήσεις/ώρα'),
+                ...Object.entries(L.engines || {}).map(([k, v]) => h('span', { class: 'pill ' + (v === 'ok' ? 'ok' : 'warn') }, (k === 'ddg' ? 'DuckDuckGo' : 'Bing') + (v === 'ok' ? ' ✓' : ' σε παύση'))))
+                : h('div', { class: 'faint', style: { marginTop: '6px' } }, w.online ? 'Περιμένει τις πρώτες μετρήσεις… (παλιότερη έκδοση; ξανακατέβασε τον φάκελο)' : 'Κλειστό: ανοίγει μόνο του με τα Windows.'),
+              (w.jobs || []).length ? h('ul', { class: 'why' }, w.jobs.map((j) => h('li', null, [j.label || 'Εργασία', j.total ? `${nz(j.done)}/${nz(j.total)}` : '', j.msg || ''].filter(Boolean).join(' · ')))) : null));
+          }
+          if (!(d.workers || []).length) root.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Κανένας υπολογιστής ακόμα'), h('p', null, 'Όλη η δουλειά γίνεται στο cloud, αργά. Πρόσθεσε το PC του μαγαζιού (πιο κάτω) για να δουλεύει στο τέρμα.')));
+          root.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προσθήκη υπολογιστή'),
+            h('ol', { class: 'steps' },
+              h('li', null, 'Στο PC (Windows 10/11, 64-bit): κατέβασε τον φάκελο του προγράμματος (DIAKOMISTIS-CLOUD.txt, ★★ βήμα 5) και διπλό κλικ στο «SF-Kentro-Worker.cmd».'),
+              h('li', null, 'Πάτα «Νέος κωδικός» εδώ και γράψε τη διεύθυνση και τον κωδικό στο παράθυρο που ανοίγει εκεί. Ο κωδικός ισχύει 15 λεπτά και μία φορά.'),
+              h('li', null, 'Τέλος: ξεκινά μόνο του με τα Windows και δουλεύει σε όλους τους πυρήνες (αφήνει έναν για σένα, με χαμηλή προτεραιότητα: δεν σε καθυστερεί).')),
+            h('div', { class: 'row' }, btn('Νέος κωδικός', { cls: 'primary', icon: 'new' }, () => POST('/api/workers/pair').then((r) => {
+              clear(pairBox);
+              pairBox.appendChild(h('div', { class: 'pair-code' }, h('div', { class: 'faint' }, 'Διεύθυνση'), h('b', { class: 'mono' }, location.origin), h('div', { class: 'faint' }, `Κωδικός (ισχύει ${nz(r && r.minutes)} λεπτά)`), h('b', { class: 'mono big' }, (r && r.code) || '—')));
+            }).catch(fail))), pairBox));
+          root.appendChild(h('p', { class: 'faint', style: { margin: 0 } }, 'Τα δεδομένα φυλάγονται ' + (d.store || '—') + '. Ενημέρωση κάθε 3 δευτερόλεπτα.'));
+        };
+        let failed = 0;
+        const tick = async () => {
+          if (!document.body.contains(root)) return; // left the screen: no more updates
+          try { draw(await GET('/api/workers')); failed = 0; } catch (e) { if (++failed === 3) toast('Οι υπολογιστές δεν απαντούν προς το παρόν· δοκιμάζει ξανά.', { err: true }); }
+          setTimeout(tick, 3000);
+        };
+        await tick();
         return;
       }
       if (tab === 'audit' && server && admin) {

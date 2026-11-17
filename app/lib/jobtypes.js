@@ -86,10 +86,22 @@ function registerCodes() {
       const results = {};
       const items = (payload.items || []).slice(0, 40);
       let i = 0;
+      let rested = 0;
       for (const it of items) {
         if (api.cancelled()) break;
         api.progress(i, items.length, `Έρευνα στο internet: ${it.name}`);
-        try { results[it.k] = await cf.lookUp(it, io); } catch (e) { if (e instanceof sfind.Blocked) break; results[it.k] = { hits: [], read: 0 }; }
+        for (;;) {
+          try { results[it.k] = await cf.lookUp(it, io); break; } catch (e) {
+            if (!(e instanceof sfind.Blocked)) { results[it.k] = { hits: [], read: 0 }; break; }
+            // the search engines rest: wait a minute and go on (up to a quarter of an hour), instead of ending empty
+            if (rested >= 15 || api.cancelled()) break;
+            api.progress(i, items.length, 'Οι μηχανές αναζήτησης ζήτησαν παύση· συνεχίζει σε λίγο…');
+            await new Promise((x) => setTimeout(x, 60000));
+            rested++; state.blocked.clear();
+          }
+        }
+        if (rested >= 15) break;
+        sfind.count('product');
         i++;
       }
       return { results };

@@ -129,7 +129,25 @@ const ENGINES = [
 // (a helping computer may set its own: SFK_SEARCH_GAP_MS)
 const lastBy = {};
 function gapMs() { const g = Number(process.env.SFK_SEARCH_GAP_MS) || 0; return g > 0 ? g + Math.random() * g * 0.5 : 4000 + Math.random() * 3000; }
+// On a helping computer the searches of all its runners (one process per core) are paced together by the supervisor
+// (app/worker.js): one permit per search, per engine; an engine that turned us away is paused for all of them.
+let permitSeq = 0;
+const permits = new Map();
+function askPermit(eng) {
+  if (!permits.size && !askPermit.on) { askPermit.on = true; process.on('message', (m) => { if (m && m.t === 'permit' && permits.has(m.id)) { const f = permits.get(m.id); permits.delete(m.id); f(m.ok !== false); } }); }
+  const id = ++permitSeq;
+  return new Promise((ok) => { permits.set(id, ok); process.send({ t: 'permit', id, eng }); });
+}
+function tellBlocked(eng) { if (process.env.SFK_RUNNER && process.send) try { process.send({ t: 'blocked', eng }); } catch (_) { /* parent gone */ } }
+function count(k) { if (process.env.SFK_RUNNER && process.send) try { process.send({ t: 'count', k }); } catch (_) { /* parent gone */ } }
 async function paced(eng, state) {
+  if (process.env.SFK_RUNNER && process.send) {
+    // refused: that engine is resting (it turned someone away a little while ago) — not a new refusal
+    if (!(await askPermit(eng.id))) throw Object.assign(new Blocked(eng.name), { paused: true });
+    if (state.signal && state.signal.aborted) throw new Error('Σταμάτησε.');
+    count('search');
+    return;
+  }
   const wait = (lastBy[eng.id] || 0) + gapMs() - Date.now();
   if (wait > 0 && !process.env.SFK_SEARCH_FAST) await http.nap(wait, state.signal);
   if (state.signal && state.signal.aborted) throw new Error('Σταμάτησε.');
@@ -154,7 +172,7 @@ async function searchWide(q, state) {
       res.forEach((x, i) => { x.rank = i; x.engine = eng.id; });
       out.push(...res);
     } catch (e) {
-      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) state.blocked.add(eng.id);
+      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused) tellBlocked(eng.id); }
     }
   }));
   if (!any && ENGINES.every((e) => state.blocked.has(e.id))) throw new Blocked('all');
@@ -409,4 +427,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };
+module.exports = { count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };
