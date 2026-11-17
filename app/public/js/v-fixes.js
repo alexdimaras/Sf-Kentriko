@@ -234,7 +234,7 @@
             h('p', { class: 'fx-why' }, h('b', null, 'Γιατί: '), c.why),
             h('div', { class: 'fx-src' }, h('b', null, 'Πηγή: '), c.source && c.source.url ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(c.source.url); } }, c.source.label) : (c.source ? c.source.label : '—'),
               (c.sources || []).map((x) => h('span', { class: 'fx-also' }, '+ ', x.url ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); App.openUrl(x.url); } }, x.label) : x.label)),
-              h('span', { class: 'fx-conf ' + (c.level === 'high' ? 'high' : 'medium'), title: SURE[c.level] || SURE.medium }, 'Σιγουριά: ' + (c.level === 'high' ? 'υψηλή' : 'μέτρια')),
+              h('span', { class: 'fx-conf ' + (c.level === 'high' ? 'high' : 'medium'), title: SURE[c.level] || SURE.medium }, 'Σιγουριά ' + (c.confidence ? c.confidence + '%' : (c.level === 'high' ? 'υψηλή' : 'μέτρια'))),
               c.field === 'desc' && c.english && v.ai ? btn('Μετάφραση με AI', { cls: 'sm ghost' }, () => { toast('Μετάφραση… (μπορεί να πάρει λίγο)'); POST('/api/fixes/translate', { site: cd.site, id: cd.pid }).then(() => { toast('Μεταφράστηκε: διάβασέ τη πριν την έγκριση.'); load(); }).catch(fail); }) : null,
               c.group === 'content' && status === 'pending' ? h('button', { type: 'button', class: 'linkish', onclick: () => pageSource(cd) }, 'άλλη σελίδα ως πηγή…') : null)));
         }

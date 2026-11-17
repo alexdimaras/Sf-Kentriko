@@ -362,6 +362,27 @@ const routes = {
       const items = [{ k: (b.site === 'st' ? 'st' : 'sf') + ':' + p.id, name: p.name, brand: p.brand || '', price: p.price || 0 }];
       return jobs.start('codes', 'Κωδικός από το internet: ' + p.name.slice(0, 60), (job) => webCodes(job, { items }));
     }
+    if (Array.isArray(b.keys) && b.keys.length) {
+      // chosen products (e.g. «Χωρίς στοιχεία»): to the computers first in the queue, or here when there is none
+      const items = [];
+      for (const k of b.keys.slice(0, 400)) {
+        const m = String(k).match(/^(sf|st):(\d+)$/); if (!m) continue;
+        const p = catalog.byId(m[1]).get(Number(m[2])); if (!p) continue;
+        items.push({ k: m[1] + ':' + p.id, name: p.name, brand: p.brand || '', sku: p.sku || '', price: p.price || 0 });
+      }
+      if (!items.length) throw new Error('Κανένα προϊόν.');
+      return (async () => {
+        const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web')) : [];
+        if (ws.length) {
+          const s0 = settings.all();
+          const own = ['sf', 'st'].map((x) => { try { return new URL(s0.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
+          for (let i = 0; i < items.length; i += 10) await coord.enqueue('codes.web', { items: items.slice(i, i + 10), own }, { dedupKey: 'codes.web:pick:' + items[i].k + ':' + Date.now(), priority: 20, auto: true });
+          await feedWebResearch();
+          return { queued: items.length, computers: ws.length };
+        }
+        return jobs.start('codes', `Έρευνα στο internet (${items.length})`, (job) => webCodes(job, { items: items.slice(0, 60) }));
+      })();
+    }
     return jobs.start('codes', 'Κωδικοί από το internet', (job) => webCodes(job, { max: Math.min(200, Number(b.max) || 25) }));
   },
   'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
@@ -759,10 +780,13 @@ async function webCodes(job, opts) {
   return cf.run(job, { max: o.max || 25, items: o.items });
 }
 async function feedWebResearch() {
-  if (!coordReady || settings.all().webResearchAuto === false) return;
+  if (!coordReady) return;
+  const live = await coord.liveOf('codes.web');
+  // the screens show which products wait for the search
+  market.setQueuedWeb(live.flatMap((j) => ((j.payload && j.payload.items) || []).map((x) => x.k)));
+  if (settings.all().webResearchAuto === false) return;
   const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('codes.web') && !w.caps.battery);
   if (!ws.length) return;
-  const live = await coord.liveOf('codes.web');
   // every runner of every computer busy, and two groups more waiting for each computer
   const want = ws.reduce((n, w) => n + (Number(w.caps.slots) || 1) + 2, 0) - live.length;
   if (want <= 0) return;

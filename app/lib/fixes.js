@@ -164,7 +164,7 @@ function witnessesFor(C, site, pid) {
   if (!e || !Array.isArray(e.competitors)) return [];
   const out = [];
   for (const c of e.competitors) {
-    if (c.ignored || c.manual || c.match !== 'exact') continue;
+    if (c.ignored || c.manual || c.web || c.match !== 'exact') continue; // (the internet's are counted on their own: webHits)
     let proof = c.confirmed ? 'το επιβεβαίωσες εσύ' : c.how === 'ean' ? 'ίδιο EAN' : c.how === 'sku' ? 'ίδιος κωδικός' : '';
     // matched by the words of the title (brand + model): good enough for a code or a photo to look at, never for sure
     const byWords = !proof && (c.ev || []).includes('ίδια μάρκα') && (c.ev || []).some((x) => /^λέξεις μοντέλου/.test(x));
@@ -330,7 +330,19 @@ function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
 function invalidate() { dirty = true; ctx = null; if (onDirty) onDirty('fixes'); }
 function isDirty() { return dirty || !prop; }
 
-const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); return c; };
+/**
+ * How sure a proposal is, in %, from where it comes and how many sources agree: a rule of the shop or our own other
+ * site 97–99; a sure source 90–96 (+2 for each other source that says the same); «look at it» 60–85.
+ */
+function confidenceOf(c) {
+  const kinds = [c.source && c.source.kind].concat((c.sources || []).map((x) => x && x.kind)).filter(Boolean);
+  const n = 1 + (c.sources || []).length;
+  if (kinds.includes('rule') || kinds.includes('mirror')) return 98;
+  if (kinds.includes('twin')) return 97;
+  if (c.level === 'high') return Math.min(96, 90 + 2 * (n - 1) + (kinds.includes('supplier') ? 2 : 0));
+  return Math.min(85, 70 + 5 * (n - 1) + (kinds.includes('supplier') ? 5 : 0));
+}
+const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); c.confidence = confidenceOf(c); return c; };
 
 function buildCtx() {
   const catalog = require('./catalog');

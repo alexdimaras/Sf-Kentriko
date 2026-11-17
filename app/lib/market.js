@@ -581,7 +581,7 @@ function stats(list, ctx) {
     if (c.match !== 'exact') { c.flag = 'similar'; continue; }
     if (s.marketGreekOnly && c.country === 'other') { c.flag = 'foreign'; c.note = 'κατάστημα εξωτερικού'; continue; }
     if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
-    if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < weekAgo) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
+    if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < (c.web ? Date.now() - WEB_DAYS * 864e5 : weekAgo)) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
     c.used = true; c.flag = 'used';
   }
   const suspect = (c, why) => { c.used = false; c.flag = 'suspect'; c.note = why; };
@@ -719,6 +719,45 @@ function compute(site, p, entry) {
   });
 }
 
+/** The products waiting in the queue of the internet research (server.js keeps it up to date). */
+let queuedWeb = new Set();
+function setQueuedWeb(keys) { queuedWeb = new Set(keys); }
+const WEB_DAYS = 21; // a price found on a shop page of the internet counts for three weeks (it is looked up again before)
+/**
+ * Prices found on the internet (lib/codefind.js: shop pages that show the SAME product) into the price research:
+ * one offer per shop, beside the competitors' (never over them: a shop that is a competitor is read from its catalog).
+ * byKey: { 'site:id': [hits] } → how many products changed.
+ */
+function mergeWeb(byKey) {
+  const catalog = require('./catalog');
+  const all = results();
+  const dec = decisions();
+  const byId = { sf: catalog.byId('sf'), st: catalog.byId('st') };
+  const compHosts = new Set(competitors().map((c) => U.hostOf(c.url)).filter(Boolean));
+  const at = U.nowIso();
+  let n = 0;
+  for (const [key, hits] of Object.entries(byKey || {})) {
+    const [site, id] = key.split(':');
+    const p = byId[site] && byId[site].get(Number(id));
+    if (!p) continue;
+    const offers = (hits || []).filter((h) => Number(h.price) > 0 && h.host && !compHosts.has(h.host)).map((h) => ({
+      shop: h.host, competitorId: 'web:' + h.host, name: h.name || '', sku: h.code || '', brand: h.brand || '', url: h.url, price: U.r2(Number(h.price)), priceMax: 0, regular: 0,
+      inStock: h.inStock !== false, img: h.img || '', match: 'exact', score: h.how === 'code' ? 1 : 0.9, how: h.how === 'code' ? 'sku' : 'words',
+      ev: [h.how === 'code' ? 'ίδιος κωδικός' : 'ίδια μάρκα και μοντέλο', 'βρέθηκε στο internet'], country: /\.(gr|cy)$/.test(h.host) || /[\u0370-\u03ff]{3,}/.test(h.name || '') ? 'GR' : 'other', /* a Greek shop: .gr / .cy, or its title in Greek */ seenAt: at, web: true,
+    }));
+    const prev = all[key] || null;
+    if (!offers.length && !(prev && prev.competitors.some((c) => c.web))) continue;
+    const list = (prev ? prev.competitors.filter((c) => !c.web) : []).concat(offers);
+    const d = dec[key] || {};
+    const yes = new Set(d.yes || []), no = new Set(d.no || []);
+    for (const x of list) { x.ignored = no.has(x.url); if (yes.has(x.url)) { x.match = 'exact'; x.confirmed = true; } }
+    all[key] = compute(site, p, { at: prev ? prev.at : at, name: p.name, competitors: list, prevStats: prev ? prev.prevStats || null : null });
+    n++;
+  }
+  if (n) store.write('market', all);
+  return n;
+}
+
 function results() { return store.read('market', {}); }
 function decisions() { return store.read('market-decisions', {}); } // 'site:id' -> { yes: [url], no: [url] }
 function resultFor(site, id) {
@@ -835,7 +874,8 @@ async function run(targets, job, opts) {
     // catalog could not be read today keeps its last offer; a shop taken off the list loses it)
     const cur = new Map(), manual = [];
     let dropped = false;
-    if (prev) for (const c of prev.competitors) { if (c.manual) manual.push(c); else if (readableIds.has(c.competitorId)) cur.set(c.competitorId, c); else dropped = true; }
+    // (the prices found on the internet stay beside them, like the ones written by hand)
+    if (prev) for (const c of prev.competitors) { if (c.manual || c.web) manual.push(c); else if (readableIds.has(c.competitorId)) cur.set(c.competitorId, c); else dropped = true; }
     work.push({ t, p, key, f, prev, cur, manual, touched: !prev || dropped, yes: new Set(d.yes || []), no: new Set(d.no || []), searchable: !!(f.keys.length || f.sku || f.codes.length || f.gtin || f.code) });
   }
   // ---- progress that is never lost ----
@@ -1083,17 +1123,27 @@ function overview(site, q) {
     if (p.type === 'variation' || banned.has(p.id)) continue;
     let e = all[site + ':' + p.id], master = false;
     if (!e && L && L.stToSf.has(p.id)) { e = all['sf:' + L.stToSf.get(p.id)]; master = !!e; }
-    if (!e) continue;
+    // never found at any shop: shown too («Χωρίς στοιχεία»), with where the search on the internet stands
+    if (!e) e = { at: null, stats: { count: 0 }, competitors: [], action: 'nodata', reason: 'Δεν βρέθηκε ακόμα σε κανένα κατάστημα (ούτε στους ανταγωνιστές, ούτε στο internet).' };
     const st = e.stats || { count: 0 };
     rows.push({
       id: p.id, name: p.name, brand: p.brand, sku: p.sku, img: p.thumb || p.images[0] || '', url: p.url, ourPrice: p.price, at: e.at, stats: st, suggested: e.suggested,
       floor: e.floor, raised: e.raised, cost: e.cost || 0, rrp: e.rrp || 0, verdict: verdict(e), action: verdict(e), reason: e.reason || '', rank: e.rank || 0, of: e.of || 0, vsMedian: e.vsMedian == null ? null : e.vsMedian,
       competitors: e.competitors, diff: e.suggested && p.price ? U.r2(e.suggested - p.price) : 0, type: p.type, master,
       prevStats: e.prevStats || null, bigDrop: !!e.bigDrop, careful: !!e.careful, stage: flow.stageOf(site, p.id),
+      key: (master ? 'sf:' + L.stToSf.get(p.id) : site + ':' + p.id),
     });
+  }
+  // the search on the internet: waiting in the queue, looked up (with or without a price), not yet
+  const ws = require('./codefind').stateOf(rows.map((r) => r.key));
+  for (const r of rows) {
+    const w = ws[r.key];
+    r.web = queuedWeb.has(r.key) ? { state: 'queued' } : w ? { state: w.prices ? 'found' : 'notfound', at: w.at, hits: w.hits, prices: w.prices } : { state: 'never' };
   }
   const counts = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length, notReady: rows.filter((r) => r.stage && r.stage < 4).length };
   for (const r of rows) { counts[r.action] = (counts[r.action] || 0) + 1; if (r.stats.similar) counts.similar++; if (r.stats.suspect) counts.suspect++; }
+  counts.searching = rows.filter((r) => r.action === 'nodata' && r.web.state !== 'notfound').length;
+  counts.notfound = rows.filter((r) => r.action === 'nodata' && r.web.state === 'notfound').length;
   const order = { lower: 0, raise: 1, watch: 2, hold: 3, nodata: 4 };
   let list = rows;
   const want = q.action || q.verdict;
@@ -1101,6 +1151,9 @@ function overview(site, q) {
   if (q.ready === '1') list = list.filter((r) => !r.stage || r.stage >= 4); // prices only for products whose code, facts and texts are done
   if (q.similar === '1') list = list.filter((r) => r.stats.similar > 0);
   if (q.suspect === '1') list = list.filter((r) => r.stats.suspect > 0);
+  // «Χωρίς στοιχεία» in two: still to be looked up on the internet / looked up and not found anywhere
+  if (q.web === 'searching') list = list.filter((r) => r.action === 'nodata' && r.web.state !== 'notfound');
+  if (q.web === 'notfound') list = list.filter((r) => r.action === 'nodata' && r.web.state === 'notfound');
   if (q.q) { const t = U.foldKey(q.q).split(' ').filter(Boolean); list = list.filter((r) => { const h = U.foldKey(r.name + ' ' + (r.sku || '') + ' ' + (r.brand || '')); return t.every((x) => h.includes(x)); }); }
   // the biggest money first: the largest change, then the farthest from the market
   list.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.diff) - Math.abs(a.diff) || Math.abs(b.vsMedian || 0) - Math.abs(a.vsMedian || 0));
@@ -1156,7 +1209,7 @@ function setCost(site, id, cost, source, rrp) {
   });
 }
 
-module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
+module.exports = { setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,

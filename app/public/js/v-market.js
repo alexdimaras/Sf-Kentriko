@@ -12,6 +12,31 @@
   const FLAG = { used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], ignored: ['δεν μετράει', ''] };
   const flagOf = (c) => c.flag || (c.ignored ? 'ignored' : c.match === 'exact' ? (c.used === false ? 'out' : 'used') : 'similar');
   const pct = (v) => (v > 0 ? '+' : '') + Math.round(v * 100) + '%';
+  /**
+   * How sure it is the SAME product, in %: a person's yes 99, the same EAN 98, the same code 96, brand + model + the rest
+   * of the words 86–93 (by how close the titles are), «similar» below 70 (not counted in the price).
+   */
+  const confOf = (c) => {
+    if (c.confirmed) return 99;
+    if (c.manual) return 95;
+    const ev = (c.ev || []).join(' ');
+    if (c.match === 'exact') {
+      if (/EAN/.test(ev) || c.how === 'ean') return 98;
+      if (/ίδιος κωδικός/.test(ev) || c.how === 'sku') return /μοντέλου/.test(ev) ? 92 : 96;
+      return Math.round(86 + 7 * Math.max(0, Math.min(1, Number(c.score) || 0.8)));
+    }
+    return Math.round(Math.max(20, Math.min(69, (Number(c.score) || 0.5) * 70)));
+  };
+  const confPill = (c) => { const v = confOf(c); return h('span', { class: 'pill conf ' + (v >= 90 ? 'ok' : v >= 70 ? 'warn' : ''), title: 'Πόσο σίγουρο είναι ότι πρόκειται για το ίδιο ακριβώς προϊόν' + (c.web ? ' (βρέθηκε στο internet)' : '') }, v + '%'); };
+  App.offerConfidence = confOf;
+  // where the search on the internet stands for a product without a price
+  const webPill = (w) => {
+    w = w || { state: 'never' };
+    if (w.state === 'queued') return h('div', { class: 'pill warn', title: 'Περιμένει σειρά στους υπολογιστές που βοηθούν' }, 'σε σειρά για internet');
+    if (w.state === 'notfound') return h('div', { class: 'pill', title: `Ελέγχθηκε ${fmt.ago(w.at)}: ${w.hits ? w.hits + ' σελίδες με το ίδιο προϊόν, χωρίς τιμή' : 'κανένα κατάστημα με το ίδιο ακριβώς προϊόν'}` }, 'internet: δεν βρέθηκε · ' + fmt.ago(w.at));
+    if (w.state === 'found') return h('div', { class: 'pill ok' }, `internet: ${w.prices} τιμές`);
+    return h('div', { class: 'pill', title: 'Δεν έχει αναζητηθεί ακόμα στο internet' }, 'internet: όχι ακόμα');
+  };
   const actPill = (a) => h('span', { class: 'act ' + a, title: (ACT[a] || ACT.nodata)[1] }, (ACT[a] || ACT.nodata)[0]);
 
   /** Price ladder: every shop as a dot on one line, our price as the marker. Hollow red = suspect, grey = out of stock. */
@@ -85,7 +110,7 @@
           h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),
           h('td', { class: 'num' }, ours ? h('span', { class: 'price-diff ' + (vs < -0.005 ? 'down' : vs > 0.005 ? 'up' : '') }, pct(vs)) : ''),
           h('td', null, c.inStock === false ? h('span', { class: 'faint' }, 'εξαντλημένο') : 'διαθέσιμο'),
-          h('td', null, h('span', { class: 'pill ' + FLAG[f][1] }, FLAG[f][0]), c.note && f !== 'used' ? h('div', { class: 'hint', style: { margin: '2px 0 0' } }, c.note) : null),
+          h('td', null, h('span', { class: 'pill ' + FLAG[f][1] }, FLAG[f][0]), confPill(c), c.note && f !== 'used' ? h('div', { class: 'hint', style: { margin: '2px 0 0' } }, c.note) : null),
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', justifyContent: 'flex-end' } }, c.url ? h('button', { class: 'x', title: 'Άνοιγμα της σελίδας τους', onclick: () => App.openUrl(c.url) }, icon('ext')) : null,
             ctx && !c.manual && c.match !== 'exact' && !c.ignored ? h('button', { class: 'btn sm', title: 'Είναι το ίδιο προϊόν: να μετράει στην τιμή', onclick: () => decide(ctx, c.url, 'yes') }, icon('check'), 'Ίδιο') : null,
             ctx && !c.ignored ? h('button', { class: 'btn sm ghost', title: 'Δεν είναι το ίδιο προϊόν / να μη μετράει', onclick: () => decide(ctx, c.url, 'no') }, icon('x'), 'Όχι') : null,
@@ -149,6 +174,7 @@
       return;
     }
     let c0 = head.counts;
+    let webF = p.web === 'notfound' || p.web === 'searching' ? p.web : '';
     let action = (ACT[p.f] || p.f === 'all') ? p.f : (c0.lower ? 'lower' : c0.raise ? 'raise' : c0.watch ? 'watch' : 'all');
     let q = p.q || '';
     let page = 1;
@@ -202,10 +228,27 @@
       bulk.appendChild(btn('Καθαρισμός', { cls: 'ghost' }, () => { selected.clear(); load(); }));
     };
     const load = async () => {
-      const ov = await GET('/api/market', { site, action: action === 'all' ? '' : action, suspect: suspectOnly ? '1' : '', ready: readyOnly ? '1' : '', q, page, per: 100 });
+      const ov = await GET('/api/market', { site, action: action === 'all' ? '' : action, web: action === 'nodata' ? webF : '', suspect: suspectOnly ? '1' : '', ready: readyOnly ? '1' : '', q, page, per: 100 });
       c0 = ov.counts; drawF(); // the counts follow every decision
       clear(box);
       if (action !== 'all') box.appendChild(h('p', { class: 'muted', style: { margin: '0 0 10px' } }, h('b', null, ACT[action][0] + ': '), ACT[action][1].replace('2 καταστήματα', minShops + ' καταστήματα')));
+      if (action === 'nodata') {
+        // «Χωρίς στοιχεία» in two tabs: still to be searched on the internet / searched and not found anywhere
+        const tabBtn = (k, label, n) => h('button', { type: 'button', class: 'chip' + (webF === k ? ' on' : ''), onclick: () => { webF = k; page = 1; load(); } }, label + ' ', h('b', null, fmt.num(n || 0)));
+        const allKeys = async () => (await GET('/api/market', { site, action: 'nodata', web: webF, per: 400 })).rows.map((r) => r.key);
+        box.appendChild(h('div', { class: 'panel', style: { marginBottom: '12px' } },
+          h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '8px', justifyContent: 'space-between' } },
+            h('div', { class: 'row tight', style: { flexWrap: 'wrap' } }, tabBtn('', 'Όλα', (c0.searching || 0) + (c0.notfound || 0)), tabBtn('searching', 'Ψάχνονται / για αναζήτηση', c0.searching), tabBtn('notfound', 'Δεν βρέθηκαν πουθενά', c0.notfound)),
+            btn(webF === 'notfound' ? 'Ψάξε ξανά στο internet' : 'Ψάξε στο internet τώρα', { cls: 'sm primary', icon: 'search', title: 'Τα πρώτα 400 της λίστας: στους υπολογιστές που βοηθούν (πρώτα στη σειρά), αλλιώς λίγα εδώ' }, async () => {
+              try {
+                const r = await POST('/api/codes/find', { keys: await allKeys() });
+                if (r && r.queued != null) toast(`${fmt.num(r.queued)} προϊόντα μπήκαν πρώτα στη σειρά των υπολογιστών (${fmt.num(r.computers)}). Η πρόοδος φαίνεται στις Ρυθμίσεις → Υπολογιστές.`, { ms: 9000 });
+                else if (r && r.id) watchJob(r, { done: () => load() });
+                load();
+              } catch (e) { fail(e); }
+            })),
+          h('p', { class: 'hint', style: { margin: '8px 0 0' } }, 'Αναζήτηση σε μηχανές αναζήτησης, ανάγνωση σελίδων καταστημάτων, και μόνο το ΙΔΙΟ προϊόν (ίδιος κωδικός ή μάρκα + μοντέλο + χρώμα + ποσότητα) φέρνει τιμή. Με ανοιχτό υπολογιστή που βοηθά γίνεται συνεχώς.')));
+      }
       if (!ov.rows.length) { box.appendChild(h('div', { class: 'panel empty' }, h('p', null, 'Κανένα προϊόν εδώ.'))); renderBulk(); return; }
       const allBox = h('input', { type: 'checkbox', title: 'Όλα της σελίδας (όσα έχουν νέα τιμή)', onchange: (e) => { ov.rows.forEach((r) => (e.target.checked && r.suggested && !r.master ? selected.add(r.id) : selected.delete(r.id))); load(); } });
       const tb = h('tbody');
@@ -228,7 +271,7 @@
           h('td', { class: 'title' }, r.name, r.stage && r.stage < 4 ? h('a', { class: 'pill not-ready', href: '#/flow?stage=' + r.stage, title: 'Πρώτα να ολοκληρωθεί αυτό το βήμα· μετά αποφασίζεται η τιμή', onclick: (e) => e.stopPropagation() }, 'Πρώτα: ' + STEP[r.stage]) : null, h('div', { class: 'faint meta' }, [r.brand, r.sku].filter(Boolean).join(' · '), r.rank ? ` · ${r.rank}ος φθηνότερος από ${r.of}` : '', ` · ${fmt.plural(st.count || 0, 'κατάστημα μετράει', 'καταστήματα μετράνε')}`, st.suspect ? ` · ${st.suspect} ύποπτη τιμή` : '', st.similar ? ` · ${st.similar} παρόμοια` : '', r.master ? ' · τιμή από ' + siteName('sf') : '')),
           h('td', { class: 'num ours' }, h('b', null, fmt.money(r.ourPrice)), r.vsMedian != null && st.count ? h('div', { class: 'price-diff ' + (r.vsMedian > 0.05 ? 'up' : r.vsMedian < -0.05 ? 'down' : ''), title: 'Σε σχέση με τη μέση τιμή αγοράς ' + fmt.money(st.median) }, pct(r.vsMedian) + ' vs μέση') : null),
           h('td', { class: 'ladder-cell' }, ladder(r, r.ourPrice), st.count ? h('div', { class: 'ladder-cap' }, h('span', null, fmt.money(st.min), st.minShop ? ' · ' + st.minShop : ''), h('span', null, st.maxShop ? st.maxShop + ' · ' : '', fmt.money(st.max))) : null),
-          h('td', { class: 'decide' }, actPill(r.action), h('div', { class: 'reason', title: r.reason }, r.reason)),
+          h('td', { class: 'decide' }, actPill(r.action), h('div', { class: 'reason', title: r.reason }, r.reason), r.action === 'nodata' ? webPill(r.web) : null),
           h('td', { class: 'num' }, r.suggested ? h('b', { class: 'newprice' }, fmt.money(r.suggested)) : h('span', { class: 'faint' }, '—'),
             r.diff ? h('div', { class: 'price-diff ' + (r.diff < 0 ? 'down' : 'up') }, (r.diff > 0 ? '+' : '') + fmt.money(r.diff)) : null,
             r.raised ? h('div', { class: 'hint' }, 'όριο κόστους') : null,

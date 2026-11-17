@@ -18,15 +18,17 @@ function data() { const d = store.read(KEY, null) || {}; d.products = d.products
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } }
 
 /** What a product misses that the internet can give. */
-function needsOf(p) {
+function needsOf(p, mk) {
   const n = [];
   if (!String(p.sku || '').trim()) n.push('sku');
+  // no price from any shop yet (the competitors' catalogs did not have it): the internet may
+  if (mk && !(mk.stats && mk.stats.count)) n.push('price');
   if ((p.images || []).length < 2) n.push('images');
   if (!p.brand) n.push('brand');
   if (p.type === 'simple' && !p.ean) n.push('ean');
   return n;
 }
-const ORDER = { sku: 0, images: 1, brand: 2, ean: 3 };
+const ORDER = { sku: 0, price: 1, images: 2, brand: 3, ean: 4 };
 
 /** The products to look up, the most useful first (no code, no photo, no brand, no EAN; in stock; dearer). */
 function candidates(limit) {
@@ -35,16 +37,19 @@ function candidates(limit) {
   const d = data();
   const now = Date.now();
   const out = [];
+  const mk = require('./market').results();
   for (const site of catalog.SITES) {
     for (const p of catalog.load(site).products) {
       if (p.type === 'variation' || p.status === 'draft' || p.status === 'private') continue;
       if (site === 'st' && L.stToSf.has(p.id)) continue; // the same product on SpecialForces is looked up once
-      const needs = needsOf(p);
+      const needs = needsOf(p, mk[site + ':' + p.id] || { stats: null });
       if (!needs.length) continue;
       const k = site + ':' + p.id;
       const prev = d.products[k];
       // looked up: again after three weeks (nothing found) or two months (something found)
-      if (prev && now - new Date(prev.at).getTime() < ((prev.hits || []).length ? 60 : AGAIN_DAYS) * 864e5) continue;
+      // prices found: again in two weeks (a price gets old); something else found: in two months; nothing: in three weeks
+      const again = (prev && (prev.hits || []).some((h) => h.price > 0)) ? 14 : prev && (prev.hits || []).length ? 60 : AGAIN_DAYS;
+      if (prev && now - new Date(prev.at).getTime() < again * 864e5) continue;
       out.push({ k, name: p.name, brand: p.brand || '', sku: p.sku || '', price: p.price || 0, inStock: p.inStock !== false, needs, rank: Math.min(...needs.map((x) => ORDER[x])) });
     }
   }
@@ -136,6 +141,8 @@ function save(results) {
     }
     return d;
   });
+  // the prices of those shops go into the price research (for the products with no price from the competitors too)
+  try { require('./market').mergeWeb(Object.fromEntries(Object.entries(results).map(([k, r]) => [k, (r.hits || []).filter((h) => h && h.host && !own.has(h.host))]))); } catch (e) { console.error('internet prices:', e.message); }
   try { require('./fixes').invalidate(); } catch (_) { /* not loaded */ }
 }
 function ownHosts() { const s = require('./settings').all(); return new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean)); }
@@ -195,6 +202,13 @@ function suggestedShops(min) {
   return Object.values(data().shops).filter((s) => !have.has(s.host) && s.products.length >= (min || 3)).sort((a, b) => b.products.length - a.products.length).slice(0, 20).map((s) => ({ host: s.host, url: s.url, count: s.products.length, at: s.at }));
 }
 
+/** Where the internet research stands for some products: { 'site:id': { at, hits, prices } } (only those looked up). */
+function stateOf(keys) {
+  const d = data();
+  const out = {};
+  for (const k of keys) { const e = d.products[k]; if (e) out[k] = { at: e.at, hits: (e.hits || []).length, prices: (e.hits || []).filter((h) => h.price > 0).length }; }
+  return out;
+}
 /** How far the search has come. */
 function status() {
   const d = data();
@@ -202,4 +216,4 @@ function status() {
   return { looked: all.length, withCode: all.filter((e) => (e.hits || []).length).length, waiting: candidates().length };
 }
 
-module.exports = { candidates, lookUp, run, save, hitsFor, suggestedShops, status, queryOf, queriesOf, needsOf, KEY };
+module.exports = { stateOf, candidates, lookUp, run, save, hitsFor, suggestedShops, status, queryOf, queriesOf, needsOf, KEY };

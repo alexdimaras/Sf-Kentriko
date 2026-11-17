@@ -84,7 +84,7 @@ function marketReport(site, q) {
   const market = require('./market');
   const ov = market.overview(site, Object.assign({}, q || {}, { per: 0 }));
   const pm = productMap(site);
-  const rows = ov.rows.map((r) => ({
+  const rows = ov.rows.filter((r) => r.at).map((r) => ({
     img: r.img, imgFull: full(pm.get(r.id)), name: r.name, url: r.url, sku: r.sku, brand: r.brand, ourPrice: r.ourPrice,
     min: r.stats.min || null, minShop: r.stats.minShop || '', median: r.stats.median || null, max: r.stats.max || null, count: r.stats.count, similar: r.stats.similar || 0, suspect: r.stats.suspect || 0,
     suggested: r.suggested || null, diff: r.suggested && r.ourPrice ? U.r2(r.suggested - r.ourPrice) : null,

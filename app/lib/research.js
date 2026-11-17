@@ -100,7 +100,7 @@ async function mergeShop(compId, catAt, offers) {
   const byId = { sf: catalog().byId('sf'), st: catalog().byId('st') };
   const changes = [];
   const keys = new Set(Object.keys(offers));
-  for (const [k, e] of Object.entries(all)) if (e.competitors.some((c) => c.competitorId === compId || (!c.manual && !readableIds.has(c.competitorId)))) keys.add(k);
+  for (const [k, e] of Object.entries(all)) if (e.competitors.some((c) => c.competitorId === compId || (!c.manual && !c.web && !readableIds.has(c.competitorId)))) keys.add(k);
   let touched = 0;
   for (const key of keys) {
     if (pace.due()) await pace.rest();
@@ -109,7 +109,7 @@ async function mergeShop(compId, catAt, offers) {
     if (!p) continue;
     const prev = all[key] || null;
     const before = prev ? prev.competitors.find((c) => c.competitorId === compId && !c.manual) : null;
-    const list = prev ? prev.competitors.filter((c) => c.manual || (c.competitorId !== compId && readableIds.has(c.competitorId))) : [];
+    const list = prev ? prev.competitors.filter((c) => c.manual || c.web || (c.competitorId !== compId && readableIds.has(c.competitorId))) : [];
     const o = offers[key] ? JSON.parse(JSON.stringify(offers[key])) : null;
     if (o) {
       if (before && before.url === o.url && before.price > 0 && Math.abs(before.price - o.price) >= 0.01 && o.match === 'exact' && o.inStock !== false) {

@@ -48,16 +48,16 @@ function comp(slow) {
 
 // ---------- a little «internet»: a search engine and two shops with the same glove pouch ----------
 function web() {
-  const page = (shop) => `<!doctype html><html><head><title>Glove pouch</title><script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: shop === 1 ? '5.11 Tactical Flex Disposable Glove Pouch' : 'Θήκη γαντιών 5.11 Flex Disposable Glove Pouch Black', sku: '56423', gtin13: '4046872358951', brand: { '@type': 'Brand', name: '5.11 Tactical' }, image: ['http://' + (shop === 1 ? '127.0.0.1' : 'localhost') + ':PORT/wp-content/uploads/flex-glove-pouch-56423-600x600.jpg'], offers: { '@type': 'Offer', priceCurrency: 'EUR', price: '27.90', availability: 'https://schema.org/InStock' } })}</script></head><body>${'x'.repeat(1500)}</body></html>`;
+  const page = (shop) => `<!doctype html><html><head><title>Glove pouch</title><script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: shop === 1 ? '5.11 Tactical Flex Disposable Glove Pouch' : 'Θήκη γαντιών 5.11 Flex Disposable Glove Pouch Black', sku: '56423', gtin13: '4046872358951', brand: { '@type': 'Brand', name: '5.11 Tactical' }, image: ['http://' + (shop === 1 ? '127.0.0.2' : 'localhost') + ':PORT/wp-content/uploads/flex-glove-pouch-56423-600x600.jpg'], offers: { '@type': 'Offer', priceCurrency: 'EUR', price: '27.90', availability: 'https://schema.org/InStock' } })}</script></head><body>${'x'.repeat(1500)}</body></html>`;
   const state = { searches: 0 };
   const srv = http.createServer((req, res) => {
     const port = srv.address().port;
-    if (req.url.startsWith('/ddg')) { state.searches++; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(`<html><body><div class="result"><a class="result__a" href="http://127.0.0.1:${port}/shop1/glove">a</a></div><div class="result"><a class="result__a" href="http://localhost:${port}/shop2/glove">b</a></div></body></html>`); }
+    if (req.url.startsWith('/ddg')) { state.searches++; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(`<html><body><div class="result"><a class="result__a" href="http://127.0.0.2:${port}/shop1/glove">a</a></div><div class="result"><a class="result__a" href="http://localhost:${port}/shop2/glove">b</a></div></body></html>`); }
     if (req.url.startsWith('/bing')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body></body></html>'); }
     if (req.url.startsWith('/shop1/') || req.url.startsWith('/shop2/')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(page(req.url.startsWith('/shop1/') ? 1 : 2).replace(/PORT/g, port)); }
     res.writeHead(404); res.end();
   });
-  return new Promise((r) => srv.listen(0, '127.0.0.1', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
+  return new Promise((r) => srv.listen(0, '0.0.0.0', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
 }
 
 (async () => {
@@ -72,7 +72,7 @@ function web() {
   const port = 19600 + Math.floor(Math.random() * 300);
   const base = `http://127.0.0.1:${port}`;
   const env = Object.assign({}, process.env, { SFK_MODE: 'server', SFK_PORT: String(port), SFK_DATA: DATA, APPDATA: path.join(tmp, 'cfg'), SFK_NO_AUTOSYNC: '1', SFK_ADMIN_USER: 'admin', SFK_ADMIN_PASSWORD: 'Test-pass-123456', SFK_SECRET_KEY: 'k'.repeat(40),
-    SFK_LEASE_MS: '4000', SFK_FEED_MS: '1500', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
+    SFK_LEASE_MS: '4000', SFK_FEED_MS: '1500', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,127.0.0.2,localhost', no_proxy: '127.0.0.1,127.0.0.2,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
   if (process.env.COORD_PG) {
     // an empty database, as on the first start with Supabase (the data of this test then comes from its folder)
     env.SFK_DATABASE_URL = process.env.COORD_PG;
@@ -99,7 +99,7 @@ function web() {
   const workers = [];
   const startWorker = (name) => {
     const home = path.join(tmp, 'w-' + name);
-    const wenv = Object.assign({}, process.env, { SFK_WORKER_HOME: home, APPDATA: path.join(home, 'cfg'), SFK_POLL_MS: '500', SFK_BEAT_MS: '1000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_DATA: '' });
+    const wenv = Object.assign({}, process.env, { SFK_WORKER_HOME: home, APPDATA: path.join(home, 'cfg'), SFK_POLL_MS: '500', SFK_BEAT_MS: '1000', NO_PROXY: '127.0.0.1,127.0.0.2,localhost', no_proxy: '127.0.0.1,127.0.0.2,localhost', SFK_DATA: '' });
     delete wenv.SFK_DATA;
     return { home, env: wenv, run: () => { const p = spawn(process.execPath, [path.join(APP, 'worker.js')], { env: wenv, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; p.stdout.on('data', (b) => { out += b; }); p.stderr.on('data', (b) => { out += b; }); workers.push(p); return { p, out: () => out }; } };
   };
@@ -129,8 +129,9 @@ function web() {
     let end = await until(async () => { const j = await get('/api/jobs/' + job.id); return j.status !== 'running' && j.status !== 'queued' ? j : null; }, 60000);
     ok(end && end.status === 'done' && end.result && end.result.distributed && end.result.complete, 'the research ends, the day is marked done', JSON.stringify(end && [end.status, end.result, end.error]));
     const mk = await get('/api/market?site=sf');
+    // (the glove pouch is sold by no competitor: it is listed «Χωρίς στοιχεία», for the search on the internet)
     const offers = mk.rows.flatMap((r) => r.competitors);
-    ok(mk.rows.length === 5 && offers.length === 5 && offers.every((o) => o.shop === 'shop-a' && o.match === 'exact'), 'every product has the competitor\'s offer, written by the cloud from the computer\'s result', JSON.stringify([mk.rows.length, offers.length]));
+    ok(mk.rows.filter((r) => r.competitors.length).length === 5 && mk.rows.length === 6 && offers.length === 5 && offers.every((o) => o.shop === 'shop-a' && o.match === 'exact'), 'every product has the competitor\'s offer, written by the cloud from the computer\'s result', JSON.stringify([mk.rows.length, offers.length]));
     const qj = (await get('/api/jobs')).find((x) => x.distributed);
     ok(qj && qj.worker === os.hostname() && qj.status === 'completed', 'the job of the competitor was done by the computer (not by the cloud)', JSON.stringify(qj && [qj.worker, qj.status]));
     ok(/εργασία .* παραδόθηκε/.test(r1.out()), 'the computer reports that it handed in the result');
@@ -145,6 +146,9 @@ function web() {
     const wj = (await get('/api/jobs')).find((x) => x.distributed && /internet/.test(x.label || ''));
     ok(wj && wj.worker === os.hostname(), 'the searching was done by the shop\'s computer', JSON.stringify(wj && [wj.worker, wj.status]));
     ok(webSrv.state.searches >= 1, 'it searched the «internet»');
+    const gl = (await get('/api/market?site=sf&q=GLOVE')).rows[0];
+    const wo = gl && gl.competitors.filter((c) => c.web);
+    ok(gl && wo.length === 2 && wo.every((c) => c.match === 'exact' && c.price === 27.9) && gl.stats.count >= 1, 'a product no competitor sells gets its prices from the shops of the internet (2 shops, the same product) → it has a market price (a shop with an English-only page counts as foreign)', JSON.stringify(gl && [gl.stats.count, wo.map((c) => c.shop)]));
 
     section('Υπολογιστής που σβήνει στη μέση');
     // the next day's research (a new day: the note of the day is reset)
@@ -165,7 +169,7 @@ function web() {
     const bjob = (await get('/api/jobs')).find((y) => y.distributed && /shop-b/.test(y.label));
     ok(end && end.status === 'done' && bjob && bjob.status === 'completed' && bjob.attempts === 2, 'the computer was switched off: its lease ended and another computer finished the job (2nd attempt)', JSON.stringify(bjob && [bjob.status, bjob.attempts, bjob.worker]));
     const mk2 = await get('/api/market?site=sf');
-    ok(mk2.rows.every((r) => r.competitors.filter((c) => c.competitorId === bId).length === 1), 'each product has exactly one offer of that competitor (no double result)');
+    ok(mk2.rows.filter((r) => !/GLOVE/.test(r.name)).every((r) => r.competitors.filter((c) => c.competitorId === bId).length === 1), 'each product has exactly one offer of that competitor (no double result)');
     void r2;
 
     section('Αφαίρεση υπολογιστή');
@@ -182,7 +186,7 @@ function web() {
     await startServer(); await login();
     ws = await get('/api/workers');
     const mk3 = await get('/api/market?site=sf');
-    ok(ws.workers.length === 1 && mk3.rows.length === 5, 'after a restart the computers and the results are still there' + (process.env.COORD_PG ? ' (from the database)' : ''), JSON.stringify([ws.workers.length, mk3.rows.length]));
+    ok(ws.workers.length === 1 && mk3.rows.filter((r) => r.competitors.length).length >= 5, 'after a restart the computers and the results are still there' + (process.env.COORD_PG ? ' (from the database)' : ''), JSON.stringify([ws.workers.length, mk3.rows.length]));
     shopB.srv.close();
   } finally {
     for (const p of workers) { try { p.kill('SIGKILL'); } catch (_) { /* gone */ } }
