@@ -20,10 +20,10 @@ const PAGE_DAYS = 30;
 
 const FIELD = {
   name: 'Τίτλος', desc: 'Περιγραφή', short: 'Σύντομη περιγραφή', images: 'Φωτογραφίες', brand: 'Μάρκα', gtin: 'EAN / GTIN',
-  price: 'Τιμή', cats: 'Κατηγορία', published: 'Δημοσίευση', gla: 'Google Shopping', sku: 'Κωδικός (SKU)',
+  price: 'Τιμή', cats: 'Κατηγορία', published: 'Δημοσίευση', gla: 'Google Shopping', sku: 'Κωδικός (SKU)', varsku: 'Κωδικοί μεγεθών / χρωμάτων',
 };
-const GROUP = { name: 'titles', desc: 'content', short: 'content', images: 'content', brand: 'content', gtin: 'content', price: 'prices', cats: 'cats', published: 'ads', gla: 'ads', sku: 'content' };
-const GROUPS = { content: 'Περιεχόμενο', titles: 'Τίτλοι', prices: 'Τιμές', cats: 'Κατηγορίες', ads: 'Διαφημίσεις' };
+const GROUP = { name: 'titles', desc: 'content', short: 'content', images: 'content', brand: 'content', gtin: 'content', price: 'prices', cats: 'cats', published: 'ads', gla: 'ads', sku: 'codes', varsku: 'codes' };
+const GROUPS = { codes: 'Κωδικοί (SKU)', content: 'Περιεχόμενο', titles: 'Τίτλοι', prices: 'Τιμές', cats: 'Κατηγορίες', ads: 'Διαφημίσεις' };
 
 /** Meta description for Google: the text after the title heading, cut at ~155 characters on a word. */
 function metaOf(html) { return require('./wooexport').metaDescription(String(html || '').replace(/^\s*<(h[1-6]|p)>(?:<strong>)?[^<]*(?:<\/strong>)?<\/\1>/i, ''), ''); }
@@ -203,6 +203,50 @@ function safeWitness(p, w) {
   if (m.coloursOf(p.name).size > 0 && m.coloursOf(w.name).size > 0) return 'sure';
   // our title names no colour: maybe a product in one colour, maybe not — at most «look at it»
   return m.coloursOf(p.name).size === 0 ? 'maybe' : false;
+}
+/**
+ * Our own code for a product that has none anywhere (no maker's code on our other site, at a supplier or at the shops
+ * with the same product): from the SpecialForces number, so the same product gets the same code on both sites
+ * («SF-24761»); a product only on the ads site: «ST-…». Never one that is already in use.
+ */
+function internalCode(C, site, p) {
+  const sfId = site === 'sf' ? p.id : C.L.stToSf.get(p.id);
+  const base = sfId != null ? 'SF-' + sfId : 'ST-' + p.id;
+  let code = base, i = 1;
+  while (C.skus.sf.has(U.normSku(code)) || C.skus.st.has(U.normSku(code))) code = base + '-' + ++i;
+  return code;
+}
+/** The sizes / colours of a product that have no code yet (WooCommerce variations), by product. */
+function variationsOf(C, site) {
+  C.vars = C.vars || {};
+  if (!C.vars[site]) {
+    const m = new Map();
+    for (const v of require('./catalog').load(site).products) if (v.type === 'variation') { if (!m.has(v.parent)) m.set(v.parent, []); m.get(v.parent).push(v); }
+    C.vars[site] = m;
+  }
+  return C.vars[site];
+}
+/**
+ * A code for every size / colour without one: the product's code and the values of the variation, in Latin letters
+ * («SF-24761-XL», «K07014-MAVRO-42»). The same labels give the same codes on both sites. → [{ id, label, sku }]
+ */
+function variationCodes(C, site, p, code) {
+  const vs = (variationsOf(C, site).get(p.id) || []).filter((v) => !String(v.sku || '').trim());
+  if (!vs.length || !code) return [];
+  const taken = new Set();
+  for (const v of variationsOf(C, site).get(p.id) || []) if (v.sku) taken.add(U.normSku(v.sku));
+  const out = [];
+  vs.forEach((v, i) => {
+    const vals = String(v.varLabel || '').split(',').map((x) => (x.includes(':') ? x.slice(x.indexOf(':') + 1) : x).trim()).filter(Boolean);
+    let suf = vals.map((x) => U.greeklish(x).toUpperCase().replace(/[^A-Z0-9]+/g, '')).filter(Boolean).join('-').slice(0, 30);
+    let c = code + '-' + (suf || String(i + 1));
+    let n = 1;
+    // (only this site counts: the same product on the other site has, rightly, the same codes)
+    while (taken.has(U.normSku(c)) || C.skus[site].has(U.normSku(c))) c = code + '-' + (suf ? suf + '-' : '') + ++n;
+    taken.add(U.normSku(c));
+    out.push({ id: v.id, label: v.varLabel || '', sku: c });
+  });
+  return out;
 }
 /**
  * A product code as shops write it, cleaned: the first word of «8020860 Katadyn BeFree…»; never an EAN, a long
@@ -448,8 +492,23 @@ function proposalsFor(site, p, C) {
         const cb = mk.codeBase(top.code);
         const clash = cb && U.collapse(p.name).split(' ').map((x) => mk.codeBase(x)).find((x) => x && x.shape === cb.shape && x.base !== cb.base && !(x.run && cb.run && x.run === cb.run));
         if (clash) sure = false;
-        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Από αντιστοίχιση της έρευνας: έλεγξέ τον.'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
+        const vars = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
+        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Από αντιστοίχιση της έρευνας: έλεγξέ τον.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
+      } else if (!top) {
+        // no maker's code anywhere: our own, unique, the same on both sites (a product of the ads site that follows
+        // SpecialForces gets it from there, with the approval of the SpecialForces one)
+        const sfId = site === 'st' ? C.L.stToSf.get(p.id) : null;
+        const followsSf = sfId != null && !C.banned.has(p.id) && (() => { const sp = oById.get(sfId); return sp && !String(sp.sku || '').trim() && sp.status !== 'draft' && sp.status !== 'private'; })();
+        if (!followsSf) {
+          const code = internalCode(C, site, p);
+          const vars = p.type === 'variable' ? variationCodes(C, site, p, code) : [];
+          add(Object.assign({}, base, { field: 'sku', from: '', to: code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν το προϊόν δεν περνά το 1ο βήμα και δεν γίνεται αντιστοίχιση με τιμοκαταλόγους και ανταγωνιστές. Κωδικός κατασκευαστή δεν βρέθηκε (ούτε στο άλλο site, ούτε σε τιμοκατάλογο, ούτε σε κατάστημα με σίγουρα το ίδιο προϊόν): προτείνεται δικός μας μοναδικός κωδικός, ίδιος και στα δύο sites.' + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : '') + ' Αν βρεις αργότερα τον κωδικό του κατασκευαστή, μπορείς να τον αλλάξεις.', source: { kind: 'rule', label: 'Νέος κωδικός του καταστήματος' }, level: 'high' }));
+        }
       }
+    } else if (p.type === 'variable') {
+      // the product has a code, some of its sizes / colours do not
+      const vars = variationCodes(C, site, p, String(p.sku).trim());
+      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: '', to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα δεν έχει' : vars.length + ' μεγέθη/χρώματα δεν έχουν'} κωδικό: παίρνουν τον κωδικό του προϊόντος (${p.sku}) με το μέγεθος/χρώμα στο τέλος, ώστε κάθε ένα να είναι μοναδικό.`, source: { kind: 'rule', label: 'Από τον κωδικό του προϊόντος' }, level: 'high' }));
     }
     if (p.type === 'simple' && !p.ean) {
       // EAN: from the supplier (sure source) and from the shops with the same product; different EANs → nothing
@@ -672,7 +731,8 @@ function view(q) {
     counts.status[c.status]++;
     if (c.status !== status) continue;
     counts.groups[c.group] = (counts.groups[c.group] || 0) + 1;
-    if (c.level === 'high') counts.high++;
+    // the sure ones of what is shown (the button «approve all the sure ones» takes the chosen group)
+    if (c.level === 'high' && (!q.group || c.group === q.group) && c.exportable !== false) counts.high++;
   }
   for (const c of all) if (c.status === 'approved') counts.sites[c.site]++;
   let list = all.filter((c) => (!site || c.site === site) && c.status === status && (!q.group || c.group === q.group) && (q.level !== 'high' || c.level === 'high'));
@@ -680,7 +740,7 @@ function view(q) {
   // one card per product, the products with the most (and surest) changes first
   const by = new Map();
   for (const c of list) { const k = c.site + ':' + c.pid; if (!by.has(k)) by.set(k, { site: c.site, pid: c.pid, name: c.name, img: c.img, url: c.url, sku: c.sku, changes: [] }); by.get(k).changes.push(c); }
-  const order = { desc: 0, images: 1, name: 2, price: 3, published: 4, gla: 5, short: 6, brand: 7, cats: 8, gtin: 9, sku: 10 };
+  const order = { desc: 0, images: 1, name: 2, price: 3, published: 4, gla: 5, short: 6, brand: 7, cats: 8, gtin: 9, sku: 10, varsku: 11 };
   const cards = [...by.values()];
   for (const cd of cards) cd.changes.sort((a, b) => order[a.field] - order[b.field]);
   cards.sort((a, b) => b.changes.filter((c) => c.level === 'high').length - a.changes.filter((c) => c.level === 'high').length || b.changes.length - a.changes.length);
@@ -738,6 +798,8 @@ function exportFile(site, by) {
   const cols = new Set();
   const row = (pid) => { if (!rows.has(pid)) rows.set(pid, { ID: pid }); return rows.get(pid); };
   const set = (r, k, v) => { r[k] = v; cols.add(k); };
+  let xc = null;
+  const exportCtx = () => { if (!xc) { xc = { skus: { sf: new Set(), st: new Set() } }; for (const st2 of catalog.SITES) for (const x of catalog.load(st2).products) if (x.sku) xc.skus[st2].add(U.normSku(x.sku)); } return xc; };
   const brandAttr = catalog.detectAttribute(site, 'brand');
   for (const c of items) {
     const p = byId.get(c.pid);
@@ -751,7 +813,14 @@ function exportFile(site, by) {
     else if (c.field === 'published') set(r, 'Published', -1);
     else if (c.field === 'gla') set(r, wx.GLA, 'dont-sync-and-show');
     else if (c.field === 'gtin') set(r, 'GTIN, UPC, EAN, or ISBN', c.to);
-    else if (c.field === 'sku') set(r, 'SKU', c.to);
+    else if (c.field === 'sku' || c.field === 'varsku') {
+      if (c.field === 'sku') set(r, 'SKU', c.to);
+      cols.add('SKU');
+      // the sizes / colours: worked out again from THIS site's catalog (a change approved on SpecialForces and made by
+      // itself on the ads site carries the other site's variations)
+      const code = c.field === 'sku' ? c.to : p.sku;
+      if (p.type === 'variable' && code) for (const v of variationCodes(exportCtx(), site, p, code)) extraRows.push({ ID: v.id, SKU: v.sku });
+    }
     else if (c.field === 'brand') { wx.setAttrs(r, [{ name: brandAttr, values: [c.to], visible: true, global: true }]); for (const k of ['Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global']) cols.add(k); }
     else if (c.field === 'price') {
       if (p.type === 'variable') {
@@ -977,4 +1046,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { variationCodes, internalCode, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

@@ -656,7 +656,8 @@ ul.seclist li.warn svg { color: var(--signal); }
 .fx-sure { display: flex; gap: 12px; align-items: center; background: var(--ok-soft); border-radius: var(--r-m); padding: 10px 14px; margin-bottom: 12px; }
 .fx-sure > svg { width: 22px; height: 22px; color: var(--ok); flex: none; }
 .fx-sure > div { flex: 1; }
-.fx-card { display: grid; gap: 10px; }
+.fx-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.fx-card > * { min-width: 0; }
 .fx-card-head { display: flex; gap: 12px; align-items: center; }
 .fx-title { font-weight: 650; color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fx-title:hover { color: var(--coyote); }
@@ -859,3 +860,4 @@ ol.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; color:
 .audit-list { list-style: none; margin: 0; padding: 0; display: grid; }
 .audit-list li { padding: 10px 0; border-top: 1px solid var(--line); display: grid; gap: 2px; overflow-wrap: anywhere; }
 .audit-list li:first-child { border-top: 0; }
+.fx-vars { display: grid; gap: 2px; margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; }

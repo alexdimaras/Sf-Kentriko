@@ -61,8 +61,15 @@
       case 'gla': return beforeAfter(h('del', null, 'Στο site και στο Google Shopping'), h('ins', null, 'Μόνο στο site'));
       case 'brand': return beforeAfter(from ? h('del', null, from) : none('Χωρίς μάρκα'), h('ins', null, to));
       case 'gtin': return beforeAfter(from ? h('del', null, from) : none('Χωρίς EAN'), [h('ins', { class: 'mono' }, to), h('span', { class: 'faint' }, ' · σωστό ψηφίο ελέγχου')]);
+      case 'sku': return beforeAfter(from ? h('del', null, from) : none('Χωρίς κωδικό'), [h('ins', { class: 'mono' }, to), (c.vars || []).length ? varList(c.vars) : null]);
+      case 'varsku': return beforeAfter(none(`${(to || []).length} χωρίς κωδικό`), varList(to || []));
       default: return null;
     }
+  }
+  // the codes of the sizes / colours: the first few, and how many more
+  function varList(vs) {
+    const show = vs.slice(0, 6);
+    return h('div', { class: 'fx-vars' }, show.map((v) => h('div', null, h('span', { class: 'faint' }, (v.label || '—').replace(/^[^:]*:\s*/, '') + ' → '), h('span', { class: 'mono' }, v.sku))), vs.length > show.length ? h('div', { class: 'faint' }, `και ${vs.length - show.length} ακόμα`) : null);
   }
   // how sure a proposal is, in words, next to its source
   const SURE = { high: 'υψηλή — κανόνας ή ίδια ταυτότητα προϊόντος (κωδικός / EAN / το άλλο σας site)', medium: 'μέτρια — πιθανότατα σωστό, ρίξε μια ματιά' };

@@ -26,6 +26,7 @@ const STAGE_OF_CHECK = {
 };
 const FIELD_OF = { broken: 'name', mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
 
+const MIRRORED = new Set(['name', 'desc', 'short', 'images', 'brand', 'gtin', 'sku']);
 const skuKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, '');
 const bg = require('./bg');
 const store = require('./store');
@@ -64,7 +65,7 @@ function* buildGen() {
       if (p.type === 'variation') continue;
       m.set(p.id, p);
       if (p.status === 'draft' || p.status === 'private') continue;
-      rows.set(`${site}:${p.id}`, { site, id: p.id, name: p.name, nk: U.foldKey(p.name), sku: p.sku || '', img: p.thumb || (p.images || [])[0] || '', url: p.url, price: p.price, problems: [], stage: 5, waitingFile: false, cls: '' });
+      rows.set(`${site}:${p.id}`, { site, id: p.id, name: p.name, nk: U.foldKey(p.name), sku: p.sku || '', img: p.thumb || (p.images || [])[0] || '', url: p.url, price: p.price, problems: [], stage: 5, waitingFile: false, cls: '', sfTwin: site === 'st' ? L.stToSf.get(p.id) : undefined });
       yield;
     }
   }
@@ -138,7 +139,9 @@ function restage(r, fxBy) {
   let min = 5, done = false;
   for (const x of r.problems) {
     if (x.field) {
-      const fx = fxBy ? fxBy.get(`${r.site}:${r.id}:${x.field}`) : null;
+      let fx = fxBy ? fxBy.get(`${r.site}:${r.id}:${x.field}`) : null;
+      // a product of the ads site that follows SpecialForces: the change waits for the yes there, and is made here by itself
+      if (!fx && fxBy && r.sfTwin != null && MIRRORED.has(x.field)) fx = fxBy.get(`sf:${r.sfTwin}:${x.field}`) || null;
       // a ready fix waits for a yes ('approve'), is approved or already in the file ('done'), or only a person can solve it
       x.state = fx ? (fx.status === 'pending' ? 'approve' : 'done') : x.state0;
       x.fixId = fx ? fx.id : '';
