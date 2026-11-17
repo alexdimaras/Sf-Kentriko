@@ -198,18 +198,103 @@ function flagsOf(up) { return FLAGS.map(([a, , b]) => (a.test(up) ? 1 : b && b.t
 const WOMEN = /ΓΥΝΑΙΚ|\bWOMEN|\bWOMAN|\bLADY|\bLADIES|\bWMNS\b|\bW'S\b/;
 const KIDS = /ΠΑΙΔΙΚ|\bKIDS?\b|\bJUNIOR\b|\bYOUTH\b|\bJR\b/;
 
-/** Everything about one of OUR products that the matching needs. */
-function features(p) {
+// ---------- proof beyond the words of a title ----------
+// A product code as shops write it has a base (the model) and often a tail (colour, size, a stray number):
+//   K01014-1755507139 → K01014 · MORA-12210 → MORA12210 · SE - 40233 → SE40233 · CWKMG-58-008 → CWKMG58 ·
+//   «8020860 Katadyn BeFree Gravity 10L» → 8020860 · ΤΤ 7951-331 → TT7951
+// Same base = the same model (proof). Two bases of the same shape that differ (K15038 / K15037) = another model.
+function codeBase(sku) {
+  const toks = U.foldKey(String(sku || '')).replace(/[–—]/g, '-').split(/\s+/).filter((t) => t && !/^[-.]+$/.test(t));
+  if (!toks.length) return null;
+  let chunk = toks[0];
+  if (!/\d/.test(chunk) && toks[1] && /\d/.test(toks[1]) && /^[A-Z]{1,6}$/.test(chunk)) chunk += '-' + toks[1];
+  let base = '';
+  const tails = [];
+  for (const seg0 of chunk.split(/[-_./]+/)) {
+    const seg = seg0.replace(/[^A-Z0-9]/g, '');
+    if (!seg) continue;
+    if (base && /\d/.test(base)) { if (/^[A-Z]{2,6}$/.test(seg) || /^\d[A-Z]$/.test(seg)) tails.push(seg); continue; } // -SH, -ACR, -3T: a print or version of the model
+    base += seg;
+  }
+  if (!/\d/.test(base)) return null;
+  const digits = /^\d+$/.test(base);
+  if (base.length < 4 || (digits && base.length > 9)) return null; // too short to prove anything / a date-like number
+  return { base, digits, shape: base.replace(/\d/g, '9').replace(/[A-Z]/g, 'A'), run: (base.match(/\d{4,}/) || [''])[0], tail: tails.sort().join('-') };
+}
+function codeSame(a, b) {
+  if (!a || !b) return false;
+  if (a.base === b.base) return a.base.length >= 5 || !a.digits;
+  return (a.digits && a.base === b.run && !b.digits) || (b.digits && b.base === a.run && !a.digits);
+}
+function titleCodeClash(code, titleCodes) {
+  if (!code) return false;
+  for (const t of titleCodes) { const b = codeBase(t); if (b && b.shape === code.shape && b.base !== code.base) return true; }
+  return false;
+}
+const FOR_RE = new RegExp(' (' + U.foldKey('ΓΙΑ') + '|FOR) ');
+/** Do the two titles start with different kinds of thing? (never when a model code is in both, or the kinds are known to be one) */
+function kindClash(f, cf) {
+  if (!f.kind || !cf.kind || require('./kinds').sameStem(f.kind, cf.kind)) return false;
+  const g1 = typeGroupsOf([f.kind]), g2 = typeGroupsOf([cf.kind]);
+  for (const g of g1) if (g2.has(g)) return false; // ΑΡΒΥΛΑ / ΜΠΟΤΑΚΙΑ: two names of one kind
+  const st = (w) => ' ' + U.foldKey(w).slice(0, Math.max(4, w.length - 2));
+  if (cf.nameKey.includes(st(f.kind))) return false; // they name our kind too
+  const at = f.nameKey.indexOf(st(cf.kind));
+  if (at >= 0) { const forAt = f.nameKey.search(FOR_RE); return forAt >= 0 && forAt < at; } // «… ΓΙΑ ΩΤΟΑΣΠΙΔΕΣ»: ours is a part FOR their kind
+  return true;
+}
+function codeClash(a, b) { return !!a && !!b && a.shape === b.shape && a.base !== b.base && a.base.length >= 5; }
+/** GTIN / EAN with a correct check digit ('' otherwise): the one identity of a product that every shop shares. */
+function gtinOf(v) {
+  const g = String(v || '').replace(/\D/g, '');
+  if (![8, 12, 13, 14].includes(g.length) || /^0+$/.test(g)) return '';
+  let sum = 0;
+  for (let i = 0; i < g.length - 1; i++) sum += Number(g[g.length - 2 - i]) * (i % 2 === 0 ? 3 : 1);
+  return (10 - (sum % 10)) % 10 === Number(g[g.length - 1]) ? g.replace(/^0+/, '') : '';
+}
+// a set or a pack is not the single product (ΠΑΝΤΕΛΟΝΙ BDU ≠ BDU SET)
+const BUNDLE = /^(SET|ΣΕΤ|KIT|ΚΙΤ|ΠΑΚΕΤΟ|COMBO|BUNDLE|PACK|2PACK|3PACK|ΣΥΣΚΕΥΑΣΙΑ)$/;
+const EMPTY = Object.freeze([]);
+/** What a title says comes WITH the product (ΜΕ ΣΠΙΝΘΗΡΙΣΤΗ, WITH SURVIVAL KIT, + ΘΗΚΗ): the stems of those words. */
+function partsOf(toks) {
+  let out = null;
+  for (let i = 0; i < toks.length - 1; i++) {
+    if (!/^(ΜΕ|WITH|\+|W\/)$/.test(toks[i])) continue;
+    for (let j = i + 1; j < Math.min(toks.length, i + 3); j++) {
+      const w = ntok(toks[j]);
+      if (w.length < 4 || /\d/.test(w) || COLORS.has(w) || FILLER.has(w) && !BUNDLE.test(w)) continue;
+      (out = out || []).push(U.foldKey(w).slice(0, Math.max(4, w.length - 2)));
+    }
+  }
+  return out || EMPTY;
+}
+/** The file name of a photo without size endings: shops often keep the maker's own file (56053-019.jpg). */
+function imageKey(u) {
+  const f = String(u || '').split('?')[0].split('/').pop().toLowerCase().replace(/\.(jpe?g|png|webp|gif|avif)$/, '').replace(/-\d{2,4}x\d{2,4}$/, '').replace(/[-_](scaled|large|medium|thumb|thumbnail|home_default|\d{3,4})$/, '');
+  return f.length >= 8 && /\d/.test(f) && /[a-z]/.test(f) ? f : '';
+}
+
+/** Everything about one of OUR products that the matching needs. extra: { ean } known from a supplier. */
+function features(p, extra) {
   const toks = tokensOf(p.name);
   const up = toks.join(' ');
   const keys = keyTokens(p.name, p.brand);
   const sku = U.normSku(p.sku || '');
+  let colors = colorsOf(toks);
+  // a colour kept as an attribute of the product counts like a colour in its title (not for products sold in many colours)
+  if (!colors.size && Array.isArray(p.attrs)) {
+    const a = p.attrs.find((x) => /χρωμ|χρώμ|colou?r/i.test(x.name || '') && !x.variation && (x.terms || []).length === 1);
+    if (a) colors = colorsOf(tokensOf(a.terms[0]));
+  }
+  const first = toks[0] || '';
   return {
     name: p.name, price: p.price || 0, brand: p.brand || '', bt: brandTokens(p.brand), brandKey: U.foldKey(p.brand || ''),
     keys, alpha: keys.filter((k) => /[A-Z]/.test(k)), digits: keys.filter((k) => /\d/.test(k)), codes: codeTokens(p.name, ''),
     sku: sku.length >= 6 || (/\d/.test(sku) && /[A-Z]/.test(sku) && sku.length >= 4) ? sku : '',
+    code: codeBase(p.sku), gtin: gtinOf((extra && extra.ean) || p.ean || p.gtin), nameKey: ' ' + U.foldKey(p.name) + ' ',
+    kind: /^[Α-Ω]{4,}$/.test(first) ? first : '', bundle: toks.some((t) => BUNDLE.test(ntok(t))), parts: partsOf(toks), img: imageKey((p.images || [])[0] || p.thumb),
     group: (() => { const g = typeGroupsOf(toks.slice(0, 1)); return g.size ? [...g][0] : -1; })(),
-    groups: typeGroupsOf(toks), colors: colorsOf(toks), used: USED.test(up), flags: flagsOf(up),
+    groups: typeGroupsOf(toks), colors, used: USED.test(up), flags: flagsOf(up),
     women: WOMEN.test(up), kids: KIDS.test(up),
   };
 }
@@ -217,10 +302,14 @@ function features(p) {
 function candFeatures(c) {
   const toks = tokensOf(c.n);
   const up = toks.join(' ');
+  const first = toks[0] || '';
   return {
     set: tokenSet(c.n, c.s), keys: keyTokens(c.n, c.b), groups: typeGroupsOf(toks), brandKey: U.foldKey(c.b || ''), nameKey: ' ' + U.foldKey(c.n) + ' ',
     sku: U.normSku(c.s || ''), women: WOMEN.test(up), kids: KIDS.test(up), colors: colorsOf(toks), used: USED.test(up),
     codes: codeTokens(c.n, ''), flags: flagsOf(up),
+    // proof beyond the words: the code (and the maker's part number), the EAN, what kind it says it is, sets, what comes with it
+    code: codeBase(c.s), mpn: c.m ? codeBase(c.m) : null, gtin: gtinOf(c.g), kind: /^[Α-Ω]{4,}$/.test(first) ? first : '',
+    bundle: toks.some((t) => BUNDLE.test(ntok(t))), parts: partsOf(toks), img: imageKey(c.i),
   };
 }
 
@@ -232,9 +321,29 @@ function candFeatures(c) {
 function compare(f, cand, cf) {
   const brandOk = f.bt.length ? (f.bt.some((b) => cf.set.has(b)) || (f.brandKey && (cf.brandKey === f.brandKey || cf.nameKey.includes(' ' + f.brandKey + ' ')))) : false;
   if (f.bt.length && cf.brandKey && !brandOk) return { match: 'none', score: 0 }; // another brand
-  const skuHit = !!(f.sku && cf.sku && f.sku === cf.sku);
-  const hit = f.keys.filter((k) => cf.set.has(k));
+  // the same EAN is the same product, whatever the titles say
+  if (f.gtin && cf.gtin && f.gtin === cf.gtin) return { match: 'exact', score: 1, why: '', how: 'ean', ev: ['ίδιο EAN ' + f.gtin] };
+  // the same code: whole, or the same base with the brand agreeing (K01014-1755507139 = K01014)
+  // (not when a title names another code of the same shape than its own code field: «… BDU ARCTIC PANTS K05068» filed
+  // under K05001 — one of the two is wrong, so the code proves nothing)
+  const skuFull = !!(f.sku && cf.sku && f.sku === cf.sku);
+  // (nor when the tails name different prints / versions of one base: K09012-SH «ΣΠΑΡΤΙΑΤΗΣ» is not K09012-01 «BLANK»)
+  const theirCode = codeSame(f.code, cf.code) ? cf.code : codeSame(f.code, cf.mpn) ? cf.mpn : null;
+  let baseHit = brandOk && !!theirCode && f.code.tail === theirCode.tail && !titleCodeClash(f.code, f.codes) && !titleCodeClash(cf.code, cf.codes);
+  const hit = f.keys.filter((k, i) => cf.set.has(k) || (i + 1 < f.keys.length && cf.set.has(k + f.keys[i + 1])) || (i > 0 && cf.set.has(f.keys[i - 1] + k))); // BODY SHOCK = BODYSHOCK
+  // the same base code under two different model names (CREST TRUCKER / TRIAD): one of the shops filed it wrong — the person decides
+  const named = (ks) => ks.some((k) => /^[A-Z]{4,}$/.test(k) && !MODIFIERS.has(k) && !WEAK.has(k));
+  const nameClash = baseHit && !skuFull && !hit.length && named(f.keys) && named(cf.keys.filter((k) => !f.bt.includes(k)));
+  // … or one base with another print / edition on each side (FEARLESS WARRIOR / BLANK)
+  const isNamed = (k) => /^[A-Z]{4,}$/.test(k) && !MODIFIERS.has(k) && !WEAK.has(k);
+  const missN = f.keys.filter((k) => !hit.includes(k) && isNamed(k));
+  const extraN = cf.keys.filter((k) => isNamed(k) && !f.keys.includes(k) && !f.bt.includes(k) && !f.keys.some((o, i) => k === o + (f.keys[i + 1] || '')));
+  const editionClash = baseHit && !skuFull && !nameClash && missN.length > 0 && extraN.length > 0;
+  if (nameClash || editionClash) baseHit = false;
+  const skuHit = skuFull || baseHit;
   const ratio = f.keys.length ? hit.length / f.keys.length : 0;
+  if (nameClash) return { match: 'similar', score: 0.6, why: `Ίδιος κωδικός μοντέλου (${f.code.base}) αλλά άλλο όνομα: έλεγξέ το`, how: 'sku', ev: ['ίδιος κωδικός μοντέλου', 'ίδια μάρκα'] };
+  if (editionClash) return { match: 'similar', score: 0.7, why: `Ίδιος κωδικός μοντέλου (${f.code.base}) αλλά άλλο σχέδιο / έκδοση: εμείς «${missN.slice(0, 2).join(' ')}», εκείνοι «${extraN.slice(0, 2).join(' ')}»`, how: 'sku', ev: ['ίδιος κωδικός μοντέλου', 'ίδια μάρκα'] };
   if (!brandOk && !skuHit) {
     // our product has no brand: at most "similar", and only when every model word is there
     if (!f.bt.length && ratio === 1 && f.keys.length >= 2 && (f.group < 0 || !cf.groups.size || cf.groups.has(f.group))) return { match: 'similar', score: 0.5, why: 'Το δικό μας προϊόν δεν έχει μάρκα', how: 'words' };
@@ -264,7 +373,7 @@ function compare(f, cand, cf) {
     const mod = extra.find((k) => MODIFIERS.has(k));
     const lost = missing.find((k) => MODIFIERS.has(k));
     const code = extra.find((k) => cf.codes.includes(k) || /^[A-Z]{1,3}\d{1,3}[A-Z]?$/.test(k));
-    const realHit = hit.some((k) => !MODIFIERS.has(k) && !WEAK.has(k) && /[A-Z]/.test(k));
+    const realHit = hit.some((k) => !MODIFIERS.has(k) && !WEAK.has(k) && /[A-Z]/.test(k) && !SPEC.test(k) && !/^\d+[A-Z]{1,2}$/.test(k)); // a size or capacity (100L, 20MM) names no model
     if (mod) { match = 'similar'; why = `Έχει επιπλέον «${mod}» (άλλη έκδοση;)`; }
     else if (lost) { match = 'similar'; why = `Δεν έχει το «${lost}» (άλλη έκδοση;)`; }
     else if (code) { match = 'similar'; why = `Έχει άλλο κωδικό μοντέλου «${code}»`; }
@@ -279,6 +388,17 @@ function compare(f, cand, cf) {
     const fi = f.flags.findIndex((v, i) => (FLAGS[i][2] ? v * cf.flags[i] === -1 : v !== cf.flags[i]));
     if (fi >= 0) { match = 'similar'; why = 'Διαφέρει: ' + FLAGS[fi][1]; }
   }
+  // ---- proof against: things that make two products with the same words different products ----
+  if (match === 'exact' && !skuHit) {
+    const partMissing = f.parts.find((st) => !cf.nameKey.includes(' ' + st));
+    const partExtra = cf.parts.find((st) => !f.nameKey.includes(' ' + st));
+    if (codeClash(f.code, cf.code)) { match = 'similar'; why = `Άλλος κωδικός: εμείς ${f.code.base}, εκείνοι ${cf.code.base}`; }
+    else if (f.gtin && cf.gtin && f.gtin !== cf.gtin) { match = 'similar'; why = 'Άλλο EAN'; }
+    else if (f.bundle !== cf.bundle) { match = 'similar'; why = cf.bundle ? 'Εκείνοι πουλάνε σετ / πακέτο' : 'Εμείς πουλάμε σετ / πακέτο'; }
+    else if (partMissing) { match = 'similar'; why = 'Το δικό μας έχει και κάτι ακόμα («με …») που δεν φαίνεται στο δικό τους'; }
+    else if (partExtra) { match = 'similar'; why = 'Το δικό τους έχει και κάτι ακόμα («με …») που δεν έχει το δικό μας'; }
+    else if (!codeHit && kindClash(f, cf)) { match = 'similar'; why = `Άλλο είδος; Εμείς «${f.kind}», εκείνοι «${cf.kind}»`; }
+  }
   if (f.used || cf.used) { if (f.used !== cf.used) { match = 'similar'; why = 'Μεταχειρισμένο / καινούργιο'; } }
   if (match === 'exact' && (f.women !== cf.women || f.kids !== cf.kids)) { match = 'similar'; why = f.women !== cf.women ? 'Γυναικείο / ανδρικό;' : 'Παιδικό;'; }
   // colours: same model in another solid colour costs the same; another camo pattern often does not
@@ -291,16 +411,25 @@ function compare(f, cand, cf) {
       if (pat) { match = 'similar'; why = 'Άλλο χρώμα/παραλλαγή: ' + [...cf.colors].join(' '); } else why = 'Άλλο χρώμα (' + [...cf.colors].join(' ') + ')';
     }
   }
-  if (match === 'exact' && !skuHit && f.price > 0 && cand.p > 0) {
+  if (match === 'exact' && !skuFull && f.price > 0 && cand.p > 0) {
     const r = cand.p / f.price;
     if (r < 0.45 || r > 2.2) { match = 'similar'; why = 'Πολύ διαφορετική τιμή (ίσως άλλο προϊόν ή συσκευασία)'; }
   }
-  return { match, score: Math.round((skuHit || codeHit ? 1 : ratio) * Math.max(0.5, back) * 100) / 100 + colour * 0.05, why, how: skuHit ? 'sku' : codeHit ? 'code' : 'words' };
+  // what speaks for the match, in words (shown next to every offer)
+  const ev = [];
+  if (skuHit) ev.push(baseHit && !(f.sku && f.sku === cf.sku) ? `ίδιος κωδικός μοντέλου (${f.code.base})` : 'ίδιος κωδικός');
+  if (brandOk) ev.push('ίδια μάρκα');
+  if (hit.length) ev.push('λέξεις μοντέλου: ' + hit.slice(0, 4).join(' '));
+  if (colour === 1) ev.push('ίδιο χρώμα');
+  const imgHit = !!(f.img && cf.img && f.img === cf.img);
+  if (imgHit) ev.push('ίδια φωτογραφία (αρχείο κατασκευαστή)');
+  return { match, score: Math.round((skuHit || codeHit ? 1 : ratio) * Math.max(0.5, back) * 100) / 100 + colour * 0.05 + (imgHit ? 0.05 : 0), why, how: skuHit ? 'sku' : codeHit ? 'code' : 'words', ev };
 }
+
 
 // Backwards compatible single comparison (used for products found by search).
 function score(our, cand) {
-  const c = { n: cand.name, s: cand.sku, b: cand.brand, p: cand.price };
+  const c = { n: cand.name, s: cand.sku, b: cand.brand, p: cand.price, g: cand.ean || '', m: cand.mpn || '', i: cand.img || '' };
   return compare(features(our), c, candFeatures(c));
 }
 
@@ -318,6 +447,8 @@ function indexFor(compId) {
     feats[i] = cf;
     for (const t of cf.set) { let a = post.get(t); if (!a) post.set(t, (a = [])); a.push(i); }
     if (cf.sku) { const k = '#' + cf.sku; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); }
+    for (const cb of [cf.code, cf.mpn]) if (cb) { const k = '~' + cb.base; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); if (cb.run && cb.run !== cb.base) { const k2 = '~' + cb.run; let a2 = post.get(k2); if (!a2) post.set(k2, (a2 = [])); a2.push(i); } }
+    if (cf.gtin) { const k = '=' + cf.gtin; let a = post.get(k); if (!a) post.set(k, (a = [])); a.push(i); }
   });
   const res = { cat, items, feats, post };
   idxCache.set(compId, res);
@@ -329,6 +460,8 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   const cand = new Set();
   const add = (k) => { const a = ix.post.get(k); if (a && a.length <= 600) for (const i of a) cand.add(i); };
   if (f.sku) add('#' + f.sku);
+  if (f.code) { add('~' + f.code.base); if (f.code.run) add('~' + f.code.run); }
+  if (f.gtin) add('=' + f.gtin);
   for (const c of f.codes) add(c);
   // the two rarest model words are enough to find every candidate
   const ks = f.keys.map((k) => [k, (ix.post.get(k) || []).length]).filter((x) => x[1] > 0).sort((a, b) => a[1] - b[1]).slice(0, 2);
@@ -346,7 +479,7 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   }
   if (!best) return null;
   const c = best.c;
-  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', country: comp.foreign ? 'other' : 'GR', seenAt: (ix.cat && ix.cat.at) || U.nowIso() };
+  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: (ix.cat && ix.cat.at) || U.nowIso() };
 }
 
 // ---------- Stats & decision ----------
@@ -568,21 +701,26 @@ async function run(targets, job, opts) {
   if (!opts.skipDownload) {
     job && job.log(`Ενημέρωση καταλόγων ${comps.length} ανταγωνιστών…`);
     dl = await compcat.syncAll(comps, job, catalog.makeProgress(job));
-    if (job && job.cancelled()) return null;
+    if (job && job.cancelled()) { const m = store.read('market-meta', {}); m.pausedUntil = new Date(Date.now() + 2 * 36e5).toISOString(); store.write('market-meta', m); return { stopped: true, done: 0, withData: 0, similar: 0, changes: 0, errors: dl.errors }; }
   }
   const withCatalog = comps.filter((c) => (compcat.load(c.id).products || []).length);
   if (!withCatalog.length) throw new Error('Δεν κατέβηκε κανένας κατάλογος ανταγωνιστή: ' + dl.errors.map((e) => e.name + ' — ' + e.error).join(' · '));
 
-  const list = targets && targets.length ? targets : targetsAll();
-  job && job.progress(0, list.length, 'Σύγκριση με ' + withCatalog.length + ' καταστήματα…');
+  const whole = !(targets && targets.length);
+  const list = whole ? targetsAll() : targets;
   const byId = { sf: catalog.byId('sf'), st: catalog.byId('st') };
   // 17.000 products against every shop: in slices, so the screens keep answering (a small cloud machine would
   // otherwise freeze for half a minute per competitor)
-  const pace = require('./bg').pacer();
+  const bg = require('./bg');
+  const pace = bg.pacer();
   const all = results();
   const dec = decisions();
   const changes = [];
   const at = U.nowIso();
+  // EANs we know for our own products (found at the suppliers): the surest proof of "the same product"
+  const found = (store.read('enrich-cache', null) || {}).products || {};
+  const eanOf = (key) => { const e = found[key]; return e && e.data && e.data.ean ? e.data.ean : ''; };
+  const readableIds = new Set(comps.map((c) => c.id));
   // our products once; then one competitor catalog in memory at a time (the indexes are the big part)
   const work = [];
   for (const t of list) {
@@ -591,62 +729,99 @@ async function run(targets, job, opts) {
     if (!p) continue;
     const key = t.site + ':' + p.id;
     const d = dec[key] || {};
-    const f = features(p);
-    work.push({ t, p, key, f, yes: new Set(d.yes || []), no: new Set(d.no || []), found: [], searchable: !!(f.keys.length || f.sku || f.codes.length) });
+    const f = features(p, { ean: eanOf(key) });
+    const prev = all[key] || null;
+    // what each shop offered at the last run: replaced shop by shop as each one is compared again (a shop whose
+    // catalog could not be read today keeps its last offer; a shop taken off the list loses it)
+    const cur = new Map(), manual = [];
+    let dropped = false;
+    if (prev) for (const c of prev.competitors) { if (c.manual) manual.push(c); else if (readableIds.has(c.competitorId)) cur.set(c.competitorId, c); else dropped = true; }
+    work.push({ t, p, key, f, prev, cur, manual, touched: !prev || dropped, yes: new Set(d.yes || []), no: new Set(d.no || []), searchable: !!(f.keys.length || f.sku || f.codes.length || f.gtin || f.code) });
   }
-  let step = 0;
+  // ---- progress that is never lost ----
+  // A whole run is done shop by shop, and after each shop what was found is written down together with a note
+  // «this shop is done, with this reading of its catalog». If the run is stopped (by a person, a restart of the free
+  // cloud machine, a crash) the next run goes on with the shops that are left: nothing is compared twice, nothing
+  // that was found is thrown away.
+  const cm = store.read('catalog-meta', null) || {};
+  const sig = [localDay(new Date(at)), LOGIC_VERSION, MATCH_VERSION, (cm.sf || {}).syncedAt || '', (cm.st || {}).syncedAt || ''].join('|');
+  let prog = whole ? store.read(PROGRESS, null) : null;
+  if (!prog || prog.sig !== sig || opts.fresh) prog = { sig, startedAt: at, done: {}, changes: 0 };
+  const resumed = whole ? withCatalog.filter((c) => prog.done[c.id] && prog.done[c.id] === (compcat.load(c.id).at || '')).length : 0;
+  if (resumed) job && job.log(`Συνέχεια από εκεί που είχε μείνει: ${resumed} από ${withCatalog.length} καταστήματα είχαν ήδη συγκριθεί.`);
+  job && job.progress(0, list.length, 'Σύγκριση με ' + withCatalog.length + ' καταστήματα…');
+  const commit = (w) => {
+    const offers = [...w.cur.values()].concat(w.manual);
+    for (const o of offers) { o.ignored = w.no.has(o.url); if (w.yes.has(o.url)) { o.match = 'exact'; o.confirmed = true; } }
+    const prev = w.prev;
+    const entry = compute(w.t.site, w.p, { at, name: w.p.name, competitors: offers, prevStats: prev && prev.stats && prev.stats.count && prev.at !== at ? { min: prev.stats.min, median: prev.stats.median, at: prev.at } : (prev && prev.prevStats) || null });
+    if (!offers.length && !prev && !entry.loss) { delete all[w.key]; return; } // nothing to keep (a sale at a loss is always kept)
+    all[w.key] = entry;
+  };
+  let lastSave = Date.now(), unsaved = [], step = 0, compared = 0;
+  const save = async (force) => {
+    if (!(unsaved.length || (force && work.some((w) => w.touched))) || (!force && Date.now() - lastSave < 45000)) return;
+    for (const w of work) { if (w.touched) { commit(w); w.touched = false; } if (pace.due()) await pace.rest(); }
+    await store.writeAsync('market', all, bg.breathe);
+    if (whole) { for (const [id, catAt] of unsaved) prog.done[id] = catAt; prog.at = U.nowIso(); prog.changes += changes.length; store.write(PROGRESS, prog); }
+    if (changes.length) { const log = store.read('market-changes', []); store.write('market-changes', changes.splice(0).concat(log).slice(0, 400)); }
+    unsaved = []; lastSave = Date.now();
+  };
   for (const c of withCatalog) {
     if (job && job.cancelled()) break;
+    step++;
+    const catAt = compcat.load(c.id).at || '';
+    if (whole && !opts.fresh && prog.done[c.id] && prog.done[c.id] === catAt) { store.forget('comp-' + c.id); continue; } // already compared with this reading of its catalog
     const ix = indexFor(c.id);
-    for (const w of work) { if (w.searchable) { const o = bestIn(w.f, ix, c, w.yes, w.no); if (o) w.found.push(o); } if (pace.due()) await pace.rest(); }
+    for (const w of work) {
+      if (pace.due()) { await pace.rest(); if (job && job.cancelled()) break; }
+      const o = w.searchable ? bestIn(w.f, ix, c, w.yes, w.no) : null;
+      const before = w.cur.get(c.id);
+      if (!o && !before) continue;
+      if (o) {
+        // price changes since the last run (only for products they can actually sell)
+        if (before && before.url === o.url && before.price > 0 && Math.abs(before.price - o.price) >= 0.01 && o.match === 'exact' && o.inStock !== false) {
+          o.prevPrice = before.price;
+          changes.push({ at, site: w.t.site, id: w.p.id, name: w.p.name, shop: o.shop, url: o.url, from: before.price, to: o.price, ours: w.p.price });
+        }
+        w.cur.set(c.id, o);
+      } else w.cur.delete(c.id);
+      w.touched = true;
+    }
     idxCache.delete(c.id);
     store.forget('comp-' + c.id);
-    step++;
-    job && job.progress(Math.round((step / withCatalog.length) * list.length * 0.9), list.length, `Σύγκριση… ${step}/${withCatalog.length} καταστήματα`);
+    if (job && job.cancelled()) break; // a shop compared only in part is not marked as done
+    compared++;
+    unsaved.push([c.id, catAt]);
+    job && job.progress(Math.round((step / withCatalog.length) * list.length * 0.95), list.length, `Σύγκριση… ${step}/${withCatalog.length} καταστήματα`);
+    await save(false);
   }
-  const failed = new Set(dl.errors.map((e) => e.id));
+  const stopped = !!(job && job.cancelled());
+  // products without any offer and without an earlier result still get their entry looked at once (sale at a loss)
+  if (!stopped) for (const w of work) if (!w.prev && !w.cur.size && !w.manual.length) w.touched = true;
+  await save(true);
   let done = 0, withData = 0, similar = 0;
-  for (const w of work) {
-    if (job && job.cancelled()) break;
-    if (pace.due()) await pace.rest();
-    done++;
-    const { t, p, key, found, yes, no } = w;
-    const prev = all[key];
-    // offers from competitors we could not refresh today stay as they were
-    const kept = prev ? prev.competitors.filter((c) => c.manual || (failed.has(c.competitorId) && !found.some((x) => x.competitorId === c.competitorId))) : [];
-    const offers = found.concat(kept);
-    for (const o of offers) { o.ignored = no.has(o.url); if (yes.has(o.url)) { o.match = 'exact'; o.confirmed = true; } }
-    // price changes since the last run (only for products they can actually sell)
-    if (prev) {
-      const before = new Map(prev.competitors.map((c) => [c.url, c]));
-      for (const o of found) {
-        const b = before.get(o.url);
-        if (b && b.price > 0 && Math.abs(b.price - o.price) >= 0.01 && o.match === 'exact' && o.inStock !== false) {
-          o.prevPrice = b.price;
-          changes.push({ at, site: t.site, id: p.id, name: p.name, shop: o.shop, url: o.url, from: b.price, to: o.price, ours: p.price });
-        }
-      }
-    }
-    const entry = compute(t.site, p, { at, name: p.name, competitors: offers, prevStats: prev && prev.stats && prev.stats.count ? { min: prev.stats.min, median: prev.stats.median, at: prev.at } : (prev && prev.prevStats) || null });
-    if (entry.stats.count) withData++;
-    if (entry.stats.similar) similar++;
-    if (!offers.length && !prev && !entry.loss) continue; // nothing to keep (a sale at a loss is always kept)
-    all[key] = entry;
-  }
-  store.write('market', all);
-  const log = store.read('market-changes', []);
-  store.write('market-changes', changes.concat(log).slice(0, 400));
+  for (const w of work) { done++; const e = all[w.key]; if (!e) continue; if (e.stats && e.stats.count) withData++; if (e.stats && e.stats.similar) similar++; }
+  const complete = !stopped && (!whole || withCatalog.every((c) => prog.done[c.id]));
   const meta = Object.assign(store.read('market-meta', {}), {
-    lastRun: at, lastRunDay: localDay(new Date(at)), auto: !!opts.auto, seconds: Math.round((Date.now() - t0) / 1000),
-    compared: done, withData, similar, changes: changes.length, competitors: withCatalog.length,
+    seconds: Math.round((Date.now() - t0) / 1000), compared: done, withData, similar, competitors: withCatalog.length,
     errors: dl.errors.map((e) => ({ name: e.name, error: e.error })),
+    // where a whole run stands: how many shops are done, whether it is finished
+    progress: whole ? { at: U.nowIso(), done: withCatalog.filter((c) => prog.done[c.id]).length, of: withCatalog.length, complete, stopped } : store.read('market-meta', {}).progress || null,
   });
+  if (whole && complete) Object.assign(meta, { lastRun: at, lastRunDay: localDay(new Date(at)), auto: !!opts.auto, changes: prog.changes, pausedUntil: null });
+  // stopped by a person: the automatic run does not start again at once (it goes on later, from where it was)
+  if (whole && stopped) meta.pausedUntil = new Date(Date.now() + 2 * 36e5).toISOString();
   store.write('market-meta', meta);
   // the competitor catalogs are big: free the memory until the next run
   idxCache.clear();
+  if (stopped) { job && job.log(`Σταμάτησε: ${meta.progress ? meta.progress.done : compared} από ${withCatalog.length} καταστήματα είναι φυλαγμένα· η επόμενη έρευνα συνεχίζει από εκεί.`); return { done, withData, similar, changes: prog.changes, errors: dl.errors, stopped: true, shops: meta.progress }; }
   job && job.progress(list.length, list.length, `Έτοιμο: ${withData.toLocaleString('el-GR')} από ${done.toLocaleString('el-GR')} προϊόντα έχουν τιμές αγοράς.`);
-  return { done, withData, similar, changes: changes.length, errors: dl.errors };
+  return { done, withData, similar, changes: prog.changes, errors: dl.errors, shops: meta.progress, resumed };
 }
+const PROGRESS = 'market-progress';
+// bump when the rules of «the same product» change: every shop is then compared again once
+const MATCH_VERSION = 2;
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -659,6 +834,7 @@ function dailyDue(now) {
   const meta = store.read('market-meta', {});
   const d = now || new Date();
   if (meta.lastRunDay === localDay(d)) return false;
+  if (meta.pausedUntil && new Date(meta.pausedUntil).getTime() > d.getTime()) return false; // a person stopped it: later, from where it was
   return d.getHours() >= (Number(s.marketHour) || 0);
 }
 
@@ -878,5 +1054,5 @@ function setCost(site, id, cost, source, rrp) {
 
 module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
-  resultFor, results, suggest, stats, score, compare, features, candFeatures, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
+  resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

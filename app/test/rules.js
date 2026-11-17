@@ -134,6 +134,45 @@ function shop() {
   const cat = one(267335, 'cats');
   ok(cat && cat.to.id === 70, 'a product without a category goes where products of its kind are (ΒΟΛΙΔΕΣ → ΒΛΗΜΑΤΑ ΑΕΡΟΒΟΛΩΝ)', cat && JSON.stringify(cat.to));
 
+  section('Αντιστοίχιση με ανταγωνιστές: απόδειξη, όχι μόνο τίτλοι που μοιάζουν (αληθινές περιπτώσεις)');
+  const same = (our, their) => market.score(our, their);
+  const O = (name, brand, sku, price, more) => Object.assign({ name, brand, sku, price }, more || {});
+  let r = same(O('ΜΠΟΥΦΑΝ PENTAGON ELEMENTS PARKA COYOTE', 'PENTAGON', 'K01014-1755507139', 125.9), O('Pentagon Elements Parka', 'PENTAGON', 'K01014', 82.9));
+  ok(r.match === 'exact' && r.how === 'sku' && /K01014/.test(r.ev.join()), 'the same model code is the same product, also when our code has a tail (K01014-1755507139 = K01014)', JSON.stringify(r));
+  r = same(O('ΘΗΚΗ ΠΡΩΤΩΝ ΒΟΗΘΕΙΩΝ TASMANIAN TIGER IFAK POUCH ΛΑΔΙ', 'TASMANIAN TIGER', '7951', 35), O('Tasmanian Tiger IFAK Pouch', 'Tasmanian Tiger', 'ΤΤ 7951-331', 40));
+  ok(r.match === 'exact' && r.how === 'sku', '7951 = «ΤΤ 7951-331» (the shop wrote the brand letters in front, in Greek)', JSON.stringify(r));
+  r = same(O('ΦΑΚΟΣ NITECORE P20', 'NITECORE', '', 50, { ean: '6952506492404' }), O('Nitecore P20 V2 tactical', '', '', 55, { ean: '6952506492404' }));
+  ok(r.match === 'exact' && r.how === 'ean', 'the same EAN is the same product, whatever the titles say', JSON.stringify(r));
+  r = same(O('ΑΡΒΥΛΑ PENTAGON HYBRID 2.0 STR BOOT BLACK', 'PENTAGON', 'K15038-2.0-STR', 69.9), O('PENTAGON Hybrid 2.0 STR Shoes', 'PENTAGON', 'K15037-2.0STR-1', 69.9));
+  ok(r.match === 'similar' && /K15038/.test(r.why) && /K15037/.test(r.why), 'the same words but another code of the same shape (K15038 / K15037: boots / shoes) is NOT the same', JSON.stringify(r));
+  r = same(O('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU 2.0 CAMO ΕΛΛΗΝΙΚΗ ΠΑΡΑΛΛΑΓΗ', 'PENTAGON', 'K05001-2.0-Camo', 36.9), O('PENTAGON BDU 2.0 SET CAMO', 'PENTAGON', 'K02001-K05001-2.0-56', 65));
+  ok(r.match === 'similar', 'trousers are not the set (jacket + trousers)', JSON.stringify(r));
+  r = same(O('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU 2.0 CAMO', 'PENTAGON', '', 36.9), O('PENTAGON BDU 2.0 SET CAMO', 'PENTAGON', '', 39));
+  ok(r.match === 'similar' && /σετ/.test(r.why), 'also without codes: «SET» on one side only → the person decides', JSON.stringify(r));
+  r = same(O('ΜΑΧΑΙΡΙ MORAKNIV ELDRIS ΜΕ ΣΠΙΝΘΗΡΙΣΤΗ ΚΙΤΡΙΝΟ', 'MORAKNIV', '', 55), O('MORAKNIV Eldris', 'MORAKNIV', '', 30));
+  ok(r.match === 'similar' && /με …/.test(r.why), 'a knife «ΜΕ ΣΠΙΝΘΗΡΙΣΤΗ» is not the plain knife', JSON.stringify(r));
+  r = same(O('ΜΑΧΑΙΡΙ MORAKNIV ELDRIS ΜΕ ΣΠΙΝΘΗΡΙΣΤΗ ΠΡΑΣΙΝΟ', 'MORAKNIV', 'MORA-12633', 55), O('Morakniv Eldris με σπινθηριστή πράσινο', 'Morakniv', 'Mora-12633', 54.8));
+  ok(r.match === 'exact', 'and IS the same as the one that also says «με σπινθηριστή»', JSON.stringify(r));
+  r = same(O('ΔΑΚΤΥΛΙΟΙ ΣΙΛΙΚΟΝΗΣ ΓΙΑ ΩΤΟΑΣΠΙΔΕΣ EARMOR M30', 'EARMOR', 'S06-M30', 23.9), O('ΩΤΟΑΣΠΙΔΕΣ ΗΛΕΚΤΡΟΝΙΚΕΣ EARMOR M30 FOLIAGE GREEN', 'EARMOR', '9020051672', 47));
+  ok(r.match === 'similar' && /Άλλο είδος/.test(r.why), 'a spare part «ΓΙΑ ΩΤΟΑΣΠΙΔΕΣ» is not the ear defenders', JSON.stringify(r));
+  r = same(O('ΑΡΒΥΛΑ LOWA TIBET GTX', 'LOWA', '', 300), O('Μποτάκια Lowa Tibet GTX', 'LOWA', '', 310));
+  ok(r.match === 'exact', 'two names of one kind (ΑΡΒΥΛΑ / ΜΠΟΤΑΚΙΑ) do not split a product', JSON.stringify(r));
+  r = same(O('ΣΑΚΙΔΙΟ ΤΑΞΙΔΙΟΥ 100L', 'MRK', '', 43.9), O('Σακίδιο MRK στρατιωτικό 100L - Μαύρο', 'MRK', 'MRK-30-01', 44));
+  ok(r.match === 'similar', 'brand + capacity (100L) alone prove nothing', JSON.stringify(r));
+  r = same(O('ΚΟΝΤΟΜΑΝΙΚΟ T-SHIRT PENTAGON ΣΠΑΡΤΙΑΤΗΣ PETROL', 'PENTAGON', 'K09012-SH-1754713298', 16.9), O('ΜΠΛΟΥΖΑ PENTAGON AGERON "BLANK" K09012-01 BLACK', 'PENTAGON', 'K09012-01', 21.9));
+  ok(r.match !== 'exact', 'one base code, another print (K09012-SH «ΣΠΑΡΤΙΑΤΗΣ» / K09012-01 «BLANK») is not the same', JSON.stringify(r));
+  r = same(O('ΚΑΠΕΛΟ PENTAGON CREST TRUCKER CAP', 'PENTAGON', 'K13082-13083', 9.8), O('TRIAD CAP K13082', 'PENTAGON', 'K13082', 14.48));
+  ok(r.match === 'similar' && /άλλο όνομα/.test(r.why), 'the same code under two model names: shown for a decision, never counted by itself', JSON.stringify(r));
+  r = same(O('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068', 'PENTAGON', 'K05001-99', 48.9), O('BDU 2.0 K05001-2.0', 'PENTAGON', 'K05001-2.0', 37.28));
+  ok(r.match !== 'exact', 'a title that names another code than its own code field (K05068 filed under K05001) is not matched by that code', JSON.stringify(r));
+  r = same(O('ΔΙΠΛΗ ΓΕΜΙΣΤΗΡΟΘΗΚΗ PENTAGON DOUBLE MULTI POUCH RAL', 'PENTAGON', 'K17090-1', 16.9), O('PENTAGON DOUBLE MULTI POUCH', 'PENTAGON', 'K17090', 6.9));
+  ok(r.match === 'similar' && /τιμή/.test(r.why), 'a price less than half of ours with only the base code in common → check first', JSON.stringify(r));
+  r = same(O('ΓΥΑΛΙΑ SWISS EYE APACHE ΚΑΦΕ', 'SWISS EYE', 'SE - 40232', 49.8), O('Swiss Eye Apache', 'SWISS EYE', 'SE – 40231', 64.9));
+  ok(r.match === 'similar', 'another colour with its own code and price (SE 40232 / SE 40231) is not the same', JSON.stringify(r));
+  ok(r.ev && r.ev.includes('ίδια μάρκα'), 'every answer carries its proof in words (shown next to the offer)', JSON.stringify(r.ev));
+  ok(market.codeBase('MORA-12210').base === 'MORA12210' && market.codeBase('8020860 Katadyn BeFree Gravity 10L').base === '8020860' && market.codeBase('Δυνατότητα προ-παραγγελίας') === null && market.codeBase('MORA-HD') === null, 'the base of a code is read from what shops really write in the code field');
+  ok(market.gtinOf('6952506492404') === '6952506492404' && market.gtinOf('6952506492405') === '' && market.gtinOf('0844802310635') === '844802310635', 'an EAN counts only with a right check digit (a leading 0 does not matter)');
+
   section('Νέα προϊόντα: καθαρά ονόματα, ο κωδικός μόνο στο πεδίο του, χρώμα ως ιδιότητα');
   let d = drafts.fromExtract({ url: 'https://sup.example/p/1', host: 'sup.example', name: 'Βολίδες H&amp;N Silver Point 4.5mm', brand: 'H&amp;amp;N', price: 10, images: [] }, {});
   ok(d.title === 'ΒΟΛΙΔΕΣ H&N SILVER POINT 4.5MM' && d.fields.brand === 'H&N', 'a supplier page that sends H&amp;N gives a clean title and brand', d.title + ' / ' + d.fields.brand);
@@ -145,6 +184,48 @@ function shop() {
   ok(rows[0].Type === 'variable' && attrsOf(rows[0]).some(([, v]) => v === 'M, L') && rows.filter((r) => r.Type === 'variation').length === 2, 'sizes become a WooCommerce attribute with one variation each');
   ok(attrsOf(rows[0]).some(([, v]) => /ΜΑΥΡΟ|Black/i.test(v)), 'a product in one colour keeps the colour as an attribute (not only in the title)', JSON.stringify(attrsOf(rows[0])));
   ok(rows.filter((r) => r.Type === 'variation').every((r) => r.Parent === 'K05007' && r.SKU && attrsOf(r).length >= 1), 'each variation has its own code and its size attribute');
+
+  section('Έρευνα αγοράς: όλα τα προϊόντα, κατάστημα-κατάστημα, χωρίς να χάνεται η πρόοδος');
+  {
+    const now = new Date().toISOString();
+    const W = (n, v) => { fs.writeFileSync(path.join(process.env.SFK_DATA, n + '.json'), JSON.stringify(v)); store.forget(n); };
+    W('competitors', ['cA', 'cB', 'cC'].map((id) => ({ id, name: 'shop-' + id, url: `https://${id}.example`, kind: 'woo', enabled: true })));
+    W('competitors-meta', { seed: 99 });
+    const mains = [...catalog.byId('sf').values()].filter((p) => p.type !== 'variation');
+    const cat = (id, off) => W('comp-' + id, { kind: 'woo', at: now, products: mains.map((p, i) => ({ id: i, n: p.name, s: p.sku, b: p.brand, u: `https://${id}.example/p/${p.id}`, p: Math.round((p.price + off) * 100) / 100, pm: 0, r: 0, st: true, i: '', c: 'EUR' })) });
+    cat('cA', 1); cat('cB', 2); cat('cC', 3);
+    W('market', {}); W('market-meta', {}); W('market-progress', null);
+    const shape = () => JSON.stringify(Object.entries(store.read('market', {})).sort().map(([k, e]) => [k, e.action, e.suggested, e.competitors.map((c) => [c.competitorId, c.price, c.match]).sort()]));
+    const jobThatStopsAfter = (n) => { let stop = false; const log = []; return { log: (l) => log.push(l), lines: log, progress(d, t, m) { const x = /(\d+)\/(\d+) καταστήματα/.exec(m || ''); if (x && Number(x[1]) >= n) stop = true; }, cancelled: () => stop, signal: new AbortController().signal }; };
+    let res = await market.run(null, null, { skipDownload: true });
+    const wholeRun = shape();
+    ok(res.done === mains.length && res.shops.complete && res.shops.done === 3, 'a whole run compares EVERY product (not a sample) with every shop', JSON.stringify(res));
+    ok(res.withData >= mains.length - 3, 'and finds the offers of all three shops', String(res.withData));
+    // stopped after the first shop
+    W('market', {}); W('market-meta', {}); W('market-progress', null);
+    const j1 = jobThatStopsAfter(1);
+    res = await market.run(null, j1, { skipDownload: true });
+    const saved = store.read('market', {});
+    ok(res.stopped && res.shops.done === 1 && res.shops.of === 3 && !res.shops.complete, 'stopped in the middle: it says how far it got (1 of 3 shops)', JSON.stringify(res.shops));
+    ok(Object.keys(saved).length >= mains.length - 3 && Object.values(saved).every((e) => e.competitors.every((c) => c.competitorId === 'cA')), 'what the first shop gave is already written down (nothing is lost)');
+    ok(!store.read('market-meta', {}).lastRunDay && market.dailyDue() === false, 'the day is not marked as done, and the automatic run does not start again at once after a person stopped it');
+    store.forgetAll(); // as after a restart of the program
+    const j2 = jobThatStopsAfter(99);
+    res = await market.run(null, j2, { skipDownload: true });
+    ok(res.resumed === 1 && j2.lines.some((l) => /Συνέχεια από εκεί που είχε μείνει: 1 από 3/.test(l)), 'the next run goes on from where it was (also after a restart): the shop that was done is not compared again', JSON.stringify([res.resumed, j2.lines]));
+    ok(shape() === wholeRun && res.shops.complete && store.read('market-meta', {}).lastRunDay, 'and ends with exactly the result of a run that was never stopped');
+    // a shop is read again (new catalog): only that one is compared again
+    cat('cB', 5);
+    const before = store.read('market-progress', {}).done.cB;
+    fs.writeFileSync(path.join(process.env.SFK_DATA, 'comp-cB.json'), JSON.stringify(Object.assign(JSON.parse(fs.readFileSync(path.join(process.env.SFK_DATA, 'comp-cB.json'), 'utf8')), { at: new Date(Date.now() + 1000).toISOString() }))); store.forget('comp-cB');
+    res = await market.run(null, null, { skipDownload: true });
+    const anyB = Object.values(store.read('market', {})).map((e) => e.competitors.find((c) => c.competitorId === 'cB')).filter(Boolean);
+    ok(res.resumed === 2 && store.read('market-progress', {}).done.cB !== before && anyB.length && anyB.filter((c) => c.match === 'exact').length > 50 && anyB.filter((c) => c.match === 'exact').every((c) => c.prevPrice != null), 'when one shop has a new catalog only that shop is compared again, and its price changes are noted', JSON.stringify([res.resumed, anyB.length]));
+    // a shop taken off the list loses its offers; a shop that could not be read keeps its last ones
+    W('competitors', ['cA', 'cB'].map((id) => ({ id, name: 'shop-' + id, url: `https://${id}.example`, kind: 'woo', enabled: true })));
+    res = await market.run(null, null, { skipDownload: true });
+    ok(Object.values(store.read('market', {})).every((e) => e.competitors.every((c) => c.competitorId !== 'cC')), 'a shop taken off the list no longer counts in any product');
+  }
 
   console.log(`\n${passes} ok, ${fails} failed`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }

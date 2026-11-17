@@ -64,7 +64,7 @@
         h('div', { style: { maxWidth: '720px' } },
           h('h2', { style: { marginTop: 0 } }, 'Αυτόματη αναζήτηση αντιπροσώπων'),
           h('p', { class: 'muted' }, 'Το πρόγραμμα ψάχνει στο internet ποιος φέρνει στην Ελλάδα (εισαγωγέας, διανομέας, χονδρική) κάθε μάρκα που πουλάμε χωρίς αντιπρόσωπο, και κάθε μάρκα που έχουν οι ανταγωνιστές και εμείς όχι. Ανοίγει τα καλύτερα sites και ελέγχει αν έχουν πράγματι τη μάρκα. Τίποτα δεν καταχωρείται χωρίς την έγκρισή σου.'),
-          h('p', { class: 'faint' }, `Γίνεται μόνο του μία φορά την εβδομάδα (40 μάρκες κάθε φορά, με ήπιο ρυθμό). Τελευταία: ${d.lastRun ? fmt.dateTime(d.lastRun) : 'ποτέ'}.`)),
+          h('p', { class: 'faint' }, `Μόνο του ψάχνει μία φορά την εβδομάδα, και μόνο ό,τι είναι καινούργιο (μάρκες που δεν έχουν ψαχτεί ποτέ). Για μία μάρκα πάτα το όνομά της ή «Ξαναψάξε»: ξεκινά αμέσως, ακόμα κι αν τρέχει η μαζική αναζήτηση. Αν ξέρεις ήδη τον αντιπρόσωπο, πάτα «Τον ξέρω ήδη». Τελευταία: ${d.lastRun ? fmt.dateTime(d.lastRun) : 'ποτέ'}.`)),
         h('div', { class: 'stack s' }, runBtn('Αναζήτηση τώρα (40 μάρκες)', { limit: 40 }, 'primary'), runBtn('Όλες οι μάρκες (αργό)', { limit: 400 }))),
       d.blocked ? h('div', { class: 'note warn', style: { marginTop: '10px' } }, d.blocked.msg) : null,
       h('div', { class: 'kpis', style: { marginTop: '12px' } },
@@ -98,6 +98,8 @@
         h('div', { class: 'row' },
           b.status === 'dismissed' ? btn('Επαναφορά', { cls: 'sm' }, () => POST('/api/supplierfind/dismiss', { key: b.key, undo: true }).then(() => App.route()).catch(fail))
             : btn('Δεν με ενδιαφέρει', { cls: 'sm ghost', title: 'Δεν θα ψαχτεί ξανά' }, () => POST('/api/supplierfind/dismiss', { key: b.key }).then(() => { toast(b.brand + ': δεν θα ψαχτεί ξανά.'); App.route(); }).catch(fail)),
+          // the person knows who brings the brand: no search needed — pick one of the suppliers or add a new one
+          b.status !== 'approved' ? btn('Τον ξέρω ήδη', { cls: 'sm', title: 'Γράψε εσύ τον αντιπρόσωπο αυτής της μάρκας (ή διάλεξέ τον από τη λίστα)' }, () => GET('/api/suppliers').then((x) => assignBrand(b.brand, x.suppliers || [])).catch(fail)) : null,
           b.status !== 'approved' ? btn('Ξαναψάξε', { cls: 'sm', icon: 'search' }, () => POST('/api/supplierfind/run', { brands: [b.key] }).then((job) => watchJob(job, { done: () => App.route() })).catch(fail)) : null)),
       (() => {
         const top = cands.filter((c) => c.confidence !== 'low');

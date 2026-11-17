@@ -66,9 +66,9 @@ const iso = (ms) => new Date(ms).toISOString().slice(0, 19);
 const fresh = (o) => JSON.parse(JSON.stringify(o));
 const fromWooFresh = (p) => fresh(fromWoo(p));
 /** map: each page converted as it arrives (the raw answers of a whole shop are never kept together). */
-async function wooPages(base, query, gap, onPage, cancelled, headers, map) {
+async function wooPages(base, query, gap, onPage, cancelled, headers, map, signal) {
   const url = (pg) => `${base}/wp-json/wc/store/v1/products?per_page=100&page=${pg}${query ? '&' + query : ''}`;
-  const first = await http.getJson(url(1), { gap, timeout: 60000, retries: 2, headers });
+  const first = await http.getJson(url(1), { gap, timeout: 60000, retries: 2, headers, signal });
   if (!Array.isArray(first.json)) throw new Error('Μη αναμενόμενη απάντηση');
   const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
   const total = parseInt(first.headers.get('x-wp-total') || '0', 10) || first.json.length;
@@ -79,7 +79,7 @@ async function wooPages(base, query, gap, onPage, cancelled, headers, map) {
   for (let p = 2; p <= pages; p++) rest.push(p);
   // two requests at a time per competitor, with a pause between them: polite, never a load on their shop
   await http.pool(rest, 2, async (pg) => {
-    const r = await http.getJson(url(pg), { gap, timeout: 60000, retries: 2, headers });
+    const r = await http.getJson(url(pg), { gap, timeout: 60000, retries: 2, headers, signal });
     if (Array.isArray(r.json)) { const n = r.json.length; for (const x of conv(r.json)) out.push(x); onPage && onPage(n, 0); }
   }, cancelled);
   return { items: out, total };
@@ -96,26 +96,26 @@ async function syncWoo(c, prev, opts) {
   if (full) {
     mode = 'full';
     let r;
-    try { r = await wooPages(c.url, '_fields=' + WOO_FIELDS, gap, onPage, opts.cancelled, H, fromWooFresh); } catch (e) {
+    try { r = await wooPages(c.url, '_fields=' + WOO_FIELDS, gap, onPage, opts.cancelled, H, fromWooFresh, opts.signal); } catch (e) {
       if (e.status !== 400) throw e;
-      r = await wooPages(c.url, '', gap, onPage, opts.cancelled, H, fromWooFresh);
+      r = await wooPages(c.url, '', gap, onPage, opts.cancelled, H, fromWooFresh, opts.signal);
     }
     items = r.items;
   } else {
     mode = 'changes';
     const since = iso(new Date(prev.syncStartedAt).getTime() - 2 * 3600e3);
-    const changed = (await wooPages(c.url, `after=${encodeURIComponent(since)}&date_column=modified_gmt&_fields=${WOO_FIELDS}`, gap, onPage, opts.cancelled, H, fromWooFresh)).items;
+    const changed = (await wooPages(c.url, `after=${encodeURIComponent(since)}&date_column=modified_gmt&_fields=${WOO_FIELDS}`, gap, onPage, opts.cancelled, H, fromWooFresh, opts.signal)).items;
     const map = new Map(prev.products.map((p) => [p.id, p]));
     for (const p of changed) map.set(p.id, p);
-    const head = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=1&_fields=id`, { gap, timeout: 30000, headers: H });
+    const head = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=1&_fields=id`, { gap, timeout: 30000, headers: H, signal: opts.signal });
     const total = parseInt(head.headers.get('x-wp-total') || '0', 10);
     if (total && total !== map.size) {
       // something was deleted or hidden: read the list of ids (small pages) and fill the gaps
-      const ids = new Set((await wooPages(c.url, '_fields=id', gap, null, opts.cancelled, H)).items.map((x) => x.id));
+      const ids = new Set((await wooPages(c.url, '_fields=id', gap, null, opts.cancelled, H, null, opts.signal)).items.map((x) => x.id));
       for (const id of [...map.keys()]) if (!ids.has(id)) map.delete(id);
       const missing = [...ids].filter((id) => !map.has(id));
       for (let i = 0; i < missing.length; i += 100) {
-        const r = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${WOO_FIELDS}`, { gap, timeout: 60000, headers: H });
+        const r = await http.getJson(`${c.url}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${WOO_FIELDS}`, { gap, timeout: 60000, headers: H, signal: opts.signal });
         for (const p of r.json || []) map.set(p.id, fromWooFresh(p));
       }
     }
@@ -130,7 +130,7 @@ async function syncShopify(c, prev, opts) {
   let total = 0;
   for (let page = 1; page <= 200; page++) {
     if (opts.cancelled && opts.cancelled()) break;
-    const r = await http.getJson(`${c.url}/products.json?limit=250&page=${page}`, { gap: opts.gap, timeout: 60000, retries: 2, headers: opts.headers });
+    const r = await http.getJson(`${c.url}/products.json?limit=250&page=${page}`, { gap: opts.gap, timeout: 60000, retries: 2, headers: opts.headers, signal: opts.signal });
     const list = (r.json && r.json.products) || [];
     if (!list.length) break;
     total += list.length;
@@ -170,10 +170,11 @@ async function syncAll(comps, job, progress) {
     if (job && job.cancelled()) return;
     const prog = progress.site('c-' + c.id, c.name);
     try {
-      const r = await syncOne(c, { prog, cancelled: () => !!(job && job.cancelled()), full: false });
+      const r = await syncOne(c, { prog, cancelled: () => !!(job && job.cancelled()), full: false, signal: job && job.signal });
       if (r) { out.push(r); job && job.log(`${c.name}: ${r.count.toLocaleString('el-GR')} προϊόντα (${r.mode === 'full' ? 'πλήρης' : 'αλλαγές'}, ${r.seconds} δευτ.)`); }
       prog.note('έτοιμο');
     } catch (e) {
+      if (e && e.cancelled) return; // stopped by the person: not a failure of the shop
       errors.push({ id: c.id, name: c.name, error: e.message });
       job && job.log(`${c.name}: ${e.message}`);
       prog.note('σφάλμα');

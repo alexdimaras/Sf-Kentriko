@@ -25,6 +25,10 @@ const FILE = 'sf-kentro-data.json.gz'; // the previous way (everything in one fi
 // kept in the cloud although the daily copies on a PC leave them out: the open sessions (a restart does not sign
 // everybody out), what was found at the suppliers, what was learned from the catalog, the results of the screens
 const KEEP = ['sessions', 'enrich-cache', 'types', 'accents', 'catalog-meta', 'derived-checks', 'derived-fixes', 'derived-words', 'derived-meta'];
+// …and the competitors' catalogs as they were last read (comp-<id>): on a host whose disk is wiped at every restart the
+// daily research then goes on from where it was, instead of downloading every shop again
+const COMP = /^comp-[a-z0-9]+$/i;
+const keepNames = () => { let extra = []; try { extra = require('fs').readdirSync(store.dir()).filter((f) => f.endsWith('.json') && COMP.test(f.slice(0, -5))).map((f) => f.slice(0, -5)); } catch (_) { /* no folder yet */ } return KEEP.concat(extra); };
 const EVERY = Math.max(1, Number(process.env.SFK_GITHUB_MINUTES) || 2) * 60000; // a save sends only what changed, so it can be frequent
 const NAME_OK = /^[a-z0-9][a-z0-9._-]{0,80}\.json$/i;
 
@@ -74,7 +78,7 @@ async function restoreOnce() {
   if (tr.status === 404 || tr.status === 409) { state.loadedAt = new Date().toISOString(); return { files: 0, first: true }; }
   if (!tr.ok) throw new Error(`GitHub: δεν διαβάστηκαν τα δεδομένα (${tr.status}).`);
   const tree = ((await tr.json()).tree || []).filter((e) => e.type === 'blob');
-  const parts = tree.filter((e) => e.path.startsWith(DIR + '/') && e.path.endsWith('.gz') && NAME_OK.test(e.path.slice(DIR.length + 1, -3)) && store.kept(e.path.slice(DIR.length + 1, -3), KEEP));
+  const parts = tree.filter((e) => e.path.startsWith(DIR + '/') && e.path.endsWith('.gz') && NAME_OK.test(e.path.slice(DIR.length + 1, -3)) && (store.kept(e.path.slice(DIR.length + 1, -3), KEEP) || COMP.test(e.path.slice(DIR.length + 1, -8))));
   if (!parts.length) {
     const old = tree.find((e) => e.path === FILE);
     if (old) { const out = await restoreOld(); oldKeep = old.sha; return out; }
@@ -175,7 +179,7 @@ function save(reason) {
   const at = changes;
   saving = (async () => {
     check();
-    const names = store.dataFiles(KEEP).filter((f) => NAME_OK.test(f));
+    const names = store.dataFiles(keepNames()).filter((f) => NAME_OK.test(f));
     const now = new Map(); // what the repository will hold after this save
     const send = [];
     for (const f of names) {

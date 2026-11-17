@@ -79,7 +79,9 @@
         tb.appendChild(h('tr', { class: c.used ? '' : 'unused' },
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', minWidth: 0 } }, c.img ? thumb(c.img, 'sm') : null,
             h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill', style: { marginLeft: '6px' } }, 'χειροκίνητα') : null,
-              h('div', { class: 'faint ell', title: c.name }, c.name), c.why && f === 'similar' ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null))),
+              h('div', { class: 'faint ell', title: c.name }, c.name), c.why && f === 'similar' ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
+              // why the program says it is the same product (code, EAN, brand, model words, photo)
+              c.confirmed ? h('div', { class: 'ev' }, 'ίδιο: το επιβεβαίωσες εσύ') : (c.ev && c.ev.length && f !== 'similar' ? h('div', { class: 'ev', title: 'Με τι αναγνωρίστηκε ως το ίδιο προϊόν' }, c.ev.join(' · ')) : null)))),
           h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),
           h('td', { class: 'num' }, ours ? h('span', { class: 'price-diff ' + (vs < -0.005 ? 'down' : vs > 0.005 ? 'up' : '') }, pct(vs)) : ''),
           h('td', null, c.inStock === false ? h('span', { class: 'faint' }, 'εξαντλημένο') : 'διαθέσιμο'),
@@ -120,10 +122,14 @@
       const sub = meta.lastRun
         ? `Τελευταία έρευνα ${fmt.dateTime(meta.lastRun)}: ${fmt.num(meta.compared)} προϊόντα σε ${meta.competitors} καταστήματα, σε ${meta.seconds} δευτ. ${s.marketAuto ? 'Τρέχει αυτόματα κάθε μέρα με το πρώτο άνοιγμα του προγράμματος.' : 'Η αυτόματη ημερήσια έρευνα είναι κλειστή (Ρυθμίσεις).'}`
         : 'Το πρόγραμμα κατεβάζει όλο τον κατάλογο κάθε ανταγωνιστή και συγκρίνει όλα τα προϊόντα σας: ίδια μάρκα, ίδιο μοντέλο, ίδια έκδοση.';
+      // a whole run that was stopped (by a person, or by a restart of the machine) goes on from where it was: say how far it is
+      const pr = meta.progress;
+      const half = pr && !pr.complete && pr.of ? h('div', { class: 'note', style: { marginBottom: '12px' } }, h('b', null, `Η έρευνα είναι στη μέση: ${pr.done} από ${pr.of} καταστήματα έχουν συγκριθεί και φυλαχτεί. `), pr.stopped ? 'Τη σταμάτησες εσύ· ' : '', 'Με «Έρευνα τώρα» συνεχίζει από εκεί που έμεινε (τίποτα δεν ξαναγίνεται).') : null;
       main.appendChild(pageHead('Τιμές αγοράς', sub, [
         App.reportButtons('market', { site }, 'Λήψη'),
         btn('Έρευνα τώρα', { cls: 'primary', icon: 'market' }, () => startRun()),
       ]));
+      if (half) main.appendChild(half);
       if (meta.errors && meta.errors.length) main.appendChild(h('div', { class: 'note warn', style: { marginBottom: '12px' } }, h('b', null, 'Δεν ενημερώθηκαν: '), meta.errors.map((e) => e.name + ' (' + e.error + ')').join(' · '), h('div', { class: 'hint' }, 'Για αυτά χρησιμοποιήθηκαν οι τιμές της προηγούμενης έρευνας.')));
       main.appendChild(h('div', { class: 'tabs' },
         h('button', { 'aria-selected': String(tab === 'results'), onclick: () => App.go('market', { site }) }, 'Αποτελέσματα'),
@@ -254,6 +260,7 @@
           h('div', { class: 'vs' }, '≈'),
           h('div', { class: 'side-b' }, h('div', { class: 'faint' }, c.shop), h('div', { class: 'row tight', style: { flexWrap: 'nowrap' } }, c.img ? thumb(c.img) : null, h('div', null, h('b', null, c.name), h('div', null, fmt.money(c.price), c.inStock === false ? ' · εξαντλημένο' : ''))))),
         c.why ? h('div', { class: 'note', style: { marginTop: '8px' } }, 'Γιατί δεν είναι σίγουρο: ', c.why) : null,
+        c.ev && c.ev.length ? h('div', { class: 'ev', style: { marginTop: '6px' } }, 'Τι ταιριάζει: ' + c.ev.join(' · ')) : null,
         h('div', { class: 'row tight', style: { marginTop: '10px' } },
           btn('Ίδιο προϊόν', { cls: 'primary', icon: 'check' }, () => answer('yes')),
           btn('Όχι, άλλο', { icon: 'x' }, () => answer('no')),
