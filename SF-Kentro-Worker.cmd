@@ -41,9 +41,11 @@ echo.
 echo  1 = Na doulevei ^(ksekinaei me ta Windows, sto paraskinio^)
 echo  2 = Nea syzeuxi ^(allo programma i neos kodikos^)
 echo  3 = Na stamatisei kai na mi ksekinaei pia
-echo  4 = Exodos
-choice /c 1234 /n /m "  Epilogi: "
-if errorlevel 4 exit /b 0
+echo  4 = Mono tora, se afto to parathyro (kleineis to parathyro = stamatai)
+echo  5 = Exodos
+choice /c 12345 /n /m "  Epilogi: "
+if errorlevel 5 exit /b 0
+if errorlevel 4 goto once
 if errorlevel 3 goto remove
 if errorlevel 2 goto pair
 goto install
@@ -63,6 +65,15 @@ echo  Etoimo. O ypologistis doulevei tora sto paraskinio, me xamili proteraiotit
 echo  kai tha ksekinaei mono tou me ta Windows. Se mpataria den pairnei douleia.
 echo  Fainetai sto programma: Rythmiseis - Ypologistes.
 echo.
+pause
+exit /b 0
+
+:once
+call :stop
+echo.
+echo  Doulevei tora. Gia na stamatisei: kleise afto to parathyro.
+echo.
+"%NODE%" "%~dp0app\worker.js"
 pause
 exit /b 0
 
