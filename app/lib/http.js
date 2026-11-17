@@ -72,8 +72,12 @@ async function get(url, opts) {
       })();
       work.catch(() => {}); // if the deadline wins, a late failure of the abandoned request is nobody's problem
       const deadline = new Promise((_, reject) => { t = setTimeout(() => { try { ctl.abort(); } catch (_) { /* ignore */ } const e = new Error('deadline'); e.name = 'AbortError'; reject(e); }, o.timeout); });
-      const stopped = new Promise((_, reject) => { if (o.signal) o.signal.addEventListener('abort', () => reject(new HttpError('Σταμάτησε.', { cancelled: true, fatal: true })), { once: true }); });
-      const { res, buf } = await Promise.race([work, deadline, stopped]);
+      // (the listener is taken off again below: one left on a long job's signal kept every page it read in memory —
+      // 0,3 MB a page, until a small cloud machine ran out)
+      let onAbort = null;
+      const stopped = new Promise((_, reject) => { if (o.signal) { onAbort = () => reject(new HttpError('Σταμάτησε.', { cancelled: true, fatal: true })); o.signal.addEventListener('abort', onAbort, { once: true }); } });
+      let res, buf;
+      try { ({ res, buf } = await Promise.race([work, deadline, stopped])); } finally { if (onAbort) o.signal.removeEventListener('abort', onAbort); }
       clearTimeout(t);
       const text = o.raw ? '' : buf.toString('utf8');
       if (res.status === 429 || res.status === 503) {

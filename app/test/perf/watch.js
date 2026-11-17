@@ -28,14 +28,14 @@ function start() {
   srv.on('exit', (code, sig) => { console.log(at(), ` EXIT code=${code} signal=${sig}` + (sig === 'SIGKILL' ? '  ← killed (out of memory in the box)' : '')); if (Date.now() - t0 < secs * 1000 - 5000) setTimeout(start, 2000); });
 }
 const rss = () => { try { const pid = fs.readFileSync(`/proc/${srv.pid}/task/${srv.pid}/children`, 'utf8').trim().split(' ')[0] || srv.pid; return Math.round(Number((fs.readFileSync(`/proc/${boxed ? srv.pid : pid}/status`, 'utf8').match(/VmRSS:\s+(\d+)/) || [])[1]) / 1024); } catch (_) { return 0; } };
-let H = null, busy = false, heap = 0, peakHeap = 0;
+let H = null, busy = false, heap = 0, peakHeap = 0, ext = 0;
 async function tick() {
   if (busy) return; busy = true;
   const t = Date.now();
   let ms = -1, job = '';
   try {
     const r = await fetch(`http://127.0.0.1:${port}/ping`, { signal: AbortSignal.timeout(30000) });
-    try { heap = JSON.parse(await r.text()).heap || 0; } catch (_) { heap = 0; } ms = Date.now() - t; peakHeap = Math.max(peakHeap, heap);
+    try { const pj = JSON.parse(await r.text()); heap = pj.heap || 0; ext = pj.ext || 0; } catch (_) { heap = 0; } ms = Date.now() - t; peakHeap = Math.max(peakHeap, heap);
   } catch (e) { if (srv && srv.exitCode == null && Date.now() - startedAt > 5000) timeouts++; else ms = -2; }
   if (ms >= 0) {
     worst = Math.max(worst, ms);
@@ -48,7 +48,7 @@ async function tick() {
     } catch (_) { H = null; }
   } else if (ms === -1) worst = Math.max(worst, 30000);
   const m = rss(); peak = Math.max(peak, m);
-  if (Date.now() - lastLine > 9000 || ms < 0 || ms > 2000) { lastLine = Date.now(); console.log(at(), ms === -2 ? 'starting…       ' : ms < 0 ? 'ping NO ANSWER  ' : `ping ${String(ms).padStart(5)}ms`, `${m}MB heap ${heap}MB`, job); }
+  if (Date.now() - lastLine > 9000 || ms < 0 || ms > 2000) { lastLine = Date.now(); console.log(at(), ms === -2 ? 'starting…       ' : ms < 0 ? 'ping NO ANSWER  ' : `ping ${String(ms).padStart(5)}ms`, `${m}MB heap ${heap}MB ext ${ext}MB`, job); }
   busy = false;
 }
 start();

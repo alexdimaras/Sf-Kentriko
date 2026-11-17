@@ -85,6 +85,16 @@ function shop(n, tag) {
   try { await H.get('http://127.0.0.1:' + hang.address().port + '/x', { timeout: 20000, retries: 2, signal: ctl.signal }); } catch (e) { err = e; }
   ok(err && err.cancelled && Date.now() - t1 < 1000, 'a request to a shop that does not answer is cut at once (not after its 20 s limit and 2 more tries)', `${Date.now() - t1} ms`);
   hang.close(); if (hang.closeAllConnections) hang.closeAllConnections();
+  // a long job reads many pages with the same stop signal: nothing of them may stay attached to it
+  {
+    const big = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('x'.repeat(400000)); });
+    await new Promise((r) => big.listen(0, '127.0.0.1', r));
+    const ctl2 = new AbortController();
+    const { getEventListeners } = require('events');
+    for (let i = 0; i < 20; i++) await H.get('http://127.0.0.1:' + big.address().port + '/p' + i, { signal: ctl2.signal });
+    ok(getEventListeners(ctl2.signal, 'abort').length === 0, 'after 20 pages no listener is left on the job\'s stop signal (each one used to keep its page in memory)', String(getEventListeners(ctl2.signal, 'abort').length));
+    big.close(); if (big.closeAllConnections) big.closeAllConnections();
+  }
 
   section('Ανταγωνιστές χωρίς WooCommerce: ανάγνωση από τον χάρτη του site, σταδιακά');
   {

@@ -728,7 +728,7 @@ const server = http.createServer((req, res) => {
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
   }
   const url = new URL(req.url, 'http://127.0.0.1');
-  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), lag: lagMax() }); }
+  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), ext: Math.round(process.memoryUsage().external / 1048576), lag: lagMax() }); }
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
   if (url.pathname.startsWith('/api/')) { uiSeen = true; return handleApi(req, res, url); }
   if (url.pathname === '/') uiSeen = true;
