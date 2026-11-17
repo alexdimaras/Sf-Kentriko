@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — automatic tests (npm test). Everything runs on this PC with made-up data: a temporary data folder,
 // a little "supplier site" on 127.0.0.1, and the program itself in server mode. Nothing is sent anywhere.
 const fs = require('fs');
@@ -323,7 +325,20 @@ function supplierSite() {
   ok(st2.status === 200 && (await st2.json()).settings.minShops === 5, 'after the restart on an empty disk every change is back');
   const sent2 = ghState.blobPosts;
   ok((await cloudSave(p2, s1)).same === true && ghState.blobPosts === sent2, 'right after a restart nothing is sent again');
-  await stopApp(a2);
+  // a session taken away stays away, even when the machine is cut off right after (no save on the way out)
+  const sB = await loginTo(`http://127.0.0.1:${p2}`);
+  await cloudSave(p2, s1); // the cloud now knows this device
+  const lo = await (await fetch(`http://127.0.0.1:${p2}/api/logout`, { method: 'POST', headers: { Cookie: sB.cookie, 'X-SFK': sB.csrf } })).json();
+  ok(lo.saved === true, 'a sign-out is saved outside at once and the answer says so', JSON.stringify(lo));
+  await new Promise((r) => { a2.c.on('exit', r); a2.c.kill('SIGKILL'); });
+  const pX = p1 + 7;
+  const aX = await startApp(path.join(tmp, 'cloudX'), pX, 8000, /Running at/);
+  for (let i = 0; i < 80 && !/Cloud data/.test(aX.log()); i++) await new Promise((x) => setTimeout(x, 100));
+  const gone = await fetch(`http://127.0.0.1:${pX}/api/state`, { headers: { Cookie: sB.cookie, 'X-SFK': sB.csrf } });
+  const still = await fetch(`http://127.0.0.1:${pX}/api/state`, { headers: { Cookie: s1.cookie, 'X-SFK': s1.csrf } });
+  ok(gone.status === 401 && still.status === 200, 'after a hard stop and a restart the signed-out device is still out (the other one still in)', String([gone.status, still.status]));
+  await stopApp(aX);
+  // (a2 was cut off above)
   // the previous way of saving (everything in one file): read as it is, and the next save turns it into parts
   const oldDir = path.join(tmp, 'cloud-old');
   fs.mkdirSync(oldDir, { recursive: true });

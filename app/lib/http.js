@@ -15,6 +15,41 @@ class HttpError extends Error {
   constructor(msg, info) { super(msg); Object.assign(this, info || {}); }
 }
 
+// ---------- only the public internet (no requests into a private network) ----------
+// Addresses come from people (a competitor, a supplier page) and from other sites (search results, site maps,
+// redirects). The program never opens one that leads into a private network: this machine, the local network, the
+// cloud provider's internal addresses. Checked for the first address and for every redirect. (SFK_ALLOW_PRIVATE=1:
+// the tests, which run little shops on this machine.)
+const dns = require('dns');
+const net = require('net');
+function privateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  }
+  const x = ip.toLowerCase();
+  if (x.startsWith('::ffff:')) return privateIp(x.slice(7));
+  return x === '::' || x === '::1' || x.startsWith('fc') || x.startsWith('fd') || x.startsWith('fe8') || x.startsWith('fe9') || x.startsWith('fea') || x.startsWith('feb') || x.startsWith('ff');
+}
+const okHosts = new Map(); // host → time it was checked (for a minute)
+async function assertPublic(url) {
+  if (process.env.SFK_ALLOW_PRIVATE === '1') return;
+  let u;
+  try { u = new URL(url); } catch (_) { throw new HttpError('Λάθος διεύθυνση.', { fatal: true }); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new HttpError('Μόνο διευθύνσεις http/https.', { fatal: true });
+  if (u.username || u.password) throw new HttpError('Διεύθυνση με κωδικό μέσα: δεν επιτρέπεται.', { fatal: true });
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  // (tests only: a little server on this machine that stands for a public site)
+  if (process.env.SFK_TREAT_PUBLIC && process.env.SFK_TREAT_PUBLIC.split(',').includes(u.host)) return;
+  if (/^(localhost|.*\.localhost|.*\.local|.*\.internal|metadata(\..*)?)$/i.test(host)) throw new HttpError(`Η διεύθυνση ${host} είναι εσωτερική: δεν επιτρέπεται.`, { fatal: true, private: true });
+  const seen = okHosts.get(host);
+  if (seen && Date.now() - seen < 60000) return;
+  const addrs = net.isIP(host) ? [{ address: host }] : await new Promise((ok, no) => dns.lookup(host, { all: true }, (e, a) => (e ? no(e) : ok(a)))).catch((e) => { const er = new Error(e.message); er.cause = e; throw er; });
+  if (!addrs.length || addrs.some((a) => privateIp(a.address))) throw new HttpError(`Η διεύθυνση ${host} οδηγεί σε εσωτερικό δίκτυο: δεν επιτρέπεται.`, { fatal: true, private: true });
+  okHosts.set(host, Date.now());
+}
+
 async function pace(host, minGap, signal) {
   if (!minGap) return;
   for (;;) {
@@ -59,16 +94,27 @@ async function get(url, opts) {
       // A hard deadline for the whole answer (headers AND body). The abort signal alone is not enough: after a
       // connection dies quietly, reading the body can wait for ever, and a whole job would hang with it.
       const work = (async () => {
-        const r = await fetch(url, {
-          redirect: 'follow',
-          signal: ctl.signal,
-          headers: Object.assign({
-            'User-Agent': UA,
-            'Accept': o.accept || (o.json ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
-            'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
-          }, o.headers || {}),
-        });
-        return { res: r, buf: Buffer.from(await r.arrayBuffer()) };
+        // redirects one by one: each new address is checked like the first
+        let at = url, r = null;
+        for (let hop = 0; ; hop++) {
+          await assertPublic(at);
+          r = await fetch(at, {
+            redirect: 'manual',
+            signal: ctl.signal,
+            headers: Object.assign({
+              'User-Agent': UA,
+              'Accept': o.accept || (o.json ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
+              'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
+            }, o.headers || {}),
+          });
+          const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+          if (!loc) break;
+          if (hop >= 8) throw new HttpError(`Πάρα πολλές ανακατευθύνσεις από το ${host}.`, { fatal: true });
+          try { await r.body?.cancel(); } catch (_) { /* nothing to read */ }
+          at = new URL(loc, at).toString();
+        }
+        const buf = Buffer.from(await r.arrayBuffer());
+        return { res: r, buf, finalUrl: at };
       })();
       work.catch(() => {}); // if the deadline wins, a late failure of the abandoned request is nobody's problem
       const deadline = new Promise((_, reject) => { t = setTimeout(() => { try { ctl.abort(); } catch (_) { /* ignore */ } const e = new Error('deadline'); e.name = 'AbortError'; reject(e); }, o.timeout); });
@@ -76,8 +122,8 @@ async function get(url, opts) {
       // 0,3 MB a page, until a small cloud machine ran out)
       let onAbort = null;
       const stopped = new Promise((_, reject) => { if (o.signal) { onAbort = () => reject(new HttpError('Σταμάτησε.', { cancelled: true, fatal: true })); o.signal.addEventListener('abort', onAbort, { once: true }); } });
-      let res, buf;
-      try { ({ res, buf } = await Promise.race([work, deadline, stopped])); } finally { if (onAbort) o.signal.removeEventListener('abort', onAbort); }
+      let res, buf, finalUrl;
+      try { ({ res, buf, finalUrl } = await Promise.race([work, deadline, stopped])); } finally { if (onAbort) o.signal.removeEventListener('abort', onAbort); }
       clearTimeout(t);
       const text = o.raw ? '' : buf.toString('utf8');
       if (res.status === 429 || res.status === 503) {
@@ -88,7 +134,7 @@ async function get(url, opts) {
       }
       if (res.status >= 400) throw new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status, fatal: res.status < 500 });
       if (o.signal) o.signal.removeEventListener('abort', onStop);
-      const out = { status: res.status, headers: res.headers, text, buf, url: res.url || url };
+      const out = { status: res.status, headers: res.headers, text, buf, url: finalUrl || res.url || url };
       if (o.json) {
         const trimmed = text.replace(/^﻿/, '').trimStart();
         if (!/^[[{]/.test(trimmed)) {
@@ -142,4 +188,4 @@ async function pool(items, limit, fn, shouldStop) {
   return results;
 }
 
-module.exports = { get, getJson, pool, nap, HttpError, UA };
+module.exports = { assertPublic, privateIp, get, getJson, pool, nap, HttpError, UA };

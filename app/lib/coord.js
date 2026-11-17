@@ -71,11 +71,19 @@ async function enqueue(type, payload, opts) {
   return job;
 }
 
+/** How much memory the cloud machine has for one job (SFK_CLOUD_RAM_MB, else what the machine is given, 90%). */
+function cloudRamMB() {
+  if (Number(process.env.SFK_CLOUD_RAM_MB) > 0) return Number(process.env.SFK_CLOUD_RAM_MB);
+  const lim = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  const total = lim > 0 && lim < require('os').totalmem() ? lim : require('os').totalmem();
+  return Math.floor((total / 1048576) * 0.9);
+}
 /** Can this worker do this job? (the job's type, its memory, the worker's free places) */
 function fits(w, j) {
   const h = handler(j.type);
   if (!h) return false;
-  if (w.id === 'cloud') return h.cloudOk;
+  // the cloud machine: only what it may do, and only what fits in its memory (measured, not the computers' sizing)
+  if (w.id === 'cloud') return !!h.cloudOk && ((h.cloudRamMB || (h.needs && h.needs.ramMB) || 0) <= cloudRamMB());
   if (Array.isArray(w.caps.types) && w.caps.types.length && !w.caps.types.includes(j.type)) return false;
   const need = (h.needs && h.needs.ramMB) || 0;
   return !need || (Number(w.caps.ramMB) || 0) >= need;
@@ -269,6 +277,8 @@ async function someoneFor(j) {
 async function cloudTick(opts) {
   if (cloudBusy) return false;
   const o = opts || {};
+  // never beside other heavy work of this machine (one big job at a time on a small cloud machine)
+  if (o.canRun && !o.canRun()) return false;
   const waiting = (await backend.live()).filter((j) => j.status === 'queued' && (!j.notBefore || j.notBefore <= now()) && fits({ id: 'cloud' }, j));
   let pick = null;
   for (const j of waiting.sort(order)) {
@@ -329,4 +339,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

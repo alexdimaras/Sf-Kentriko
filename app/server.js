@@ -69,6 +69,7 @@ function send(res, code, body, type, extra) {
   res.writeHead(code, Object.assign({ 'Content-Type': type || 'application/json; charset=utf-8', 'Content-Length': buf.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' }, extra || {}));
   res.end(buf);
 }
+const BIG_BODY = new Set(['POST /api/backup/upload', 'POST /api/csv/detect', 'POST /api/csv/import', 'POST /api/pricelist/preview', 'POST /api/pricelist/import']);
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
@@ -547,12 +548,12 @@ const routes = {
   'GET /api/session': (q, _, ctx) => ({ mode: MODE, version: VERSION, user: ctx.user || null, csrf: ctx.csrf || '', setup: SERVER && !users.count() }),
   'POST /api/login': (b, _, ctx) => { const r = users.login(b.user, b.password, ctx.ip, ctx.ua, b.remember === true); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
   'POST /api/setup': (b, _, ctx) => { const r = users.setup(b, ctx.ip, ctx.ua); ctx.setCookie(r.sid); return { user: r.user, csrf: r.csrf }; },
-  'POST /api/logout': (b, _, ctx) => { if (ctx.sid) users.end(ctx.sid); ctx.setCookie(''); return { ok: true }; },
+  'POST /api/logout': async (b, _, ctx) => { if (ctx.sid) users.end(ctx.sid); ctx.setCookie(''); return { ok: true, saved: await sessionsSaved() }; },
   'GET /api/users': (q, _, ctx) => ({ users: users.list(), sessions: users.active(ctx.sessionKey) }),
-  'POST /api/users/session-end': (b) => { users.endById(b.id); return { ok: true }; },
+  'POST /api/users/session-end': async (b) => { users.endById(b.id); return { ok: true, saved: await sessionsSaved() }; },
   'POST /api/users': (b) => (b.id ? users.update(b.id, b) : users.create(b)),
   'POST /api/users/delete': (b, _, ctx) => { if (ctx.user && b.id === ctx.user.id) throw new Error('Δεν διαγράφεις τον εαυτό σου.'); users.remove(b.id); return { ok: true }; },
-  'POST /api/users/logout-all': (b, _, ctx) => { users.endAll(); ctx.setCookie(''); return { ok: true }; },
+  'POST /api/users/logout-all': async (b, _, ctx) => { users.endAll(); ctx.setCookie(''); return { ok: true, saved: await sessionsSaved() }; },
 
   // Phones and other PCs: the addresses to type (or scan) and a QR code for each
   'GET /api/connect': () => ({ mode: MODE, port, urls: connectUrls() }),
@@ -699,6 +700,24 @@ const AUDITED = {
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
 };
+// ---------- a session taken away stays away after a restart ----------
+// Every sign-out / removed device / new password is saved outside this machine at once (not with the hourly save of
+// the sessions), and again every 15 seconds until it is confirmed.
+let sessionsSave = null, sessionsRetry = null;
+function saveSessionsNow() {
+  if (!SERVER || !cloudsave.status().enabled) return Promise.resolve(true);
+  sessionsSave = (async () => {
+    try { const r = await cloudsave.save('ανάκληση σύνδεσης'); const ok = !(r && r.error) && !cloudsave.status().error; if (!ok) throw new Error((r && r.error) || cloudsave.status().error); clearTimeout(sessionsRetry); sessionsRetry = null; return true; } catch (e) {
+      console.error('sessions save:', e.message);
+      clearTimeout(sessionsRetry); sessionsRetry = setTimeout(() => { saveSessionsNow(); }, 15000); if (sessionsRetry.unref) sessionsRetry.unref();
+      return false;
+    }
+  })();
+  return sessionsSave;
+}
+users.whenEnded(() => { saveSessionsNow(); });
+async function sessionsSaved() { return sessionsSave ? sessionsSave : true; }
+
 // how hard each computer works right now (kept in memory only: it changes every 3 seconds)
 const workerLoad = new Map();
 const lnum = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : 0; };
@@ -750,7 +769,7 @@ async function handleWorker(req, res, url, q, key0) {
       const gz = jobtypes.compFor(j, String(q.id || ''));
       return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
     }
-    const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 80 * 1024 * 1024 : 256 * 1024) : {};
+    const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : 256 * 1024) : {};
     if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max) });
@@ -809,6 +828,7 @@ async function useWorkers() { return SERVER && coordReady && (await coord.worker
  */
 async function distributedResearch(job, opts) {
   const o = opts || {};
+  if (job.waitingOnQueue) job.waitingOnQueue(true); // the cloud may take a shop meanwhile, when no computer can
   const research = require('./lib/research');
   const undetected = market.competitors().filter((c) => c.enabled !== false && (c.kind === 'auto' || !c.kind));
   if (undetected.length) { job.progress(0, 0, 'Έλεγχος ανταγωνιστών…'); await market.detectAll(null, (c) => undetected.some((u) => u.id === c.id)); }
@@ -896,7 +916,8 @@ async function handleApi(req, res, url) {
     // the data of the screens is loaded once at start, in the background: the first requests wait for it (seconds)
     if (!NO_DATA.test(url.pathname)) await engine.ready();
     // before login only small bodies are read
-    const limit = SERVER && !ctx.user ? 64 * 1024 : 120 * 1024 * 1024;
+    // bodies: small before login; a few MB for everything else; files (copies, CSV, supplier lists) up to 60 MB
+    const limit = SERVER && !ctx.user ? 64 * 1024 : BIG_BODY.has(key0) ? 60 * 1024 * 1024 : 4 * 1024 * 1024;
     const body = req.method === 'POST' ? await readBody(req, limit) : {};
     const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx, null));
     if (AUDITED[key0]) audit.record(ctx.user ? ctx.user.name : (SERVER ? '' : 'αυτός ο υπολογιστής'), AUDITED[key0], '', audit.summary(body)).catch(() => {});
@@ -1018,7 +1039,7 @@ function afterStart() {
     coordReady = true;
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)
-    if (SERVER) setInterval(() => { coord.cloudTick().catch((e) => console.error('queue (cloud):', e.message)); }, 10000).unref();
+    if (SERVER) setInterval(() => { coord.cloudTick({ canRun: () => !jobs.heavyWorking() }).catch((e) => console.error('queue (cloud):', e.message)); }, 10000).unref();
     // While a shop's computer that can search is switched on, the research on the internet never stops: a group of 20
     // products for each of its runners and two more waiting, fed again as they are taken (like a clock, not once a day).
     if (SERVER) setInterval(() => { feedWebResearch().catch((e) => console.error('internet research:', e.message)); }, Number(process.env.SFK_FEED_MS) || 30000).unref();

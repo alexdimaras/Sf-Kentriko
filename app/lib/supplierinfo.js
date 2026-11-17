@@ -91,7 +91,14 @@ async function probeFeed(url) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 12000);
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': http.UA, Accept: '*/*' }, redirect: 'follow', signal: ctl.signal });
+    let res, at = url;
+    for (let hop = 0; ; hop++) {
+      await http.assertPublic(at);
+      res = await fetch(at, { headers: { 'User-Agent': http.UA, Accept: '*/*' }, redirect: 'manual', signal: ctl.signal });
+      const loc = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+      if (!loc || hop >= 5) break;
+      at = new URL(loc, at).toString();
+    }
     if (res.status !== 200) return null;
     const reader = res.body.getReader();
     const { value } = await reader.read();

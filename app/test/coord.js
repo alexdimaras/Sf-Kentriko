@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — tests of the shared queue (lib/coord.js): one job to one computer, leases, retries, no double results.
 const fs = require('fs');
 const os = require('os');
@@ -120,6 +122,17 @@ async function makeBackend() {
   const loc = await coord.enqueue('test.local', {}, {});
   await coord.cloudTick();
   ok((await coord.job(loc.id)).status === 'queued', 'work that needs a shop PC is never done by the cloud');
+  coord.register('test.big', { label: 'Μεγάλη', needs: { ramMB: 1500 }, cloudRamMB: 450, apply: (jj, r) => r, run: async () => ({ n: 1 }) });
+  const bigJob = await coord.enqueue('test.big', {}, {});
+  later(11 * 60000);
+  process.env.SFK_CLOUD_RAM_MB = '400';
+  await coord.cloudTick();
+  ok((await coord.job(bigJob.id)).status === 'queued', 'the cloud never takes work bigger than its memory (450 MB measured > 400 MB it has)');
+  process.env.SFK_CLOUD_RAM_MB = '600';
+  ok(!(await coord.cloudTick({ canRun: () => false })), 'nor beside another heavy job of its own');
+  await coord.cloudTick();
+  ok((await coord.job(bigJob.id)).status === 'completed', 'with enough memory and nothing else heavy, it does it');
+  delete process.env.SFK_CLOUD_RAM_MB;
   const ws = await coord.workersView();
   ok(ws.length === 2 && ws.every((w) => w.caps && 'online' in w) && !JSON.stringify(ws).includes('tokenHash'), 'the list of computers shows what they are, never their token');
 

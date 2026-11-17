@@ -21,7 +21,10 @@ function register() {
   // ---- the price research for ONE competitor: read its catalog (or part of its site map), compare with ours ----
   coord.register('market.shop', {
     label: 'Έρευνα τιμών σε ένα κατάστημα',
+    // a shop's computer: room to spare; the cloud: one shop at a time measured at ~450 MB in all (test/perf: the whole
+    // research of 10 shops on a 512 MB machine peaked at 452 MB) — it takes it only with that much memory
     needs: { ramMB: 1500 },
+    cloudRamMB: 450,
     cloudOk: true,
     maxAttempts: 3,
     async run(payload, api, io0) {
@@ -51,7 +54,11 @@ function register() {
       const comp = job.payload.comp;
       const r = result || {};
       if (r.catalogGz) {
-        const cat = JSON.parse(zlib.gunzipSync(Buffer.from(String(r.catalogGz), 'base64')).toString('utf8'));
+        // at most 64 MB once opened (a shop's catalog is a few MB): a result that would open bigger is refused
+        let raw;
+        try { raw = zlib.gunzipSync(Buffer.from(String(r.catalogGz), 'base64'), { maxOutputLength: 64 * 1024 * 1024 }); } catch (e) { throw new Error('Ο κατάλογος του αποτελέσματος είναι πολύ μεγάλος ή χαλασμένος.'); }
+        const cat = JSON.parse(raw.toString('utf8'));
+        if (!cat || !Array.isArray(cat.products) || cat.products.length > 200000) throw new Error('Λάθος κατάλογος.');
         if (!cat || !Array.isArray(cat.products)) throw new Error('Λάθος κατάλογος.');
         store.write('comp-' + comp.id, cat);
         store.forget('comp-' + comp.id);

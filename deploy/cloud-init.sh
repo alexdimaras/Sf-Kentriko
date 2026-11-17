@@ -8,6 +8,9 @@ HOST="onoma.duckdns.org"          # η διεύθυνση που θα ανοίγ
 ADMIN_USER="alex"                 # όνομα χρήστη του διαχειριστή (λατινικά)
 ADMIN_PASSWORD="ΒΑΛΕ-ΕΔΩ-ΚΩΔΙΚΟ-10+-ΧΑΡΑΚΤΗΡΩΝ"   # άλλαξέ τον μετά το πρώτο άνοιγμα (Ρυθμίσεις → Χρήστες)
 
+# the log is readable only by root, and the password never goes into it: tracing (set -x) is off while it is used
+umask 077
+install -m 600 /dev/null /var/log/sf-kentro-setup.log
 exec > /var/log/sf-kentro-setup.log 2>&1
 set -x
 export DEBIAN_FRONTEND=noninteractive
@@ -16,5 +19,9 @@ rm -rf /opt/sf-kentro
 for i in 1 2 3 4 5 6; do git clone --depth 1 -b claude/friendly-sagan-bfjrkj https://github.com/alexdimaras/Sf-Kentriko.git /opt/sf-kentro && break; sleep 20; done
 cd /opt/sf-kentro/deploy
 umask 077
+set +x
 printf 'KENTRO_HOST=%s\nKENTRO_ADMIN_USER=%s\nKENTRO_ADMIN_PASSWORD=%s\n' "$HOST" "$ADMIN_USER" "$ADMIN_PASSWORD" > .env
+unset ADMIN_PASSWORD
+echo "the administrator's account is in .env (the password is not written here)"
+set -x
 bash install-server.sh "$HOST"

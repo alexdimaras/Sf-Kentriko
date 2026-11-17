@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — the computers of the shops, for real: a little competitor shop, the cloud program, and real worker
 // processes (app/worker.js) that pair with a code, take the research of a competitor, and hand in the result.
 // With COORD_PG=postgres://… the cloud program keeps everything in that database (as with Supabase).

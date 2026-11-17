@@ -22,6 +22,8 @@ let heavyLimit = 1;
 /** How many heavy jobs may run together (1 on a small machine; the server sets it at start). */
 function setHeavyLimit(n) { heavyLimit = Math.max(1, Number(n) || 1); }
 const live = (j) => j.status === 'running' || j.status === 'queued';
+/** A heavy job that does work here right now (not one that only waits for the shops' computers). */
+const heavyWorking = () => [...jobs.values()].some((j) => j.heavy && j.status === 'running' && !j.waitsOnQueue);
 const heavyRunning = () => [...jobs.values()].filter((j) => j.heavy && j.status === 'running').length;
 
 /**
@@ -56,6 +58,8 @@ function run(job) {
     cancelled() { return job.cancel; },
     signal: job.ctl.signal,
     id: job.id, type: job.type,
+    /** this job only waits for the shops' computers (it does no heavy work here) */
+    waitingOnQueue(on) { job.waitsOnQueue = on !== false; },
   };
   const fn = job.fn; job.fn = null;
   Promise.resolve().then(() => runner(() => fn(api))).then((r) => {
@@ -114,4 +118,4 @@ async function whileBusy(type, stop) {
   while (busy(type) && !(stop && stop())) await new Promise((r) => setTimeout(r, 400));
 }
 
-module.exports = { start, get, cancel, running, recent, onChange, setRunner, setHeavyLimit, busy, whileBusy };
+module.exports = { heavyWorking, start, get, cancel, running, recent, onChange, setRunner, setHeavyLimit, busy, whileBusy };

@@ -129,7 +129,7 @@ function write(name, value) {
   cache.set(name, value);
   bump(name);
   const f = file(name);
-  const tmp = f + '.tmp-' + process.pid;
+  const tmp = f + '.tmp-' + process.pid + '-s' + (++tmpSeq);
   if (isBig(value)) writeStreamed(tmp, value); else fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, f);
   for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
@@ -139,17 +139,32 @@ function write(name, value) {
  * The same save for a big file, in pieces with pauses (`rest`: an async function called between pieces), so the
  * program keeps answering while 30 MB are written. The new value is used at once; the file follows.
  */
-async function writeAsync(name, value, rest) {
+// Writes in slices can overlap (two results of the research arrive together). Each file has its own line of writes,
+// each write its own temporary file, and a write that a newer one overtook is not put in place (the newer value
+// is, or will be): an older value never replaces a newer one.
+const lines = new Map();   // name → the promise of the last write in its line
+let tmpSeq = 0;
+function writeAsync(name, value, rest) {
   cache.set(name, value);
   bump(name);
-  const f = file(name);
-  const tmp = f + '.tmp-' + process.pid + '-a';
-  const g = streamGen(tmp, value);
-  let t = Date.now();
-  for (;;) { const r = g.next(); if (r.done) break; if (rest && Date.now() - t >= 12) { await rest(); t = Date.now(); } }
-  fs.renameSync(tmp, f);
-  for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
-  return value;
+  const mine = versions.get(name);
+  const prev = lines.get(name) || Promise.resolve();
+  const run = prev.catch(() => {}).then(async () => {
+    if (versions.get(name) !== mine) return; // a newer value was written meanwhile: nothing to do
+    const f = file(name);
+    const tmp = f + '.tmp-' + process.pid + '-' + (++tmpSeq);
+    try {
+      const g = streamGen(tmp, value);
+      let t = Date.now();
+      for (;;) { const r = g.next(); if (r.done) break; if (rest && Date.now() - t >= 12) { await rest(); t = Date.now(); } }
+      if (versions.get(name) !== mine) { fs.rmSync(tmp, { force: true }); return; } // overtaken while writing
+      fs.renameSync(tmp, f);
+    } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (_) { /* gone */ } throw e; }
+    for (const fn of listeners) { try { fn(name); } catch (_) { /* a listener never breaks a save */ } }
+  });
+  lines.set(name, run);
+  run.finally(() => { if (lines.get(name) === run) lines.delete(name); }).catch(() => {});
+  return run.then(() => value);
 }
 
 // A catalog (thousands of products with their descriptions) as ONE string would need hundreds of MB on a small

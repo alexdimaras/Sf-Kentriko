@@ -1,0 +1,90 @@
+'use strict';
+// SF Κέντρο — data that is never lost or mixed up, and addresses that never lead inside.
+//   1. writes of the same file that overlap: the newest value is the one on disk, no temporary files left
+//   2. the results of 8 shops arriving together: every offer of every shop is in the results
+//   3. the program never opens an address of a private network (this machine, the local network, the cloud's
+//      internal addresses), also when a public page redirects there
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+
+const APP = path.join(__dirname, '..');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sfk-integrity-'));
+process.env.SFK_DATA = path.join(tmp, 'data');
+process.env.APPDATA = path.join(tmp, 'cfg');
+fs.mkdirSync(process.env.SFK_DATA, { recursive: true });
+
+let fails = 0, passes = 0;
+function ok(cond, name, detail) {
+  if (cond) passes++; else fails++;
+  console.log((cond ? '  ok   ' : '  FAIL ') + name + (cond || detail === undefined ? '' : ' — ' + detail));
+}
+const section = (t) => console.log('\n' + t);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+(async () => {
+  const store = require(APP + '/lib/store');
+  store.init();
+
+  section('Εγγραφές του ίδιου αρχείου που συμπίπτουν');
+  const big = (n) => ({ n, list: Array.from({ length: 3000 }, (_, i) => ({ i, n, text: 'x'.repeat(40) })) });
+  const rest = () => sleep(1);
+  const ws = [];
+  for (let n = 1; n <= 10; n++) ws.push(store.writeAsync('stress', big(n), rest));
+  await Promise.all(ws);
+  const onDisk = JSON.parse(fs.readFileSync(path.join(process.env.SFK_DATA, 'stress.json'), 'utf8'));
+  ok(onDisk.n === 10 && onDisk.list.length === 3000 && onDisk.list.every((x) => x.n === 10), '10 writes in slices at the same time: the file holds the newest one, whole', String(onDisk.n));
+  const p = store.writeAsync('stress', big(11), rest);
+  store.write('stress', big(12)); // a quick write while the slow one is on its way
+  await p;
+  ok(JSON.parse(fs.readFileSync(path.join(process.env.SFK_DATA, 'stress.json'), 'utf8')).n === 12, 'a newer quick write is never replaced by an older slow one that ends after it');
+  ok(!fs.readdirSync(process.env.SFK_DATA).some((f) => /\.tmp-/.test(f)), 'no temporary files left behind');
+
+  section('Αποτελέσματα 8 καταστημάτων που φτάνουν μαζί');
+  const now = new Date().toISOString();
+  const W = (n, v) => fs.writeFileSync(path.join(process.env.SFK_DATA, n + '.json'), JSON.stringify(v));
+  const products = Array.from({ length: 40 }, (_, i) => ({ id: 100 + i, type: 'simple', parent: 0, name: 'ΣΑΚΙΔΙΟ PENTAGON MODEL ' + (i + 1), varLabel: '', slug: 'p' + i, sku: 'K' + (16000 + i), url: 'https://shop.example/p/' + i, price: 50, regular: 50, sale: 0, priceMax: 0, inStock: true, purchasable: true, status: 'publish', cats: [], catNames: [], tags: [], brand: 'PENTAGON', brandSource: 'brands', attrs: [], images: [], thumb: '', imageAlts: [], desc: '', short: '' }));
+  W('catalog-sf', { syncedAt: now, source: 'api', products, categories: [], info: {}, lastFullAt: now, engine: 2, mode: 'full' });
+  W('catalog-st', { syncedAt: now, source: 'api', products: [], categories: [], info: {}, lastFullAt: now, engine: 2, mode: 'full' });
+  const comps = Array.from({ length: 8 }, (_, i) => ({ id: 'c' + i, name: 'shop-' + i, url: `https://shop${i}.example`, kind: 'woo', enabled: true }));
+  W('competitors', comps);
+  W('settings', { firstRunDone: true });
+  store.forgetAll();
+  const research = require(APP + '/lib/research');
+  const offer = (ci, p) => ({ shop: 'shop-' + ci, competitorId: 'c' + ci, name: p.name, sku: p.sku, url: `https://shop${ci}.example/p/${p.id}`, price: 40 + ci, inStock: true, match: 'exact', how: 'sku', ev: ['ίδιος κωδικός'], country: 'GR', seenAt: now });
+  await Promise.all(comps.map((c, ci) => research.mergeShop(c.id, now, Object.fromEntries(products.map((p) => ['sf:' + p.id, offer(ci, p)])))));
+  await sleep(50);
+  store.forgetAll();
+  const market = JSON.parse(fs.readFileSync(path.join(process.env.SFK_DATA, 'market.json'), 'utf8'));
+  const counts = products.map((p) => (market['sf:' + p.id] ? market['sf:' + p.id].competitors.length : 0));
+  ok(counts.every((n) => n === 8), 'every product has the offer of all 8 shops (none lost, none doubled)', JSON.stringify([...new Set(counts)]));
+  const prog = JSON.parse(fs.readFileSync(path.join(process.env.SFK_DATA, 'market-progress.json'), 'utf8'));
+  ok(Object.keys(prog.done).length === 8, 'and the day\'s note knows all 8 shops are in', String(Object.keys(prog.done).length));
+
+  section('Ποτέ διευθύνσεις εσωτερικού δικτύου');
+  delete process.env.SFK_ALLOW_PRIVATE;
+  const net = require(APP + '/lib/http');
+  const inner = http.createServer((req, res) => { res.end('secret'); });
+  await new Promise((r) => inner.listen(0, '127.0.0.1', r));
+  const port = inner.address().port;
+  const refused = async (u) => { try { await net.get(u, { retries: 0, timeout: 5000 }); return false; } catch (e) { return !!e.private || /εσωτερικ|δεν επιτρέπεται/.test(e.message); } };
+  ok(await refused(`http://127.0.0.1:${port}/`), 'this machine (127.0.0.1) is refused');
+  ok(await refused('http://localhost:1/'), 'localhost is refused');
+  ok(await refused('http://169.254.169.254/latest/meta-data/'), 'the cloud\'s internal address (169.254.169.254) is refused');
+  ok(await refused('http://10.0.0.5/') && await refused('http://192.168.1.1/') && await refused('http://172.16.0.1/'), 'the local network (10.x, 192.168.x, 172.16.x) is refused');
+  ok(await refused('http://[::1]/') && await refused('http://0.0.0.0/'), 'IPv6 loopback and 0.0.0.0 are refused');
+  ok(await net.get('file:///etc/passwd', { retries: 0 }).then(() => false, (e) => /http/.test(e.message)), 'only http / https');
+  ok(net.privateIp('8.8.8.8') === false && net.privateIp('100.64.1.1') === true && net.privateIp('::ffff:127.0.0.1') === true, 'public addresses pass; shared and mapped private ones do not');
+  // a public page that redirects inside: the redirect is checked like the first address
+  const redir = http.createServer((req, res) => { res.writeHead(302, { Location: `http://127.0.0.1:${port}/` }); res.end(); });
+  await new Promise((r) => redir.listen(0, '127.0.0.1', r));
+  process.env.SFK_TREAT_PUBLIC = '127.0.0.1:' + redir.address().port; // stands for a public site
+  ok(await refused(`http://127.0.0.1:${redir.address().port}/`), 'a public page that redirects to an internal address is refused (every redirect is checked)');
+  delete process.env.SFK_TREAT_PUBLIC;
+  inner.close(); redir.close();
+
+  console.log(`\n${passes} ok, ${fails} failed`);
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  process.exit(fails ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });

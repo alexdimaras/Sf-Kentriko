@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — tests of the jobs and of the reading of the two shops (npm test runs them after the others).
 // Two little "shops" on 127.0.0.1 that can be told to answer slowly or to break, and the program in server mode.
 const fs = require('fs');

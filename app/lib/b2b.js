@@ -21,6 +21,7 @@ async function req(url, opts, jar) {
     const headers = Object.assign({ 'User-Agent': http.UA, Accept: 'text/html,application/json,*/*', 'Accept-Language': 'el-GR,el;q=0.9' }, opts.headers || {});
     const ck = jar.header();
     if (ck) headers.Cookie = ck;
+    await http.assertPublic(url);
     let res = await fetch(url, { method: opts.method || 'GET', headers, body: opts.body, redirect: 'manual', signal: ctl.signal });
     jar.take(res);
     // follow redirects by hand so every cookie on the way is kept
@@ -28,6 +29,7 @@ async function req(url, opts, jar) {
       const next = new URL(res.headers.get('location'), url).toString();
       // never carry the login cookies to another site
       if (new URL(next).origin !== new URL(url).origin) break;
+      await http.assertPublic(next);
       const h2 = Object.assign({}, headers, { Cookie: jar.header() });
       res = await fetch(next, { headers: h2, redirect: 'manual', signal: ctl.signal });
       jar.take(res);

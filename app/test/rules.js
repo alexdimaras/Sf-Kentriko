@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — tests of the catalog rules (npm test runs them after test/run.js).
 // A made-up shop built from REAL kinds of titles found in the two shops (November 2026): a title whose «&» was
 // lost on the site (Hamp;N), codes sent encoded (SE &#8211; 40403), descriptions written in entity names, cartridges

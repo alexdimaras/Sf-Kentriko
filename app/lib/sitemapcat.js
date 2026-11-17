@@ -52,7 +52,16 @@ async function eachUrl(url, onUrl, opts, depth) {
   const quiet = () => { clearTimeout(idle); idle = setTimeout(stopAll, IDLE); };
   let res;
   try {
-    res = await fetch(url, { redirect: 'follow', signal: ctl.signal, headers: Object.assign({ 'User-Agent': http.UA, 'Accept-Language': 'el-GR,el;q=0.9' }, UA_HEADERS) });
+    // redirects one by one, each address checked (never into a private network)
+    let at = url;
+    for (let hop = 0; ; hop++) {
+      await http.assertPublic(at);
+      res = await fetch(at, { redirect: 'manual', signal: ctl.signal, headers: Object.assign({ 'User-Agent': http.UA, 'Accept-Language': 'el-GR,el;q=0.9' }, UA_HEADERS) });
+      const loc = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+      if (!loc || hop >= 5) break;
+      try { await res.body?.cancel(); } catch (_) { /* nothing */ }
+      at = new URL(loc, at).toString();
+    }
   } catch (e) { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); if (o.signal && o.signal.aborted) return; throw new Error('Ο χάρτης του site δεν απάντησε εγκαίρως.'); }
   if (!res.ok || !res.body) { clearTimeout(idle); clearTimeout(whole); if (o.signal) o.signal.removeEventListener('abort', stopAll); throw new Error(`Ο χάρτης του site δεν διαβάστηκε (${res.status}).`); }
   const dec = new TextDecoder('utf-8');

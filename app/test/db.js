@@ -1,4 +1,6 @@
 'use strict';
+// the little shops of the tests run on this machine: the program may open private addresses here (never in use)
+process.env.SFK_ALLOW_PRIVATE = '1';
 // SF Κέντρο — the shared database (lib/db.js): versions of documents, no lost writes. Needs COORD_PG=postgres://…
 // (skipped without it: npm test runs it only where a PostgreSQL is there).
 const path = require('path');

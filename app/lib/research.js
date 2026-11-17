@@ -88,7 +88,14 @@ function progressNote(fresh) {
  * Take in the offers of competitor `compId` (catalog read at `catAt`): each product's offer from that competitor is
  * replaced (or removed when there is none any more), its decision computed again; price changes are noted.
  */
-async function mergeShop(compId, catAt, offers) {
+// Results of two shops that arrive together are taken in one after the other (they change the same results).
+let mergeLine = Promise.resolve();
+function mergeShop(compId, catAt, offers) {
+  const run = mergeLine.catch(() => {}).then(() => mergeShopNow(compId, catAt, offers));
+  mergeLine = run;
+  return run;
+}
+async function mergeShopNow(compId, catAt, offers) {
   const m = market();
   const bg = require('./bg');
   const pace = bg.pacer();
@@ -142,7 +149,8 @@ async function mergeShop(compId, catAt, offers) {
 
 // ---------- 4. the day is done ----------
 /** Every competitor of the day is in: products with a cost but no result yet get one (a sale at a loss shows). */
-async function finishDay() {
+async function finishDay() { await mergeLine.catch(() => {}); return finishDayNow(); }
+async function finishDayNow() {
   const m = market();
   const bg = require('./bg');
   const pace = bg.pacer();
