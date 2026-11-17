@@ -172,6 +172,7 @@ async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx
 // ---------- API ----------
 const routes = {
   // where the data is kept and whether everything is in: for the sign on every screen
+  'GET /api/build': () => buildInfo(),
   'GET /api/save-status': () => { const c = cloudsave.status(); return { enabled: !!c.enabled, where: c.where || (c.enabled ? 'GitHub' : 'δίσκος'), savedAt: c.savedAt || null, loadedAt: c.loadedAt || null, pending: !!c.pending, error: c.error || '', blocked: !!c.blocked, now: new Date().toISOString() }; },
   'POST /api/save-now': async () => { const r = await cloudsave.save('χειροκίνητα'); const c = cloudsave.status(); return { ok: !(r && r.error) && !c.error, error: (r && r.error) || c.error || '', savedAt: c.savedAt || null, pending: !!c.pending, where: c.where || 'GitHub', enabled: !!c.enabled, sent: r && r.sent != null ? r.sent : null }; },
   'GET /api/state': async (q, _, ctx) => { if (!store.read('catalog-meta', null)) await engine.loaded(); return await stateView(ctx); },
@@ -1013,6 +1014,15 @@ function listen(p, tries) {
 }
 
 const STARTED_AT = Date.now();
+// which change of the code runs here: from the host (Render gives the commit), its title and date from GitHub (public)
+const build = { version: VERSION, sha: String(process.env.RENDER_GIT_COMMIT || process.env.SFK_GIT_COMMIT || '').slice(0, 40), branch: process.env.RENDER_GIT_BRANCH || '', startedAt: new Date(STARTED_AT).toISOString(), message: '', committedAt: '' };
+function buildInfo() { return Object.assign({}, build, { url: build.sha ? 'https://github.com/alexdimaras/Sf-Kentriko/commit/' + build.sha : '' }); }
+if (build.sha) {
+  setTimeout(() => {
+    fetch('https://api.github.com/repos/alexdimaras/Sf-Kentriko/commits/' + build.sha, { headers: { 'User-Agent': 'sf-kentro', Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) })
+      .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.commit) { build.message = String(j.commit.message || '').split('\n')[0].slice(0, 300); build.committedAt = j.commit.committer && j.commit.committer.date || ''; } }).catch(() => {});
+  }, 5000).unref();
+}
 // how long the program could not answer, at worst, in the last minute (a small cloud machine shows its limits here)
 const lags = [];
 let lagAt = Date.now();

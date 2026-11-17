@@ -304,6 +304,16 @@
       }
 
       if (tab === 'security' && server) {
+        // which version runs (shown at the end of this tab)
+        GET('/api/build').then((b) => {
+          if (!b) return;
+          box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Έκδοση που τρέχει'),
+            h('div', { class: 'stack s' },
+              h('div', null, h('span', { class: 'faint' }, 'Έκδοση: '), h('b', null, b.version || '—')),
+              h('div', null, h('span', { class: 'faint' }, 'Ενημέρωση (deploy): '), h('b', null, b.startedAt ? fmt.dateTime(b.startedAt) : '—')),
+              b.message ? h('div', null, h('span', { class: 'faint' }, 'Τελευταία αλλαγή: '), h('b', null, b.message), b.committedAt ? h('span', { class: 'faint' }, ' · ' + fmt.dateTime(b.committedAt)) : null) : null,
+              b.sha ? h('div', null, h('span', { class: 'faint' }, 'Κωδικός αλλαγής: '), h('a', { href: b.url, target: '_blank', rel: 'noopener', class: 'mono' }, b.sha.slice(0, 7))) : h('div', { class: 'faint' }, 'Τοπική εκτέλεση (χωρίς στοιχεία deploy).'))));
+        }).catch(() => {});
         const sec = await GET('/api/security/audit');
         const ok = (b, t) => h('li', { class: b ? 'ok' : 'warn' }, icon(b ? 'check' : 'alert'), ' ', t);
         const https = location.protocol === 'https:';
