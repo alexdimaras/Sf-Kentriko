@@ -1101,6 +1101,6 @@ function setCost(site, id, cost, source, rrp) {
 
 module.exports = { LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
-  wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)),
+  wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,
 };

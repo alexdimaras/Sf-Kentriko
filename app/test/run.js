@@ -304,7 +304,7 @@ function supplierSite() {
   ok((await cloudSave(p1, s1)).same === true && ghState.blobPosts === sentBefore, 'nothing changed: nothing is sent');
   await setting(p1, s1, { minShops: 4 });
   const sv2 = await cloudSave(p1, s1);
-  ok(sv2.saved && sv2.sent >= 1 && sv2.sent <= 2 && ghState.blobPosts - sentBefore === sv2.sent && ghTree().find((e) => e.path === 'data/users.json.gz').sha === usersSha && ghPart('settings').minShops === 4, 'after a change only the changed files are sent (the rest stay as they are)', JSON.stringify(sv2));
+  ok(sv2.saved && sv2.sent >= 1 && sv2.sent <= 3 && ghState.blobPosts - sentBefore === sv2.sent && ghTree().find((e) => e.path === 'data/users.json.gz').sha === usersSha && ghPart('settings').minShops === 4, 'after a change only the changed files are sent (the rest stay as they are; the settings, the session and the audit log)', JSON.stringify(sv2));
   await setting(p1, s1, { minShops: 5 });
   const c0 = ghState.commits;
   await stopApp(a1);

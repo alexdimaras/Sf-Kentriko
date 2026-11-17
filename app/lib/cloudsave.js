@@ -238,5 +238,10 @@ function start() {
 }
 
 function status() { return Object.assign({}, state); }
+/**
+ * With the shared database as the live copy, GitHub is only the daily backup: its saves are allowed without reading
+ * it first (the database was read instead) — the first backup sends every file.
+ */
+function backupOnly() { restored = true; }
 
-module.exports = { restore, save, start, status, FILE, DIR, KEEP };
+module.exports = { restore, save, start, status, backupOnly, FILE, DIR, KEEP };

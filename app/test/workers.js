@@ -1,0 +1,170 @@
+'use strict';
+// SF Κέντρο — the computers of the shops, for real: a little competitor shop, the cloud program, and real worker
+// processes (app/worker.js) that pair with a code, take the research of a competitor, and hand in the result.
+// With COORD_PG=postgres://… the cloud program keeps everything in that database (as with Supabase).
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const { spawn } = require('child_process');
+
+const APP = path.join(__dirname, '..');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sfk-workers-'));
+const DATA = path.join(tmp, 'data');
+fs.mkdirSync(DATA, { recursive: true });
+
+let fails = 0, passes = 0;
+function ok(cond, name, detail) {
+  if (cond) passes++; else fails++;
+  console.log((cond ? '  ok   ' : '  FAIL ') + name + (cond || detail === undefined ? '' : ' — ' + detail));
+}
+const section = (t) => console.log('\n' + t);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- our shop and a competitor ----------
+const now = new Date().toISOString();
+const W = (n, v) => fs.writeFileSync(path.join(DATA, n + '.json'), JSON.stringify(v));
+const NAMES = ['ΦΑΚΟΣ NITECORE MH40 PRO', 'ΣΑΚΙΔΙΟ PENTAGON KYLER 36L', 'ΓΑΝΤΙΑ MECHANIX M-PACT COYOTE', 'ΜΑΧΑΙΡΙ MORAKNIV ELDRIS ΜΑΥΡΟ', 'ΑΡΒΥΛΑ HAIX BLACK EAGLE ATHLETIC 2.1'];
+const BRANDS = ['NITECORE', 'PENTAGON', 'MECHANIX', 'MORAKNIV', 'HAIX'];
+const SKUS = ['MH40PRO', 'K16110', 'MPT-72', 'MORA-12647', 'HX-330003'];
+function product(i) {
+  return { id: 100 + i, type: 'simple', parent: 0, name: NAMES[i], varLabel: '', slug: 'p' + i, sku: SKUS[i], url: 'https://shop.example/p/' + i, price: 50 + i * 10, regular: 50 + i * 10, sale: 0, priceMax: 0, inStock: true, purchasable: true,
+    cats: [11], catNames: ['Είδη'], tags: [], brand: BRANDS[i], brandSource: 'brands', attrs: [], images: ['https://shop.example/i/' + i + '.jpg'], thumb: '', imageAlts: [], desc: '<p>Περιγραφή του προϊόντος με αρκετό κείμενο για τον έλεγχο.</p>'.repeat(5), short: '<p>σύντομη</p>', variations: [], status: 'publish' };
+}
+function comp(slow) {
+  const state = { slow: !!slow, hits: 0 };
+  const srv = http.createServer(async (req, res) => {
+    state.hits++;
+    if (state.slow) await sleep(1500);
+    const u = new URL(req.url, 'http://x');
+    const list = u.pathname.endsWith('/products') && u.searchParams.get('_fields') !== 'id'
+      ? NAMES.map((n, i) => ({ id: 900 + i, name: n.replace(/^[Α-Ω]+ /, ''), sku: SKUS[i], permalink: `http://c.example/p/${i}`, prices: { price: String((45 + i * 10) * 100), regular_price: String((45 + i * 10) * 100), currency_minor_unit: 2, currency_code: 'EUR' }, is_in_stock: true, brands: [{ name: BRANDS[i] }], attributes: [], images: [], type: 'simple' }))
+      : u.searchParams.get('_fields') === 'id' ? NAMES.map((_, i) => ({ id: 900 + i })) : [];
+    res.writeHead(200, { 'Content-Type': 'application/json', 'X-WP-Total': String(list.length), 'X-WP-TotalPages': '1' });
+    res.end(JSON.stringify(list));
+  });
+  return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, state, url: 'http://127.0.0.1:' + srv.address().port })));
+}
+
+(async () => {
+  const shopA = await comp(false);
+  W('catalog-sf', { syncedAt: now, source: 'api', products: NAMES.map((_, i) => product(i)), categories: [{ id: 11, name: 'Είδη', slug: 'eidi', parent: 0, count: 5, url: '' }], info: {}, lastFullAt: now, syncStartedAt: now, engine: 2, mode: 'full' });
+  W('settings', { firstRunDone: true });
+  W('competitors', [{ id: 'cA', name: 'shop-a', url: shopA.url, kind: 'woo', enabled: true }]);
+  W('competitors-meta', { seed: 99 });
+  W('costs', {});
+
+  const port = 19600 + Math.floor(Math.random() * 300);
+  const base = `http://127.0.0.1:${port}`;
+  const env = Object.assign({}, process.env, { SFK_MODE: 'server', SFK_PORT: String(port), SFK_DATA: DATA, APPDATA: path.join(tmp, 'cfg'), SFK_NO_AUTOSYNC: '1', SFK_ADMIN_USER: 'admin', SFK_ADMIN_PASSWORD: 'Test-pass-123456', SFK_SECRET_KEY: 'k'.repeat(40),
+    SFK_LEASE_MS: '4000', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
+  if (process.env.COORD_PG) {
+    // an empty database, as on the first start with Supabase (the data of this test then comes from its folder)
+    env.SFK_DATABASE_URL = process.env.COORD_PG;
+    const db = require(path.join(APP, 'lib/db'));
+    const pool = await db.connect(process.env.COORD_PG);
+    await db.reset(pool);
+    await pool.query('TRUNCATE documents');
+    await pool.end();
+  }
+  let server, slog = '';
+  const startServer = async () => {
+    slog = '';
+    server = spawn(process.execPath, [path.join(APP, 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    server.stdout.on('data', (b) => { slog += b; }); server.stderr.on('data', (b) => { slog += b; });
+    for (let i = 0; i < 150 && !/Ready:/.test(slog); i++) await sleep(100);
+    await sleep(800);
+  };
+  await startServer();
+  let H = null;
+  const login = async () => { const li = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: 'admin', password: 'Test-pass-123456' }) }); H = { Cookie: (li.headers.get('set-cookie') || '').split(';')[0], 'X-SFK': (await li.json()).csrf, 'Content-Type': 'application/json' }; };
+  const get = async (p) => (await fetch(base + p, { headers: H })).json();
+  const post = async (p, b) => (await fetch(base + p, { method: 'POST', headers: H, body: JSON.stringify(b || {}) })).json();
+  const until = async (fn, ms) => { const t = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t > ms) return null; await sleep(250); } };
+  const workers = [];
+  const startWorker = (name) => {
+    const home = path.join(tmp, 'w-' + name);
+    const wenv = Object.assign({}, process.env, { SFK_WORKER_HOME: home, APPDATA: path.join(home, 'cfg'), SFK_POLL_MS: '500', SFK_BEAT_MS: '1000', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', SFK_DATA: '' });
+    delete wenv.SFK_DATA;
+    return { home, env: wenv, run: () => { const p = spawn(process.execPath, [path.join(APP, 'worker.js')], { env: wenv, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; p.stdout.on('data', (b) => { out += b; }); p.stderr.on('data', (b) => { out += b; }); workers.push(p); return { p, out: () => out }; } };
+  };
+  const pairWorker = async (w) => new Promise((r) => {
+    post('/api/workers/pair').then((c) => { const p = spawn(process.execPath, [path.join(APP, 'worker.js'), 'pair', base, c.code], { env: w.env }); let o = ''; p.stdout.on('data', (b) => { o += b; }); p.stderr.on('data', (b) => { o += b; }); p.on('exit', (code) => r({ code, out: o })); });
+  });
+  try {
+    await login();
+    section('Σύζευξη υπολογιστή');
+    const w1 = startWorker('one');
+    const pr = await pairWorker(w1);
+    ok(pr.code === 0 && /Έτοιμο/.test(pr.out), 'a computer pairs with the code from Settings → Υπολογιστές', pr.out.trim());
+    const conf = JSON.parse(fs.readFileSync(path.join(w1.home, 'worker.json'), 'utf8'));
+    ok(conf.token && !String(conf.token).startsWith('sfkw_'), 'its token is kept protected on the computer (not as plain text)');
+    let ws = await get('/api/workers');
+    ok(ws.workers.length === 1 && ws.workers[0].caps.ramMB > 0, 'the cloud lists it with what it can do', JSON.stringify(ws.workers.map((w) => w.name)));
+    const noTok = await fetch(base + '/api/worker/claim', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sfkw_fake' }, body: '{}' });
+    ok(noTok.status === 401, 'a computer without a valid token gets nothing');
+    const staffNo = await fetch(base + '/api/worker/claim', { method: 'POST', headers: H, body: '{}' });
+    ok(staffNo.status === 401, 'a person\'s session cannot use the computers\' door either');
+
+    section('Η έρευνα τιμών γίνεται στον υπολογιστή');
+    const r1 = w1.run();
+    await sleep(1500);
+    let job = await post('/api/market/run', {});
+    ok(/στους υπολογιστές/.test(job.label || ''), 'with a computer paired, «Έρευνα τώρα» goes through the shared queue', job.label);
+    let end = await until(async () => { const j = await get('/api/jobs/' + job.id); return j.status !== 'running' && j.status !== 'queued' ? j : null; }, 60000);
+    ok(end && end.status === 'done' && end.result && end.result.distributed && end.result.complete, 'the research ends, the day is marked done', JSON.stringify(end && [end.status, end.result, end.error]));
+    const mk = await get('/api/market?site=sf');
+    const offers = mk.rows.flatMap((r) => r.competitors);
+    ok(mk.rows.length === 5 && offers.length === 5 && offers.every((o) => o.shop === 'shop-a' && o.match === 'exact'), 'every product has the competitor\'s offer, written by the cloud from the computer\'s result', JSON.stringify([mk.rows.length, offers.length]));
+    const qj = (await get('/api/jobs')).find((x) => x.distributed);
+    ok(qj && qj.worker === os.hostname() && qj.status === 'completed', 'the job of the competitor was done by the computer (not by the cloud)', JSON.stringify(qj && [qj.worker, qj.status]));
+    ok(/εργασία .* παραδόθηκε/.test(r1.out()), 'the computer reports that it handed in the result');
+
+    section('Υπολογιστής που σβήνει στη μέση');
+    // the next day's research (a new day: the note of the day is reset)
+    await post('/api/market/run', {}); // joins nothing (done today): returns at once
+    const shopB = await comp(true);
+    let comps = JSON.parse(fs.readFileSync(path.join(DATA, 'competitors.json'), 'utf8'));
+    await post('/api/competitors', { url: shopB.url.replace('127.0.0.1', 'localhost'), name: 'shop-b', kind: 'woo' }); // another host name: «already in the list» compares host names
+    comps = await get('/api/competitors');
+    const bId = comps.find((c) => c.name === 'shop-b').id;
+    job = await post('/api/market/run', {});
+    const taken = await until(async () => { const l = await get('/api/jobs'); const x = l.find((y) => y.distributed && /shop-b/.test(y.label) && y.status === 'running' && y.worker); return x || null; }, 20000);
+    ok(!!taken, 'the slow competitor is taken by the computer');
+    r1.p.kill('SIGKILL');
+    const w2 = startWorker('two');
+    await pairWorker(w2);
+    const r2 = w2.run();
+    end = await until(async () => { const j = await get('/api/jobs/' + job.id); return j.status !== 'running' && j.status !== 'queued' ? j : null; }, 60000);
+    const bjob = (await get('/api/jobs')).find((y) => y.distributed && /shop-b/.test(y.label));
+    ok(end && end.status === 'done' && bjob && bjob.status === 'completed' && bjob.attempts === 2, 'the computer was switched off: its lease ended and another computer finished the job (2nd attempt)', JSON.stringify(bjob && [bjob.status, bjob.attempts, bjob.worker]));
+    const mk2 = await get('/api/market?site=sf');
+    ok(mk2.rows.every((r) => r.competitors.filter((c) => c.competitorId === bId).length === 1), 'each product has exactly one offer of that competitor (no double result)');
+    void r2;
+
+    section('Αφαίρεση υπολογιστή');
+    ws = await get('/api/workers');
+    const w2id = ws.workers.find((w) => w.online && w.jobs.length === 0 && w.id) && ws.workers.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].id;
+    await post('/api/workers/revoke', { id: w2id });
+    await sleep(2500);
+    ok(/αναγνωρίζεται πια/.test(r2.out()) || r2.p.exitCode != null, 'a removed computer is refused at once and stops', r2.out().slice(-200));
+    const aud = await get('/api/audit');
+    ok(Array.isArray(aud) && aud.some((a) => a.action === 'αφαίρεση υπολογιστή') && aud.some((a) => a.action === 'κωδικός σύζευξης υπολογιστή'), 'the audit log keeps who paired and removed computers', JSON.stringify((aud || []).slice(0, 3).map((a) => a.action)));
+
+    section('Επανεκκίνηση του cloud');
+    server.kill('SIGTERM'); await sleep(1500);
+    await startServer(); await login();
+    ws = await get('/api/workers');
+    const mk3 = await get('/api/market?site=sf');
+    ok(ws.workers.length === 1 && mk3.rows.length === 5, 'after a restart the computers and the results are still there' + (process.env.COORD_PG ? ' (from the database)' : ''), JSON.stringify([ws.workers.length, mk3.rows.length]));
+    shopB.srv.close();
+  } finally {
+    for (const p of workers) { try { p.kill('SIGKILL'); } catch (_) { /* gone */ } }
+    try { server.kill('SIGKILL'); } catch (_) { /* gone */ }
+    shopA.srv.close();
+    if (fails) console.log(slog.slice(-2000));
+  }
+  console.log(`\n${passes} ok, ${fails} failed`);
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  process.exit(fails ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });

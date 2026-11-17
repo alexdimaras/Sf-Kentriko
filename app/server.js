@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 // Render (free cloud host) tells the program its port in PORT
 const PORT0 = Number(process.env.RENDER && process.env.PORT ? process.env.PORT : process.env.SFK_PORT) || 17321;
 const MODE = process.env.SFK_MODE === 'server' ? 'server' : 'local';
@@ -46,7 +46,11 @@ const security = require('./lib/security');
 const supplierfind = require('./lib/supplierfind');
 const users = require('./lib/users');
 const fixes = require('./lib/fixes');
-const cloudsave = require('./lib/cloudsave');
+// the live copy of the data: the shared database when it is set (SFK_DATABASE_URL), else the private GitHub repository
+const cloudsave = process.env.SFK_DATABASE_URL ? require('./lib/pgsave') : require('./lib/cloudsave');
+const coord = require('./lib/coord');
+const jobtypes = require('./lib/jobtypes');
+const audit = require('./lib/audit');
 const engine = require('./lib/engine');
 const bg = require('./lib/bg');
 const U = require('./lib/util');
@@ -162,11 +166,11 @@ function supplierCounts() {
   supCounts = { key, counts };
   return counts;
 }
-function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running(), strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
+async function stateView(ctx) { return { version: VERSION, mode: MODE, user: ctx.user || null, dataDir: SERVER ? '' : store.dir(), summary: catalog.summary(), settings: settings.all(), jobs: jobs.running().concat(coordReady ? await coord.live() : []), workers: coordReady && SERVER ? await coord.stats() : null, strategies: settings.STRATEGIES, platform: process.platform, instances: SERVER ? [] : otherInstances(), cloud: cloudsave.status(), engine: engine.status() }; }
 
 // ---------- API ----------
 const routes = {
-  'GET /api/state': async (q, _, ctx) => { if (!store.read('catalog-meta', null)) await engine.loaded(); return stateView(ctx); },
+  'GET /api/state': async (q, _, ctx) => { if (!store.read('catalog-meta', null)) await engine.loaded(); return await stateView(ctx); },
   'GET /api/dashboard': () => dashboard.build(),
 
   // Sync
@@ -343,8 +347,9 @@ const routes = {
   'POST /api/competitors/delete': (b) => { market.removeCompetitor(b.id); return { ok: true }; },
   'POST /api/competitors/detect': () => jobs.start('detect', 'Έλεγχος ανταγωνιστών', (job) => market.detectAll(job)),
   // research for every product (or only the given ones): refresh competitor catalogs, compare locally
-  'POST /api/market/run': (b) => {
+  'POST /api/market/run': async (b, _q, ctx) => {
     const targets = (b.targets || []).filter((t) => t && catalog.SITES.includes(t.site));
+    if (!targets.length && !b.skipDownload && await useWorkers()) return jobs.start('market', 'Έρευνα τιμών για όλα τα προϊόντα (στους υπολογιστές)', (job) => heldWhile(() => distributedResearch(job, { by: ctx && ctx.user ? ctx.user.name : '' })), { heavy: true });
     return jobs.start('market', targets.length ? 'Έρευνα τιμών (' + targets.length + ')' : 'Έρευνα τιμών για όλα τα προϊόντα', (job) => heldWhile(() => market.run(targets.length ? targets : null, job, { skipDownload: !!b.skipDownload })), { heavy: !targets.length });
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
@@ -490,8 +495,13 @@ const routes = {
     else throw new Error('Δεν επιτρέπεται.');
     return { ok: true };
   },
-  'GET /api/jobs': () => jobs.recent(),
-  'POST /api/jobs/cancel': (b) => jobs.cancel(b.id),
+  'GET /api/jobs': async () => jobs.recent().concat(coordReady ? await coord.recent(10) : []).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0)).slice(0, 15),
+  'POST /api/jobs/cancel': (b) => (String(b.id || '').startsWith('q') && coordReady ? coord.cancel(b.id) : jobs.cancel(b.id)),
+  // the computers of the shops (administrators)
+  'GET /api/workers': async () => ({ workers: await coord.workersView(), stats: await coord.stats(), store: (() => { const c = cloudsave.status(); return !c.enabled ? 'στον φάκελο του διακομιστή' : c.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (και αντίγραφο στο GitHub κάθε μέρα)' : 'στο ιδιωτικό αποθετήριο GitHub'; })() }),
+  'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
+  'POST /api/workers/revoke': async (b) => ({ ok: await coord.revoke(String(b.id || '')) }),
+  'GET /api/audit': (q) => audit.list(Math.min(1000, Number(q.n) || 200)),
   'POST /api/shutdown': () => { if (SERVER) throw new Error('Ο διακομιστής δεν κλείνει από εδώ.'); setTimeout(() => process.exit(0), 300); return { ok: true }; },
 
   // Users and sessions (server mode)
@@ -516,7 +526,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -550,6 +560,8 @@ store.onWrite((name) => {
   if (!flushTimer) flushTimer = setTimeout(flushEvents, 400);
 });
 jobs.onChange(() => { for (const st of [...streams]) if (alive(st)) sse(st.res, { jobs: true }); });
+let coordTell = null;
+coord.onChange(() => { if (coordTell) return; coordTell = setTimeout(() => { coordTell = null; for (const st of [...streams]) if (alive(st)) sse(st.res, { jobs: true }); }, 1000); });
 jobs.setRunner((fn) => reqCtx.exit(fn));
 function flushEvents() {
   flushTimer = null;
@@ -636,10 +648,105 @@ function serveReport(req, res, url) {
   });
 }
 
+// ---------- the computers of the shops: their own door ----------
+// No session and no cookie: each computer has its own token (made with a pairing code, kept only as a fingerprint
+// here, removable at any time). A computer can only ask for work, report progress and hand in results of ITS jobs.
+let coordReady = false;
+const pairTries = new Map(); // ip -> { n, at }
+const AUDITED = {
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
+  'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
+  'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
+  'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
+};
+async function handleWorker(req, res, url, q, key0) {
+  if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
+  try {
+    if (key0 === 'POST /api/worker/pair') {
+      const ip = clientIp(req), t = pairTries.get(ip) || { n: 0, at: Date.now() };
+      if (Date.now() - t.at > 3600e3) { t.n = 0; t.at = Date.now(); }
+      if (t.n >= 10) return send(res, 429, { error: 'Πολλές προσπάθειες. Δοκίμασε σε μία ώρα.' });
+      t.n++; pairTries.set(ip, t);
+      const b = await readBody(req, 64 * 1024);
+      const r = await coord.pair(b.code, b.name, b.caps);
+      audit.record('υπολογιστής ' + r.name, 'σύζευξη υπολογιστή', r.id, null).catch(() => {});
+      return send(res, 200, r);
+    }
+    const tok = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const w = await coord.workerByToken(tok);
+    if (!w) return send(res, 401, { error: 'Άγνωστος υπολογιστής.' });
+    if (key0 === 'GET /api/worker/pack') {
+      const pk = await jobtypes.packFor();
+      if (q.have && q.have === pk.v) return send(res, 200, Buffer.alloc(0), 'application/gzip', { ETag: pk.v });
+      return send(res, 200, pk.gz, 'application/gzip', { ETag: pk.v });
+    }
+    if (key0 === 'GET /api/worker/comp') {
+      const j = await coord.rawJob(String(q.job || ''));
+      if (!j || j.workerId !== w.id) return send(res, 403, { error: 'Δεν είναι δική σου εργασία.' });
+      const gz = jobtypes.compFor(j, String(q.id || ''));
+      return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
+    }
+    const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 80 * 1024 * 1024 : 256 * 1024) : {};
+    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name }); }
+    if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max) });
+    if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log));
+    if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
+    if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
+    return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
+  } catch (e) {
+    return send(res, e.status || 400, { error: e.message || String(e) });
+  }
+}
+/** Are there computers of the shops (paired, not removed)? Then the research is handed to them. */
+async function useWorkers() { return SERVER && coordReady && (await coord.workersView()).length > 0; }
+/**
+ * The price research through the shared queue: one job per competitor (a shop's computer takes it; the cloud only
+ * when none can). This job waits for them, shows how far they are, and marks the day done when all are in.
+ */
+async function distributedResearch(job, opts) {
+  const o = opts || {};
+  const research = require('./lib/research');
+  const undetected = market.competitors().filter((c) => c.enabled !== false && (c.kind === 'auto' || !c.kind));
+  if (undetected.length) { job.progress(0, 0, 'Έλεγχος ανταγωνιστών…'); await market.detectAll(null, (c) => undetected.some((u) => u.id === c.id)); }
+  const comps = market.readable();
+  if (!comps.length) throw new Error('Κανένας ανταγωνιστής δεν διαβάζεται αυτόματα.');
+  const prog = research.progressNote(false);
+  const day = market.localDay(new Date());
+  const budget = Math.max(20, Number(settings.all().sitemapPages) || 300);
+  const ids = [];
+  for (const c of comps) {
+    if (prog.done[c.id] != null) continue; // already in today (a stop or a restart loses nothing)
+    const j = await coord.enqueue('market.shop', { comp: { id: c.id, name: c.name, url: c.url, kind: c.kind, sitemaps: c.sitemaps || [], foreign: !!c.foreign }, budget },
+      { dedupKey: `market.shop:${c.id}:${day}`, priority: o.auto ? 0 : 5, auto: !!o.auto, by: o.by || '', label: 'Τιμές: ' + c.name });
+    ids.push(j.id);
+  }
+  job.log(`${comps.length} καταστήματα· ${ids.length} μπήκαν στη σειρά για τους υπολογιστές${comps.length - ids.length ? ', ' + (comps.length - ids.length) + ' είχαν ήδη γίνει σήμερα' : ''}.`);
+  const END = new Set(['completed', 'failed', 'cancelled']);
+  for (;;) {
+    const st = await Promise.all(ids.map((id) => coord.job(id)));
+    const ended = st.filter((x) => x && END.has(x.status));
+    const run = st.filter((x) => x && !END.has(x.status) && !x.queued).map((x) => `${x.label.replace(/^Τιμές: /, '')} (${x.worker || '…'})`);
+    job.progress(ended.length, ids.length, run.length ? 'Τώρα: ' + run.slice(0, 3).join(' · ') : ended.length < ids.length ? 'Περιμένουν υπολογιστή…' : 'Ολοκλήρωση…');
+    if (job.cancelled()) { for (const id of ids) await coord.cancel(id); const m = store.read('market-meta', {}); m.pausedUntil = new Date(Date.now() + 2 * 36e5).toISOString(); store.write('market-meta', m); return { stopped: true }; }
+    if (ended.length === ids.length) {
+      const bad = st.filter((x) => x && x.status === 'failed');
+      for (const x of bad) job.log(`${x.label}: ${x.error || 'απέτυχε'}`);
+      const meta = store.read('market-meta', {}); meta.errors = bad.map((x) => ({ name: x.label.replace(/^Τιμές: /, ''), error: x.error || '' })); store.write('market-meta', meta);
+      break;
+    }
+    await new Promise((x) => setTimeout(x, 3000));
+  }
+  const fin = await research.finishDay();
+  job.progress(1, 1, fin.complete ? `Έτοιμο: ${fin.withData.toLocaleString('el-GR')} από ${fin.compared.toLocaleString('el-GR')} προϊόντα έχουν τιμές αγοράς.` : `Ολοκληρώθηκαν ${fin.done} από ${fin.of} καταστήματα· τα υπόλοιπα στην επόμενη έρευνα.`);
+  return Object.assign({ distributed: true }, fin);
+}
+
 async function handleApi(req, res, url) {
   if (starting) return send(res, 503, { error: 'Το πρόγραμμα ξεκινάει (φέρνει τα δεδομένα)… δοκίμασε σε λίγο.', starting: true }, null, { 'Retry-After': '3' });
   const q = Object.fromEntries(url.searchParams);
   const key0 = req.method + ' ' + url.pathname;
+  if (url.pathname.startsWith('/api/worker/')) return handleWorker(req, res, url, q, key0);
   if (key0 === 'GET /api/events') return serveEvents(req, res, url);
   if (req.method === 'GET' && url.pathname.startsWith('/api/export/')) {
     const sess = sessionOf(req, false);
@@ -673,7 +780,8 @@ async function handleApi(req, res, url) {
     if (req.headers['x-active'] === '1') security.touch();
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/jobs/') && url.pathname.length > 10) {
-    const j = jobs.get(url.pathname.slice(10));
+    const id = url.pathname.slice(10);
+    const j = jobs.get(id) || (coordReady && id.startsWith('q') ? await coord.job(id) : null);
     return j ? send(res, 200, j) : send(res, 404, { error: 'Η εργασία δεν υπάρχει πια.' });
   }
   const fn = routes[key0];
@@ -688,6 +796,7 @@ async function handleApi(req, res, url) {
     const limit = SERVER && !ctx.user ? 64 * 1024 : 120 * 1024 * 1024;
     const body = req.method === 'POST' ? await readBody(req, limit) : {};
     const out = await reqCtx.run({ client: ctx.client }, () => fn(req.method === 'GET' ? q : body, q, ctx, null));
+    if (AUDITED[key0]) audit.record(ctx.user ? ctx.user.name : (SERVER ? '' : 'αυτός ο υπολογιστής'), AUDITED[key0], '', audit.summary(body)).catch(() => {});
     send(res, 200, out === undefined ? { ok: true } : out, null, Object.assign(timing(), ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null));
   } catch (e) {
     if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key0, e);
@@ -797,6 +906,17 @@ async function heldWhile(fn) {
 
 function afterStart() {
   cloudsave.start();
+  // the shared queue: in the database when there is one, else in the data folder
+  (async () => {
+    const pool = cloudsave.poolNow ? await cloudsave.poolNow().catch((e) => { console.error('database:', e.message); return null; }) : null;
+    coord.use(pool ? require('./lib/db').coordBackend(pool) : require('./lib/coord-store').fileBackend());
+    if (pool) audit.usePool(Promise.resolve(pool));
+    jobtypes.register();
+    coordReady = true;
+    setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
+    // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)
+    if (SERVER) setInterval(() => { coord.cloudTick().catch((e) => console.error('queue (cloud):', e.message)); }, 10000).unref();
+  })().catch((e) => console.error('queue start:', e.message));
   jobs.setHeavyLimit(SMALL ? 1 : 2);
   catalog.closeOpenReads(); // a reading that was running when the program stopped did not finish: say so
   // everything the screens need is loaded (or calculated) now, in the background, in slices
@@ -849,8 +969,8 @@ function afterStart() {
             if (job.cancelled()) return null;
             try { const r = await pricelist.refresh(s.id, job); job.log(`${s.name}: ${r ? r.items + ' κωδικοί, ' + r.changed + ' αλλαγές τιμής' : 'διακόπηκε'}`); } catch (e) { job.log(`${s.name}: ${e.message}`); }
           }
-          // 2. competitor prices for every product
-          const res = await market.run(null, job, { auto: true });
+          // 2. competitor prices for every product (on the computers of the shops when there are any)
+          const res = (await useWorkers()) ? await distributedResearch(job, { auto: true }) : await market.run(null, job, { auto: true });
           // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
           if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
           return res;

@@ -1,13 +1,13 @@
 {
   "name": "sf-kentro",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "SF Κέντρο — back office για specialforces.gr και stratiotikaeidi.gr",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "build:win": "pkg . --targets node22-win-x64 --output dist/SF-Kentro.exe --compress GZip",
     "build:linux": "pkg . --targets node22-linux-x64 --output dist/sf-kentro-linux",
-    "test": "node test/run.js && node test/rules.js && node test/jobs.js"
+    "test": "node test/run.js && node test/rules.js && node test/jobs.js && node test/coord.js && node test/workers.js && node test/db.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
@@ -16,6 +16,7 @@
     "fast-xml-parser": "^5.3.0",
     "node-html-parser": "^7.0.1",
     "pdf-parse": "^1.1.1",
+    "pg": "^8.23.1",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
