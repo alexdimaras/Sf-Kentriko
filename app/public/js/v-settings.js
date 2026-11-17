@@ -10,7 +10,7 @@
       main.appendChild(pageHead('Ρυθμίσεις', 'Αλλάζουν μόνο τον τρόπο που δουλεύει το πρόγραμμα. Τίποτα δεν αλλάζει στα sites.'));
       const server = App.MODE === 'server';
       const admin = !server || (App.me && App.me.role === 'admin');
-      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
+      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, server && admin ? ['workers', 'Υπολογιστές'] : null, server && admin ? ['audit', 'Ιστορικό ενεργειών'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
       main.appendChild(h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { 'aria-selected': String(k === tab), onclick: () => App.go('settings', { tab: k }) }, l))));
       const box = h('div', { class: 'stack' });
       main.appendChild(box);
@@ -164,6 +164,53 @@
 
       if (tab === 'phone') await phoneTab(box, server, admin);
 
+      if (tab === 'workers' && server && admin) {
+        // the computers of the shops that do the heavy work (lib/coord.js, app/worker.js)
+        const d = await GET('/api/workers');
+        const st = d.stats || {};
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Υπολογιστές που δουλεύουν για το πρόγραμμα'),
+          h('p', { class: 'muted' }, 'Τα PC των μαγαζιών κάνουν τη βαριά δουλειά (σήμερα: την έρευνα τιμών, ένα κατάστημα ανταγωνιστή τη φορά) και στέλνουν το αποτέλεσμα. Το πρόγραμμα στο cloud αποφασίζει τι είναι σωστό και το κρατά. Αν κλείσει ένα PC, η δουλειά του πάει σε άλλο· αν δεν υπάρχει κανένα για 10 λεπτά, την κάνει το cloud (πιο αργά).'),
+          h('div', { class: 'kpis wk-kpis' },
+            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.online || 0) + ' / ' + fmt.num(st.workers || 0)), h('span', null, 'ανοιχτά τώρα')),
+            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.running || 0)), h('span', null, 'τρέχουν')),
+            h('div', { class: 'kpi' }, h('b', null, fmt.num(st.queued || 0)), h('span', null, 'περιμένουν'))),
+          h('p', { class: 'faint', style: { margin: '10px 0 0' } }, 'Τα δεδομένα φυλάγονται: ' + d.store + '.')));
+        const list = h('div', { class: 'stack s' });
+        for (const w of d.workers) {
+          const c = w.caps || {};
+          list.appendChild(h('div', { class: 'panel worker-card' },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
+              h('div', null, h('h3', { style: { margin: 0 } }, h('span', { class: 'dot ' + (w.online ? '' : 'off'), 'aria-hidden': 'true' }), ' ', w.name),
+                h('div', { class: 'faint' }, (w.online ? 'σε λειτουργία' : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${c.cpus || '?'} πυρήνες · ${fmt.num(Math.round((c.ramMB || 0) / 1024))} GB μνήμη · έκδοση ${c.version || '?'}` + (c.battery ? ' · σε μπαταρία (δεν παίρνει δουλειά)' : ''))),
+              btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox(`Αφαίρεση του «${w.name}»;`, 'Ο υπολογιστής δεν θα μπορεί πια να συνδεθεί. Οι εργασίες του γυρίζουν στη σειρά. Για να ξαναμπεί θέλει νέο κωδικό σύζευξης.', 'Αφαίρεση', true)) POST('/api/workers/revoke', { id: w.id }).then(() => App.route()).catch(fail); })),
+            w.jobs.length ? h('ul', { class: 'why' }, w.jobs.map((j) => h('li', null, `${j.label}: ${j.msg || ''}`))) : h('div', { class: 'faint', style: { marginTop: '6px' } }, 'Χωρίς εργασία αυτή τη στιγμή.')));
+        }
+        if (!d.workers.length) list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Κανένας υπολογιστής ακόμα'), h('p', null, 'Όλη η δουλειά γίνεται στο cloud. Πρόσθεσε ένα PC του μαγαζιού για να γίνεται πιο γρήγορα.')));
+        box.appendChild(list);
+        const codeBox = h('div');
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προσθήκη υπολογιστή'),
+          h('ol', { class: 'steps' },
+            h('li', null, 'Στο PC του μαγαζιού (Windows 10/11, 64-bit), στον φάκελο του SF Κέντρο, διπλό κλικ στο «SF-Kentro-Worker.cmd».'),
+            h('li', null, 'Πάτα «Νέος κωδικός» εδώ και γράψε τη διεύθυνση και τον κωδικό στο παράθυρο που ανοίγει εκεί. Ο κωδικός ισχύει 15 λεπτά και μία φορά.'),
+            h('li', null, 'Τέλος: ο υπολογιστής ξεκινά μόνος του με τα Windows, στο παρασκήνιο, με χαμηλή προτεραιότητα, και δεν παίρνει δουλειά όταν είναι σε μπαταρία.')),
+          h('div', { class: 'row' }, btn('Νέος κωδικός', { cls: 'primary', icon: 'new' }, () => POST('/api/workers/pair').then((r) => {
+            clear(codeBox);
+            codeBox.appendChild(h('div', { class: 'pair-code' }, h('div', { class: 'faint' }, 'Διεύθυνση'), h('b', { class: 'mono' }, location.origin), h('div', { class: 'faint' }, `Κωδικός (ισχύει ${r.minutes} λεπτά)`), h('b', { class: 'mono big' }, r.code)));
+          }).catch(fail))), codeBox));
+        return;
+      }
+      if (tab === 'audit' && server && admin) {
+        const rows = await GET('/api/audit', { n: 300 });
+        const list = h('ul', { class: 'audit-list' });
+        for (const r of rows) {
+          const det = r.detail ? Object.entries(r.detail).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' · ') : '';
+          list.appendChild(h('li', null, h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } }, h('b', null, r.action), h('span', { class: 'faint num' }, fmt.dateTime(r.at))),
+            h('div', { class: 'muted' }, r.actor || '—', r.target && !/^[a-z0-9]{10,}$/.test(r.target) ? ' · ' + r.target : ''), det ? h('div', { class: 'faint' }, det) : null));
+        }
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Ποιος έκανε τι'), h('p', { class: 'muted' }, 'Εγκρίσεις, αρχεία, ρυθμίσεις, χρήστες, υπολογιστές. Χωρίς κωδικούς.'),
+          rows.length ? list : h('p', { class: 'faint' }, 'Τίποτα ακόμα.')));
+        return;
+      }
       if (tab === 'users' && server) {
         const me = App.me || {};
         const cur = h('input', { type: 'password', autocomplete: 'current-password' });
@@ -286,8 +333,10 @@
         if (admin) box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Αντίγραφα ασφαλείας'), h('p', { class: 'muted' }, 'Ένα αντίγραφο κάθε μέρα στον διακομιστή· κρατιούνται 14 μέρες.'),
           backups.length ? h('div', { class: 'chips' }, backups.map((d) => h('button', { type: 'button', class: 'chip', onclick: async () => { if (await confirmBox('Επαναφορά στις ' + d + ';', 'Ισχύει για όλους τους υπολογιστές. Τα τωρινά δεδομένα κρατιούνται σε ξεχωριστό αντίγραφο πριν την επαναφορά.', 'Επαναφορά', true)) POST('/api/backups/restore', { day: d }).then(async () => { toast('Έγινε επαναφορά.'); await App.refreshState(); App.go('today'); }).catch(fail); } }, d))) : h('p', { class: 'faint' }, 'Κανένα ακόμα.')));
         const cl = App.state.cloud;
-        if (cl && cl.enabled) box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('shield'), ' Φύλαξη στο GitHub'),
-          h('p', { class: 'muted' }, `Ο δωρεάν διακομιστής σβήνει τον δίσκο του σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται στο ιδιωτικό αποθετήριο ${cl.repo} λίγα λεπτά μετά από κάθε αλλαγή και όταν σταματά.`),
+        const db = cl && cl.where === 'βάση δεδομένων';
+        if (cl && cl.enabled) box.appendChild(h('div', { class: 'panel' }, h('h2', null, icon('shield'), db ? ' Φύλαξη στη βάση δεδομένων' : ' Φύλαξη στο GitHub'),
+          db ? h('p', { class: 'muted' }, `Τα δεδομένα φυλάγονται στην κοινή βάση PostgreSQL 30″ μετά από κάθε αλλαγή, με αριθμό έκδοσης (δύο αλλαγές την ίδια στιγμή δεν σβήνουν η μία την άλλη). Μέγεθος περίπου ${((cl.size || 0) / 1048576).toFixed(1).replace('.', ',')} MB από τα 500 MB του δωρεάν πακέτου. Αντίγραφο ασφαλείας στο GitHub μία φορά τη μέρα` + (cl.backupAt ? ` (τελευταίο ${fmt.ago(cl.backupAt)}).` : '.'))
+            : h('p', { class: 'muted' }, `Ο δωρεάν διακομιστής σβήνει τον δίσκο του σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται στο ιδιωτικό αποθετήριο ${cl.repo} λίγα λεπτά μετά από κάθε αλλαγή και όταν σταματά.`),
           cl.error ? h('div', { class: 'note crit' }, cl.error) : h('div', { class: 'note ok' }, cl.savedAt ? 'Τελευταία φύλαξη: ' + fmt.ago(cl.savedAt) + (cl.pending ? ' · υπάρχουν νεότερες αλλαγές, φυλάγονται σε λίγο.' : ' · όλα φυλαγμένα.') : (cl.loadedAt ? 'Τα δεδομένα διαβάστηκαν ' + fmt.ago(cl.loadedAt) + '.' : 'Περιμένει την πρώτη αλλαγή.')),
           admin ? h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Φύλαξη τώρα', { cls: 'sm', icon: 'upload' }, () => POST('/api/cloud/save').then(async (r) => { toast(r && r.error ? r.error : r && r.same ? 'Όλα ήταν ήδη φυλαγμένα.' : 'Φυλάχτηκαν.', r && r.error ? { err: true } : null); await App.refreshState(); App.route(); }).catch(fail))) : null));
         if (admin) box.appendChild(bundlePanel(true));

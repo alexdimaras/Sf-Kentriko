@@ -1,5 +1,6 @@
 # SF Κέντρο στο Render (δωρεάν). Οδηγίες: DIAKOMISTIS-CLOUD.txt, επιλογή Α.
-# Ο δίσκος του Render σβήνεται σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται σε ΙΔΙΩΤΙΚΟ αποθετήριο GitHub.
+# Ο δίσκος του Render σβήνεται σε κάθε επανεκκίνηση: τα δεδομένα φυλάγονται στη βάση Supabase (αν δοθεί SFK_DATABASE_URL)
+# ή σε ΙΔΙΩΤΙΚΟ αποθετήριο GitHub (που με τη βάση μένει ως ημερήσιο αντίγραφο ασφαλείας).
 services:
   - type: web
     name: sf-kentro
@@ -21,6 +22,10 @@ services:
       - key: SFK_ADMIN_USER           # ο πρώτος διαχειριστής (μόνο την πρώτη φορά)
         sync: false
       - key: SFK_ADMIN_PASSWORD       # τουλάχιστον 10 χαρακτήρες· άλλαξέ τον μετά από το πρόγραμμα
+        sync: false
+      - key: SFK_DATABASE_URL         # προαιρετικό: κοινή βάση Supabase (Session pooler, θύρα 5432). Δες DIAKOMISTIS-CLOUD.txt ★★
+        sync: false
+      - key: SFK_DB_CA                # προαιρετικό: το πιστοποιητικό SSL της βάσης (έλεγχος του διακομιστή της)
         sync: false
       - key: SFK_SECRET_KEY           # κλειδί για τους κωδικούς B2B (το φτιάχνει μόνο του το Render)
         generateValue: true

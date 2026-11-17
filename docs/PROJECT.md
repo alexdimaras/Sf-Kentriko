@@ -117,6 +117,43 @@
   αυτόματες (`auto`)· `cancel` απαντά αμέσως (`cancelling`) και κόβει τα αιτήματα (`job.signal` → `http.get({signal})`).
 - **Packaging:** φορητό zip = `runtime\node.exe` (Node 22) + `app\` (κώδικας + `node_modules`).
 
+### 2β. Υβριδική αρχιτεκτονική (1.6.0): Cloud Core + κοινή βάση + Local Workers
+
+```
+ κινητά / PC (browser) ──https──► Cloud Core (Render, server.js)  ◄──https, Bearer sfkw_…── Local Workers (PC μαγαζιών, worker.js)
+                                   │  API, χρήστες, ουρά (coord.js),                         κάνουν τη βαριά δουλειά, στέλνουν αποτέλεσμα
+                                   │  ΜΟΝΟ αυτό γράφει δεδομένα (apply)                       δεν έχουν ποτέ τον κωδικό της βάσης
+                                   ▼
+                       PostgreSQL (Supabase) — μοναδική πηγή αλήθειας      GitHub (ιδιωτικό) — ημερήσιο backup
+```
+
+- **Ουρά (`lib/coord.js`)**: εργασία = `{id, type, priority, status queued|running|done|failed|cancelled, workerId,
+  leaseUntil, attempt/maxAttempts, payload, result, dedupKey, createdAt/startedAt/endedAt}`. `claim` δίνει εργασίες
+  που ταιριάζουν στις δυνατότητες (`caps.types`, `needs.ramMB`, `slots`, όχι σε μπαταρία). Lease 90″ (`SFK_LEASE_MS`),
+  heartbeat 15″· σιωπηλή εργασία → `sweep` την ξαναβάζει στην ουρά με backoff, ως `maxAttempts`. `complete` με κλειδί
+  idempotency (`sha256(worker:job:attempt)`): ίδιο αποτέλεσμα δύο φορές → γράφεται μία. `dedupKey` (π.χ.
+  `market.shop:<id>:<μέρα>`): ίδια εργασία που ήδη τρέχει → «ενώνεται»· πρόσφατη ολοκληρωμένη (`fresh`) → ξαναχρησιμοποιείται.
+  Αν κανένας worker δεν πάρει μια εργασία `cloudOk` για 10′ (`SFK_CLOUD_AFTER_MS`), την κάνει το cloud (`cloudTick`).
+- **Αποθήκευση ουράς (`lib/coord-store.js` / `lib/db.js coordBackend`)**: αρχεία (μνήμη + store) ή PostgreSQL. Στην PG η
+  ανάθεση είναι ατομικό compare-and-set (`UPDATE … WHERE id=$1 AND status='queued'`): δύο workers δεν παίρνουν ποτέ την ίδια.
+- **Workers (`app/worker.js`, `SF-Kentro-Worker.cmd`)**: σύζευξη με κωδικό 8 χαρακτήρων (15′, μία χρήση, όριο 10/ώρα ανά
+  IP) → token `sfkw_…`, που στο PC φυλάγεται με DPAPI (`secrets.protect`) και στο cloud μόνο ως sha256. Χαμηλή
+  προτεραιότητα, ξεκινά με τα Windows (κρυφό `.vbs` στο Startup, χωρίς δικαιώματα διαχειριστή), δεν παίρνει δουλειά
+  σε μπαταρία, ξαναστέλνει το αποτέλεσμα ως 5 φορές. Endpoints `/api/worker/{pair,hello,claim,heartbeat,complete,fail,pack,comp}`.
+- **Τύποι εργασιών (`lib/jobtypes.js`)**: `market.shop` = ένα κατάστημα ανταγωνιστή: ο worker διαβάζει τον κατάλογό του
+  (`compcat.syncOne`) και τον συγκρίνει με το «πακέτο» των προϊόντων μας (`research.matchPack`, ~480 KB gz, με ETag)·
+  το cloud ελέγχει και συγχωνεύει (`research.mergeShop`) και στο τέλος της μέρας `finishDay`. Ίδιο αποτέλεσμα με το
+  `market.run` (επαληθεύτηκε με τα αληθινά δεδομένα). `POST /api/market/run` και η ημερήσια έρευνα πάνε στους workers
+  όταν υπάρχει τουλάχιστον ένας.
+- **Βάση (`lib/db.js`, `lib/pgsave.js`)**: πίνακες `jobs`, `workers`, `pairings`, `documents` (gzip bytea + `version`,
+  optimistic locking `WHERE version = base` → `Conflict`), `audit_log`, `sfk_schema`. Pool ως 3 συνδέσεις, SSL εκτός
+  localhost (`SFK_DB_CA` για επαλήθευση). `pgsave` έχει το ίδιο API με το `cloudsave`: στην εκκίνηση διαβάζει τη βάση (την
+  πρώτη φορά, άδεια, φέρνει τα δεδομένα από το GitHub), γράφει ό,τι άλλαξε κάθε 30″, σε conflict δεν γράφει από πάνω.
+- **Audit (`lib/audit.js`)**: εγκρίσεις, αρχεία, ρυθμίσεις, χρήστες, υπολογιστές (`AUDITED` στο server.js)· περίληψη χωρίς
+  πεδία pass/token/secret/key/code/pin/csrf/cookie. Ρυθμίσεις → Ιστορικό ενεργειών.
+- **Όχι ακόμα** (ρητή απόφαση): αποστολές/ΕΛΤΑ/αντικαταβολές· κανονικοποιημένοι πίνακες products/price_checks (τα
+  δεδομένα μένουν «έγγραφα» με version).
+
 ---
 
 ## 3. Δομή φακέλων
@@ -325,6 +362,8 @@ Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επε�
 
 | Ομάδα | Routes |
 |---|---|
+| Υπολογιστές (admin) | `GET /api/workers` · `POST /api/workers/pair` · `/api/workers/revoke` · `GET /api/audit` |
+| Workers (Bearer) | `POST /api/worker/pair` · `/hello` · `/claim` · `/heartbeat` · `/complete` · `/fail` · `GET /api/worker/pack` · `/comp` |
 | Κατάσταση | `GET /api/state` · `/api/dashboard` · `/api/jobs` · `POST /api/jobs/cancel` · `/api/shutdown` |
 | Προϊόντα | `POST /api/sync` · `GET /api/products` · `/api/product` · `/api/categories` · `/api/brands` · `/api/attributes` · `POST /api/link` · `/api/csv/*` |
 | Έλεγχοι | `GET /api/checks` · `/api/check` · `POST /api/checks/fix` · `/api/checks/ignore` · `GET /api/adrules` |
@@ -368,6 +407,12 @@ Sites · Τιμές · Όπλα & διαφημίσεις (κανόνες επε�
 
 ## 12. Δοκιμές
 
+1.6.0: + `test/coord.js` (29: σύζευξη, ανάθεση ανά δυνατότητες, heartbeat, λήξη lease, idempotency, ακύρωση, αφαίρεση,
+cloud ως τελευταίος worker, 6 ταυτόχρονα claims χωρίς διπλή ανάθεση) · `test/workers.js` (16, με αληθινές διεργασίες
+worker: κατανεμημένη έρευνα, θάνατος worker → άλλος, αφαίρεση, audit, επανεκκίνηση) · `test/db.js` (8: εκδόσεις,
+conflict, μεγάλα έγγραφα, audit). Με `COORD_PG=postgres://…` τα coord/workers τρέχουν και πάνω σε PostgreSQL και το db.js
+τρέχει· χωρίς αυτό το db.js παραλείπεται.
+
 `npm test`: 85 (`test/run.js`) + 75 (`test/rules.js`: χαρακτήρες, είδος/κατηγορία, τίτλοι, αντιστοίχιση με αληθινές
 περιπτώσεις, έρευνα σε στάδια, πηγές) + 34 (`test/jobs.js`: σειρά/διακοπή εργασιών, ανάγνωση ανά site με αποτυχία/
 διακοπή/επανεκκίνηση, χάρτης site με ψεύτικο κατάστημα). Παλαιότερα: `npm test` (`app/test/run.js`): 85 έλεγχοι — αποθήκευση, κανόνες τιμών, λεξικό, διορθώσεις, ασφάλεια διακομιστή,
@@ -384,7 +429,7 @@ Mocks: WordPress/Woo (8081/8082, με mu-plugin B2B), προμηθευτής (80
 ```bash
 npm install --omit=dev            # + trim: pdf-parse test, pdf.js εκδόσεις, exceljs/dist, *.map, test/docs
 # φάκελος SF-Kentro/{runtime/node.exe, app/, deploy/, SF-Kentro.cmd, SF-Kentro-Server.cmd, SF-Kentro-Cloud.cmd,
-#                    DIAVASE-ME.txt, DIAKOMISTIS-CLOUD.txt}   (.gitattributes: *.sh LF, *.cmd CRLF)
+#                    SF-Kentro-Worker.cmd, DIAVASE-ME.txt, DIAKOMISTIS-CLOUD.txt}   (.gitattributes: *.sh LF, *.cmd CRLF)
 zip -r -X -9 SF-Kentro-1.2.0.zip SF-Kentro
 ```
 
@@ -399,6 +444,7 @@ zip -r -X -9 SF-Kentro-1.2.0.zip SF-Kentro
 | 1.0.x | Πρώτη εφαρμογή: ανάγνωση sites, έλεγχοι, νέα προϊόντα, αντιπρόσωποι, έρευνα αγοράς |
 | 1.1.0 | Αυξητική ανάγνωση, matching v2, αυτόματοι τιμοκατάλογοι (feed/B2B/PDF), ημερήσια έρευνα, κανόνες διαφημίσεων επεξεργάσιμοι |
 | 1.2.0 | Σελίδες αναφοράς σε καρτέλα Chrome· PIN + vault + auto-lock· αναζήτηση αντιπροσώπων με έγκριση· έρευνα αγοράς χωρίς εξαντλημένα/παλιά/ακραία + confidence + προστασία από μεγάλες πτώσεις |
+| **1.6.0** | Υβριδική αρχιτεκτονική (§2β): ουρά με leases/heartbeat/idempotency/dedup, workers στα PC των μαγαζιών (σύζευξη, παρασκήνιο), κατανεμημένη έρευνα τιμών, κοινή PostgreSQL (Supabase) με optimistic locking, audit log, GitHub ως backup· η έρευνα δεν κολλάει στο τελευταίο κατάστημα· SKU και φωτογραφίες από τα ίδια προϊόντα της έρευνας |
 | **1.5.0** | Έλεγχος των 10 απαιτήσεων με αληθινά δεδομένα (§1): Hamp;N και κωδικοί, είδος με απόδειξη (12ΒΟΛΑ), ανάγνωση ανά site, εργασίες σε σειρά και άμεση διακοπή, αντιστοίχιση με απόδειξη, έρευνα σε στάδια, ανταγωνιστές από χάρτη site (10 αντί 4), πηγές με σιγουριά, «Πριν / Μετά» |
 | **1.4.0** | Για το δωρεάν Render: παρασκήνιο σε φέτες, φυλαγμένα αποτελέσματα, μνήμη 184→121 MB, φύλαξη GitHub σε κομμάτια, άμεσες οθόνες στο κινητό, αισιόδοξη έγκριση, service worker |
 | **1.3.0** | «Διορθώσεις» (αυτόματη συμπλήρωση για έγκριση)· έρευνα αγοράς v3 (≥2 καταστήματα, ύποπτες τιμές, ζημιά, σκάλα τιμών)· λειτουργία διακομιστή (cloud) με χρήστες και ζωντανές ενημερώσεις· **κινητό** (responsive, PWA, QR, μείνε συνδεδεμένος, αποσύνδεση συσκευής)· **δωρεάν διακομιστής** (Oracle Always Free με ένα κλικ, ή PC του μαγαζιού)· αντίγραφο σε ένα αρχείο· ελαφρύτερο (λεξικό, μνήμη, αντίγραφα)· διόρθωση store/supplierfind, router, κουμπιά κινδύνου· `npm test` |
