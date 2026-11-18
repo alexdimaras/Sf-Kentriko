@@ -383,17 +383,12 @@ const routes = {
     if (b.site && b.id) {
       const p = catalog.byId(b.site === 'st' ? 'st' : 'sf').get(Number(b.id));
       if (!p) throw new Error('Δεν βρέθηκε το προϊόν.');
-      const items = [{ k: (b.site === 'st' ? 'st' : 'sf') + ':' + p.id, name: p.name, brand: p.brand || '', price: p.price || 0 }];
+      const items = cf.itemsFor([(b.site === 'st' ? 'st' : 'sf') + ':' + p.id]);
       return jobs.start('codes', 'Κωδικός από το internet: ' + p.name.slice(0, 60), (job) => webCodes(job, { items }));
     }
     if (Array.isArray(b.keys) && b.keys.length) {
       // chosen products (e.g. «Χωρίς στοιχεία»): to the computers first in the queue, or here when there is none
-      const items = [];
-      for (const k of b.keys.slice(0, 400)) {
-        const m = String(k).match(/^(sf|st):(\d+)$/); if (!m) continue;
-        const p = catalog.byId(m[1]).get(Number(m[2])); if (!p) continue;
-        items.push({ k: m[1] + ':' + p.id, name: p.name, brand: p.brand || '', sku: p.sku || '', price: p.price || 0 });
-      }
+      const items = cf.itemsFor(b.keys.slice(0, 400));
       if (!items.length) throw new Error('Κανένα προϊόν.');
       return (async () => {
         const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web')) : [];
@@ -410,6 +405,14 @@ const routes = {
     return jobs.start('codes', 'Κωδικοί από το internet', (job) => webCodes(job, { max: Math.min(200, Number(b.max) || 25) }));
   },
   'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
+  // what the internet research did for one product: searches, engines, pages opened, why each was kept or left out
+  'GET /api/codes/trace': (q) => {
+    const site = q.site === 'st' ? 'st' : 'sf';
+    const id = Number(q.id);
+    let key = site + ':' + id;
+    if (site === 'st') { const sfId = catalog.links().stToSf.get(id); if (sfId != null) key = 'sf:' + sfId; }
+    return require('./lib/codefind').traceFor(key) || { status: 'never' };
+  },
   'GET /api/flow': (q) => require('./lib/flow').view(q),
   'POST /api/market/manual': (b) => market.addManual(b.site, b.id, b),
   'POST /api/market/ignore': (b) => market.toggleIgnore(b.site, b.id, b.url),
@@ -486,11 +489,13 @@ const routes = {
   'POST /api/draft/ai': async (b) => {
     const d = drafts.get(b.id);
     if (!d) throw new Error('Δεν βρέθηκε.');
-    if (b.kind === 'translate') { const html = await localai.translate(d.descOfficial); return drafts.update(d.id, { descAI: html, descMode: 'ai' }); }
-    const html = await localai.describe(d);
-    return drafts.update(d.id, { descAI: html, descMode: 'ai' });
+    // only from the facts of the product; what the AI adds of its own (numbers not in the facts) is taken out and said
+    const r = b.kind === 'translate' ? await localai.translateFull(d.descOfficial) : await localai.describeFull(d);
+    return Object.assign(drafts.update(d.id, { descAI: r.html, descMode: 'ai' }), { aiNotes: r.notes || [], aiModel: r.model || '' });
   },
   'GET /api/ai/status': () => localai.status(),
+  // the real test: Ollama found, the models, the chosen model, and a real answer (step by step)
+  'POST /api/ai/test': () => localai.test(),
   'POST /api/extract': async (b) => extract.fromUrl(b.url),
 
   // Transfer between shops
@@ -791,12 +796,12 @@ async function handleWorker(req, res, url, q, key0) {
       const gz = jobtypes.compFor(j, String(q.id || ''));
       return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
     }
-    const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : 256 * 1024) : {};
+    const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : key0 === 'POST /api/worker/heartbeat' ? 2 * 1024 * 1024 : 256 * 1024) : {};
     if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'always', active: workerActive(w) }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     // a question to its AI is answered whatever the mode; other work only when it is on
     if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'always' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
-    if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log));
+    if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log, b.partial));
     if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
     if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
     return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
@@ -813,7 +818,9 @@ async function webCodes(job, opts) {
   const o = opts || {};
   const cf = require('./lib/codefind');
   if (!o.items && await useWorkers()) {
-    const items = cf.candidates(o.max || 200);
+    // (never a product that is already waiting in the queue: the same product twice was searched twice)
+    const busy = new Set((await coord.liveOf('codes.web')).flatMap((j) => ((j.payload && j.payload.items) || []).map((x) => x.k)));
+    const items = cf.candidates((o.max || 200) + busy.size).filter((x) => !busy.has(x.k)).slice(0, o.max || 200);
     const s = settings.all();
     const own = ['sf', 'st'].map((x) => { try { return new URL(s.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
     const day = market.localDay(new Date());
@@ -826,28 +833,49 @@ async function webCodes(job, opts) {
 }
 /**
  * The free AI (Ollama) in server mode: the cloud has none, so a question goes to a shop's computer that has it
- * (first in its queue) and the answer comes back here. No computer with Ollama on: said plainly.
+ * (first in its queue) and the answer comes back here. Only a computer that has the model asked for takes it
+ * (jobtypes «ai.call» canTake). No computer with Ollama on: said plainly, with what is missing.
  */
-async function askComputerAI(pathName, body, timeout) {
+async function aiWorkers() {
+  if (!coordReady) return [];
+  return (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('ai.call')).map((w) => ({ id: w.id, name: w.name, models: w.caps.ollama || [], busy: w.jobs.some((j) => j.type === 'ai.call') }));
+}
+/** Why the AI of the computers can / cannot answer now → { ok, text } */
+async function aiWhy() {
+  if (!coordReady) return { ok: false, text: 'Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.' };
+  const all = (await coord.workersView());
+  const online = all.filter((w) => w.online);
+  const ai = await aiWorkers();
+  if (ai.length) return { ok: true, text: `Υπολογιστής με Ollama: ${ai.map((w) => w.name + (w.models.length ? ' (' + w.models.slice(0, 3).join(', ') + ')' : '')).join(' · ')}.` };
+  if (!all.length) return { ok: false, text: 'Δεν υπάρχει υπολογιστής που βοηθά. Το Ollama είναι στο PC σου, όχι στο cloud: Ρυθμίσεις → Υπολογιστές → σύζευξη του PC με το Ollama (SF-Kentro-Worker).' };
+  if (!online.length) return { ok: false, text: `Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (${all.map((w) => w.name).join(', ')}). Άνοιξε το PC με το Ollama και τον SF-Kentro-Worker.` };
+  const info = online.map((w) => { const i = w.caps.ollamaInfo; return `${w.name}: ${i ? (i.ok ? i.error || 'χωρίς μοντέλο' : i.error || 'δεν βρέθηκε το Ollama') : 'παλιά έκδοση του worker (δεν ελέγχει το Ollama)'}`; });
+  return { ok: false, text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
+}
+async function askComputerAI(pathName, body, timeout, meta) {
   if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');
-  const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('ai.call'));
-  if (!ws.length) {
-    const any = (await coord.workersView()).filter((w) => w.online).length;
-    throw new Error(any
-      ? 'Ο υπολογιστής που βοηθά δεν βλέπει το Ollama. Στο PC: άνοιξε το Ollama (εικονίδιο κάτω δεξιά), περίμενε 1 λεπτό και ξαναδοκίμασε. Χρειάζεται και η νέα έκδοση του φακέλου SF-Kentro-Worker.'
-      : 'Το Ollama είναι στο PC σου, όχι στο cloud: άνοιξε στο PC το SF-Kentro-Worker (Ρυθμίσεις → Υπολογιστές) και το Ollama, και ξαναδοκίμασε.');
-  }
-  const j = await coord.enqueue('ai.call', { path: pathName, body: body || null }, { priority: 50, label: 'Τοπικό AI (Ollama)' });
-  const until = Date.now() + (timeout || 240000) + 60000;
+  const ws = await aiWorkers();
+  if (!ws.length) throw Object.assign(new Error((await aiWhy()).text), { code: 'no_worker' });
+  const model = (meta && meta.model) || '';
+  // a computer that has the model; the least busy first
+  const can = model ? ws.filter((w) => !w.models.length || w.models.includes(model)) : ws;
+  if (!can.length) throw Object.assign(new Error(`Κανένας υπολογιστής δεν έχει το μοντέλο ${model} (έχουν: ${[...new Set(ws.flatMap((w) => w.models))].join(', ') || 'κανένα'}). Στο PC: ollama pull ${model}`), { code: 'model_missing' });
+  const target = can.slice().sort((a, b) => Number(a.busy) - Number(b.busy))[0];
+  const wait = timeout || 300000;
+  const j = await coord.enqueue('ai.call', { path: pathName, body: body || null, model, worker: can.length === 1 ? target.id : '', timeout: wait }, { priority: 50, label: 'Τοπικό AI (Ollama)' });
+  // the computer must take it soon (its AI lane asks every 1,5″): a question nobody takes is said, not waited for
+  const takeBy = Date.now() + 45000;
+  const until = Date.now() + wait + 60000;
   for (;;) {
     const v = await coord.job(j.id);
     if (v && v.status === 'completed') return v.result || {};
     if (v && (v.status === 'failed' || v.status === 'cancelled')) throw new Error(v.error || 'Το AI του υπολογιστή δεν απάντησε.');
-    if (Date.now() > until) { await coord.cancel(j.id).catch(() => {}); throw new Error('Το AI του υπολογιστή άργησε πολύ (ίσως είναι απασχολημένοι όλοι οι εργάτες). Δοκίμασε ξανά.'); }
+    if (v && v.queued && Date.now() > takeBy) { await coord.cancel(j.id).catch(() => {}); throw new Error(`Ο υπολογιστής ${target.name} δεν πήρε την ερώτηση σε 45″ (παλιά έκδοση του φακέλου SF-Kentro-Worker, ή κλειστή η λωρίδα του AI). Ξεκίνα ξανά τον worker.`); }
+    if (Date.now() > until) { await coord.cancel(j.id).catch(() => {}); throw new Error('Το AI του υπολογιστή άργησε πολύ. Δοκίμασε ξανά ή διάλεξε μικρότερο μοντέλο.'); }
     await new Promise((x) => setTimeout(x, 1000));
   }
 }
-if (SERVER) localai.setRemote(askComputerAI);
+if (SERVER) localai.setRemote({ call: askComputerAI, models: aiWorkers, why: aiWhy });
 
 async function feedWebResearch() {
   if (!coordReady) return;
@@ -1106,6 +1134,8 @@ function afterStart() {
     coord.use(pool ? require('./lib/db').coordBackend(pool) : require('./lib/coord-store').fileBackend());
     if (pool) audit.usePool(Promise.resolve(pool));
     jobtypes.register();
+    // what the cloud itself was doing when it stopped goes back to the queue now (not after an hour)
+    try { const n = await coord.recoverCloud(); if (n) console.log(`queue: ${n} εργασίες του cloud ξανά στη σειρά μετά την επανεκκίνηση`); } catch (e) { console.error('queue recover:', e.message); }
     coordReady = true;
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)

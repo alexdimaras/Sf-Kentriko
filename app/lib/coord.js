@@ -85,6 +85,8 @@ function fits(w, j) {
   // the cloud machine: only what it may do, and only what fits in its memory (measured, not the computers' sizing)
   if (w.id === 'cloud') return !!h.cloudOk && ((h.cloudRamMB || (h.needs && h.needs.ramMB) || 0) <= cloudRamMB());
   if (Array.isArray(w.caps.types) && w.caps.types.length && !w.caps.types.includes(j.type)) return false;
+  // a job may ask for more than memory: e.g. the AI question, only a computer that has the model asked for
+  if (h.canTake && !h.canTake(w, j)) return false;
   const need = (h.needs && h.needs.ramMB) || 0;
   return !need || (Number(w.caps.ramMB) || 0) >= need;
 }
@@ -119,18 +121,30 @@ async function claim(workerId, max, types) {
 }
 
 /** «Still working»: the lease is extended, the progress shown. → { cancel } (the person stopped it: end now). */
-async function heartbeat(workerId, jobId, progress, logLines) {
+async function heartbeat(workerId, jobId, progress, logLines, partial) {
   const j = await backend.job(jobId);
   if (!j || j.workerId !== workerId || !LIVE.has(j.status)) return { cancel: true, gone: true };
   j.status = 'running';
   j.leaseUntil = now() + LEASE_MS;
   if (progress) j.progress = { done: Number(progress.done) || 0, total: Number(progress.total) || 0, msg: String(progress.msg || '').slice(0, 300) };
   if (Array.isArray(logLines) && logLines.length) { j.log = (j.log || []).concat(logLines.map((l) => String(l).slice(0, 300))).slice(-100); }
-  await backend.save(j, { light: true });
+  // a part of the result, handed in while the work goes on: taken in now (a computer that goes off loses nothing)
+  let took = 0;
+  if (partial && typeof partial === 'object') took = await takePartial(j, partial);
+  await backend.save(j, { light: !took });
   const w = await backend.worker(workerId);
   if (w) await touchWorker(w, {});
   changed();
-  return { cancel: !!j.cancel };
+  return { cancel: !!j.cancel, took };
+}
+/** A part of a job's result (handler.applyPartial → the keys it wrote): remembered, so a retry does not redo them. */
+async function takePartial(j, partial) {
+  const h = handler(j.type);
+  if (!h || !h.applyPartial) return 0;
+  let keys = [];
+  try { keys = (await h.applyPartial(j, partial)) || []; } catch (e) { console.error('[coord partial]', j.type, e.message); return 0; }
+  if (keys.length) j.payload = Object.assign({}, j.payload, { doneKeys: [...new Set((j.payload.doneKeys || []).concat(keys))].slice(0, 500) });
+  return keys.length;
 }
 
 /**
@@ -194,6 +208,10 @@ async function cancel(jobId) {
 async function sweep() {
   const t = now();
   for (const j of await backend.live()) {
+    // work the program queued by itself that nobody could take for days (all computers off): it ends, said why;
+    // the program queues what is still needed anew (a person's request never expires)
+    const h = handler(j.type);
+    if (j.status === 'queued' && j.auto && h && h.expireMs && t - new Date(j.createdAt).getTime() > h.expireMs) { j.error = 'Κανείς δεν την πήρε για μέρες (υπολογιστές κλειστοί): μπαίνει ξανά στη σειρά όταν χρειαστεί.'; await finish(j, 'cancelled'); continue; }
     if (j.status === 'queued' || !j.leaseUntil || j.leaseUntil > t) continue;
     j.error = `Ο υπολογιστής «${j.workerName || j.workerId}» σταμάτησε να απαντά.`;
     if (j.cancel) await finish(j, 'cancelled');
@@ -234,6 +252,8 @@ function cleanCaps(caps) {
     // (as many as the computer says, up to 32: a cap of 4 left 8 of the 12 runners of a strong PC without work)
     slots: Math.max(1, Math.min(32, Number(c.slots) || 1)), battery: !!c.battery, busyUser: !!c.busyUser,
     ollama: Array.isArray(c.ollama) ? c.ollama.map((x) => String(x).slice(0, 80)).slice(0, 20) : null,
+    // why its Ollama can / cannot answer (shown in Ρυθμίσεις → Υπολογιστές and in the AI test)
+    ollamaInfo: c.ollamaInfo && typeof c.ollamaInfo === 'object' ? { ok: !!c.ollamaInfo.ok, version: String(c.ollamaInfo.version || '').slice(0, 20), error: String(c.ollamaInfo.error || '').slice(0, 200), at: Number(c.ollamaInfo.at) || 0 } : null,
     rev: String(c.rev || '').slice(0, 20),
   };
 }
@@ -280,6 +300,22 @@ async function revoke(id) {
 
 // ---------- the cloud as the last worker ----------
 let cloudBusy = false;
+/**
+ * At the start of the program: the jobs the cloud itself was doing when it stopped (a restart, a deploy) are not
+ * running any more — they go back to the queue at once (they used to wait an hour for their lease), counted as a try.
+ */
+async function recoverCloud() {
+  let n = 0;
+  for (const j of await backend.live()) {
+    if (j.workerId !== 'cloud' || j.status === 'queued') continue;
+    j.error = 'Το πρόγραμμα στο cloud ξεκίνησε ξανά στη μέση της εργασίας.';
+    if (j.cancel) await finish(j, 'cancelled');
+    else if (j.attempts < j.maxAttempts) await requeue(j, 0);
+    else await finish(j, 'failed');
+    n++;
+  }
+  return n;
+}
 /** Is any computer of the shops able to take this job now (or lately)? */
 async function someoneFor(j) {
   const t = now();
@@ -310,8 +346,9 @@ async function cloudTick(opts) {
     const payload = h.prepare ? await h.prepare(j.payload, j) : j.payload;
     const ctl = new AbortController();
     const api = {
-      signal: ctl.signal, id: j.id, type: j.type,
+      signal: ctl.signal, id: j.id, type: j.type, cloud: true,
       cancelled: () => !!j.cancel,
+      partial: async (part) => { try { if (await takePartial(j, part)) await backend.save(j); } catch (_) { /* the whole result comes at the end anyway */ } },
       progress: (done, total, msg) => { j.progress = { done: done == null ? j.progress.done : done, total: total == null ? j.progress.total : total, msg: msg || j.progress.msg }; j.leaseUntil = now() + 3600e3; changed(); },
       log: (l) => { j.log = (j.log || []).concat([String(l).slice(0, 300)]).slice(-100); },
     };
@@ -355,4 +392,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { setMode, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { recoverCloud, takePartial, setMode, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

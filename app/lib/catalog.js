@@ -7,7 +7,8 @@ const U = require('./util');
 const GREEK_WORDS = require('./greekwords');
 
 const SITES = ['sf', 'st'];
-const FIELDS = 'id,name,slug,parent,type,variation,permalink,sku,short_description,description,on_sale,prices,images,categories,tags,brands,attributes,variations,is_in_stock,is_purchasable,stock_availability';
+// global_unique_id: WooCommerce's own «GTIN, UPC, EAN or ISBN» field (9.2+), when the shop's API gives it
+const FIELDS = 'id,name,slug,parent,type,variation,permalink,sku,short_description,description,on_sale,prices,images,categories,tags,brands,attributes,variations,is_in_stock,is_purchasable,stock_availability,global_unique_id';
 const BRAND_ATTR = /κατασκευαστ|brand|μάρκ|μαρκ|manufacturer|εταιρ/i;
 
 function siteUrl(site) {
@@ -128,6 +129,14 @@ function money(prices, key) {
   return U.r2(Number(prices[key]) / Math.pow(10, unit));
 }
 
+const EAN_ATTR = /^(ean|gtin|upc|barcode|ean-?13|κωδικός ean|κωδικοσ ean|γραμμωτός κώδικας)$/i;
+function eanOf(p, attrs) {
+  const g = require('./extract').validGtin;
+  const direct = g(p.global_unique_id || p.gtin || p.ean || '');
+  if (direct) return direct;
+  const a = (attrs || []).find((x) => EAN_ATTR.test(x.name) && x.terms.length === 1);
+  return a ? g(a.terms[0]) : '';
+}
 function fromStoreApi(p) {
   const prices = p.prices || {};
   const price = money(prices, 'price');
@@ -173,6 +182,8 @@ function fromStoreApi(p) {
     descLen: U.stripTags(desc).length,
     shortLen: U.stripTags(short).length,
     variations: (p.variations || []).map((v) => v.id),
+    // the EAN the shop itself keeps (its GTIN field, or an «EAN» attribute) — only a real one (check digit), never made up
+    ...(eanOf(p, attrs) ? { ean: eanOf(p, attrs) } : {}),
     status: 'publish',
   };
 }
@@ -194,7 +205,7 @@ function catFromStoreApi(c) {
 // ---------- Store API sync ----------
 // First time: everything. Afterwards: only what changed since the last read (WooCommerce "modified" date),
 // plus a cheap count check to catch deleted / hidden products. A full read runs again every 7 days.
-const VAR_FIELDS = 'id,parent,type,variation,sku,prices,on_sale,is_in_stock,images';
+const VAR_FIELDS = 'id,parent,type,variation,sku,prices,on_sale,is_in_stock,images,global_unique_id';
 const ENGINE = 2;
 const CONCURRENCY = 4;
 
@@ -304,7 +315,7 @@ function makeProgress(job) {
 
 function slimVariation(v) {
   const n = fromStoreApi(v);
-  return fresh({ id: n.id, type: 'variation', parent: n.parent, varLabel: n.varLabel, sku: n.sku, price: n.price, regular: n.regular, sale: n.sale, inStock: n.inStock, image: n.images[0] || '', thumb: n.thumb || '' });
+  return fresh(Object.assign({ id: n.id, type: 'variation', parent: n.parent, varLabel: n.varLabel, sku: n.sku, price: n.price, regular: n.regular, sale: n.sale, inStock: n.inStock, image: n.images[0] || '', thumb: n.thumb || '' }, n.ean ? { ean: n.ean } : {}));
 }
 
 function isoUtc(ms) { return new Date(ms).toISOString().slice(0, 19); }

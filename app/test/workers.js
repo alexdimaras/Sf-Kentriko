@@ -159,6 +159,12 @@ function web() {
     ok(ai && ai.models.includes('qwen2.5:7b'), '«Δοκιμή» στις Ρυθμίσεις → AI βρίσκει το Ollama του υπολογιστή (όχι του cloud)', JSON.stringify(ai));
     const aij = (await get('/api/jobs')).find((x) => x.distributed && /AI/.test(x.label || ''));
     ok(!aij || aij.worker === os.hostname(), 'the question went to the computer');
+    // the button «Δοκιμή»: the whole way with a REAL generate, through the computer's own AI lane
+    await post('/api/settings', { localAI: { enabled: true, url: '', model: 'qwen2.5' } });
+    const at = await post('/api/ai/test', {});
+    ok(at && at.ok && at.where === 'computer' && at.model === 'qwen2.5:7b' && /Απάντηση: qwen2\.5:7b/.test(at.answer) && at.steps.map((x) => x.id).join(',') === 'computer,reach,models,model,generate,greek', '«Δοκιμή» = cloud → the computer → Ollama: models, the chosen model («qwen2.5» = qwen2.5:7b) and a real answer', JSON.stringify(at && at.steps));
+    const gj = (await get('/api/jobs')).filter((x) => x.distributed && /AI/.test(x.label || '') && x.status === 'completed');
+    ok(gj.length >= 2 && gj.every((x) => x.worker === os.hostname()), 'the questions were answered by the computer, not the cloud');
 
     section('Υπολογιστής που σβήνει στη μέση');
     // the next day's research (a new day: the note of the day is reset)
@@ -184,7 +190,8 @@ function web() {
 
     section('Αφαίρεση υπολογιστή');
     ws = await get('/api/workers');
-    const w2id = ws.workers.find((w) => w.online && w.jobs.length === 0 && w.id) && ws.workers.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].id;
+    // the newest computer («two»), busy or not: a removed computer must stop even in the middle of a job
+    const w2id = ws.workers.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].id;
     await post('/api/workers/revoke', { id: w2id });
     await sleep(2500);
     ok(/αναγνωρίζεται πια/.test(r2.out()) || r2.p.exitCode != null, 'a removed computer is refused at once and stops', r2.out().slice(-200));

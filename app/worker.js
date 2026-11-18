@@ -7,6 +7,8 @@
 //   node worker.js pair <address> <code>    once: e.g. node worker.js pair https://sf-kentro.onrender.com ABCD-2345
 //   node worker.js                           works (in the background: low priority, steps aside on battery)
 //   node worker.js status [--all]            what it is (and, with --all, what it tells the cloud)
+//   node worker.js ai-test [model]           the AI (Ollama) of this computer, step by step, with a real answer
+//   node worker.js ollama <address|default>  where this computer's Ollama is (another PC of the shop, if needed)
 //
 // On Windows: SF-Kentro-Worker.cmd does the pairing and starts it with Windows, hidden, at low priority.
 const os = require('os');
@@ -42,7 +44,7 @@ const log = (...a) => {
   } catch (_) { /* optional */ }
 };
 
-function readConf() { try { return JSON.parse(fs.readFileSync(CONF, 'utf8')); } catch (_) { return null; } }
+function readConf() { try { const c = JSON.parse(fs.readFileSync(CONF, 'utf8')); if (c && c.ollamaUrl && !process.env.SFK_WORKER_OLLAMA_URL) process.env.SFK_WORKER_OLLAMA_URL = c.ollamaUrl; return c; } catch (_) { return null; } }
 function writeConf(c) { fs.mkdirSync(HOME, { recursive: true }); const tmp = CONF + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(c, null, 2)); fs.renameSync(tmp, CONF); }
 
 /** What this computer can do (the cloud gives it work that fits). */
@@ -52,22 +54,32 @@ function caps() {
   return {
     cpus: cpus.length, cpuModel: (cpus[0] && cpus[0].model) || '', ramMB: ram, freeMB: Math.round(os.freemem() / 1048576), version: VERSION, platform: process.platform + '-' + process.arch,
     // the internet search reads web pages: it needs the page reader (in the full program folder)
-    types: ['market.shop'].concat(canRead() ? ['codes.web'] : [], ollama.ok ? ['ai.call'] : []),
+    // the AI only with a model that writes text (an Ollama without one cannot answer anything)
+    types: ['market.shop'].concat(canRead() ? ['codes.web'] : [], ollama.ok && ollama.models.length ? ['ai.call'] : []),
     ollama: ollama.ok ? ollama.models.slice(0, 20) : null,
+    ollamaInfo: { ok: ollama.ok, version: ollama.version, error: ollama.ok ? (ollama.models.length ? '' : 'χωρίς μοντέλο που γράφει κείμενο') : ollama.error, at: ollama.at },
     rev: require('./lib/workerrev'),
     // as many jobs side by side as the computer can carry: one per core, ~1 GB each
     slots: slotsOf(),
     battery: onBattery(),
   };
 }
-// the free AI of this computer (Ollama), if it runs here: the cloud may ask it questions
-const ollama = { ok: false, models: [], at: 0 };
+// the free AI of this computer (Ollama), if it runs here: the cloud may ask it questions. The address: the one set
+// with «node worker.js ollama <address>» (worker.json), else SFK_OLLAMA_URL, else 127.0.0.1:11434 — the same one the
+// runners use for the questions (lib/localai.js resolveUrl)
+const ollama = { ok: false, models: [], at: 0, url: '', version: '', error: '' };
+function ollamaBase() { return require('./lib/localai').resolveUrl(process.env.SFK_WORKER_OLLAMA_URL || ''); }
 async function probeOllama() {
+  const localai = require('./lib/localai');
   try {
-    const r = await fetch(String(process.env.SFK_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '') + '/api/tags', { signal: AbortSignal.timeout(3000) });
-    const j = r.ok ? await r.json() : null;
-    ollama.ok = !!j; ollama.models = j ? (j.models || []).map((m) => m.name) : [];
-  } catch (_) { ollama.ok = false; ollama.models = []; }
+    ollama.url = ollamaBase();
+    const j = await localai.ollamaFetch(ollama.url, '/api/tags', null, { timeout: 4000 });
+    // only models that write text can answer (an embedding model cannot)
+    ollama.models = localai.modelsOf(j).filter((m) => !m.embedding).map((m) => m.name);
+    ollama.ok = true; ollama.error = '';
+    const v = await localai.ollamaFetch(ollama.url, '/api/version', null, { timeout: 3000 }).catch(() => null);
+    ollama.version = v && v.version ? String(v.version).slice(0, 20) : '';
+  } catch (e) { ollama.ok = false; ollama.models = []; ollama.error = String(e.message || e).slice(0, 200); }
   ollama.at = Date.now();
 }
 function slotsOf() {
@@ -140,11 +152,21 @@ async function runJob(api, conf, j) {
   const ctl = new AbortController();
   let cancel = false, prog = { done: 0, total: 0, msg: 'Ξεκινάει…' }, lines = [];
   // «still working», every 15 s (the cloud gives the job to another computer if this one goes silent for 90 s)
+  // parts of the result handed in with the next «still working» (a computer switched off loses nothing found)
+  let parts = null, beating = null;
   const beat = async () => {
-    try {
-      const r = await api.call('POST', '/api/worker/heartbeat', { id: j.id, progress: prog, log: lines.splice(0) });
-      if (r.cancel) { cancel = true; ctl.abort(); }
-    } catch (e) { if (e.fatal) { cancel = true; ctl.abort(); } }
+    if (beating) return beating;
+    const part = parts; parts = null;
+    beating = (async () => {
+      try {
+        const r = await api.call('POST', '/api/worker/heartbeat', Object.assign({ id: j.id, progress: prog, log: lines.splice(0) }, part ? { partial: part } : {}));
+        if (r.cancel) { cancel = true; ctl.abort(); }
+      } catch (e) {
+        if (e.fatal) { cancel = true; ctl.abort(); }
+        if (part) parts = mergeParts(part, parts); // not delivered: with the next one (or with the whole result)
+      }
+    })().finally(() => { beating = null; });
+    return beating;
   };
   const iv = setInterval(beat, Number(process.env.SFK_BEAT_MS) || 15000);
   const japi = {
@@ -152,12 +174,14 @@ async function runJob(api, conf, j) {
     cancelled: () => cancel,
     progress: (done, total, msg) => { prog = { done: done == null ? prog.done : done, total: total == null ? prog.total : total, msg: msg || prog.msg }; },
     log: (l) => lines.push(String(l)),
+    partial: (part) => { parts = mergeParts(parts, part); },
   };
   // the same idempotency key for every attempt to deliver this result (a lost answer is sent again, written once)
   const idem = crypto.createHash('sha256').update(conf.id + ':' + j.id + ':' + j.attempt).digest('hex').slice(0, 32);
   try {
     const result = await h.run(j.payload, japi, remoteIO(api, j.id));
     clearInterval(iv);
+    if (beating) await beating; // a part on its way arrives before the whole result (each product written once)
     for (let i = 0; ; i++) {
       try { const r = await api.call('POST', '/api/worker/complete', { id: j.id, idem, result }); log(`εργασία ${j.id}: ${r.ok ? 'παραδόθηκε' : 'δεν έγινε δεκτή — ' + (r.error || '')}`); break; } catch (e) {
         if (e.fatal || i >= 5) { log(`εργασία ${j.id}: το αποτέλεσμα δεν παραδόθηκε (${e.message})`); break; }
@@ -170,6 +194,8 @@ async function runJob(api, conf, j) {
     await api.call('POST', '/api/worker/fail', { id: j.id, error: cancel ? 'Σταμάτησε.' : e.message, retryable: !cancel && !(e && e.fatal) }).catch(() => {});
   }
 }
+
+function mergeParts(a, b) { if (!a) return b || null; if (!b) return a; return { results: Object.assign({}, a.results || {}, b.results || {}) }; }
 
 // ---------- a runner: one job at a time, in its own process (one per core) ----------
 const toParent = (m) => { try { if (process.send) process.send(m); } catch (_) { /* parent gone */ } };
@@ -252,7 +278,7 @@ async function supervise() {
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
       setTimeout(() => start(i, lane), 5000);
     });
-    if (paused) p.send({ t: 'pause', on: true });
+    if (paused && !lane) p.send({ t: 'pause', on: true });
   };
   for (let i = 0; i < K; i++) start(i);
   // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
@@ -289,7 +315,8 @@ async function supervise() {
     try {
       if (n++ % 4 === 0) await probeOllama();
       const c = caps();
-      if (c.battery !== paused) { paused = c.battery; for (const r of runners.values()) r.p.send({ t: 'pause', on: paused }); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
+      // (the lane of the AI questions goes on: a person is waiting for that answer, and it takes seconds)
+      if (c.battery !== paused) { paused = c.battery; for (const [i, r] of runners) if (i < K) r.p.send({ t: 'pause', on: paused }); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
       const h = await api.call('POST', '/api/worker/hello', { caps: c });
       const should = !h || h.active !== false;
       if (!should && !dormant) {
@@ -326,8 +353,48 @@ async function pair(server, code) {
   console.log(`Έτοιμο: ο υπολογιστής «${j.name}» δουλεύει πλέον για το SF Κέντρο (${url}).`);
 }
 
+/** «node worker.js ai-test»: the whole path of the AI on THIS computer, step by step, with a real answer. */
+async function aiTest() {
+  const localai = require('./lib/localai');
+  const say = (ok, t) => console.log((ok ? '  ✓ ' : '  ✗ ') + t);
+  let base;
+  try { base = ollamaBase(); } catch (e) { say(false, e.message); return 1; }
+  console.log('Ollama στη διεύθυνση: ' + base);
+  let tags;
+  try { tags = await localai.ollamaFetch(base, '/api/tags', null, { timeout: 8000 }); say(true, 'Το Ollama απαντά.'); } catch (e) { say(false, e.message); return 1; }
+  const v = await localai.ollamaFetch(base, '/api/version', null, { timeout: 4000 }).catch(() => null);
+  if (v && v.version) say(true, 'Έκδοση Ollama: ' + v.version);
+  const models = localai.modelsOf(tags);
+  if (!models.length) { say(false, 'Κανένα μοντέλο. Τρέξε: ollama pull qwen2.5:7b'); return 1; }
+  say(true, 'Μοντέλα: ' + models.map((m) => m.name + (m.embedding ? ' [embedding]' : '')).join(', '));
+  const p = localai.pickModel(models, process.argv[3] || '');
+  if (p.error) { say(false, p.error.message); return 1; }
+  console.log('Δοκιμή παραγωγής κειμένου με ' + p.model + ' (την πρώτη φορά το μοντέλο φορτώνει: έως 1–2 λεπτά)…');
+  const t0 = Date.now();
+  try {
+    const r = await localai.ollamaFetch(base, '/api/generate', { model: p.model, prompt: 'Απάντησε στα ελληνικά με μία πρόταση: τι είναι ένα σακίδιο;', stream: false, options: { num_predict: 60, temperature: 0, num_ctx: 2048 } }, { timeout: 240000 });
+    const text = localai.cleanAnswer(r.response);
+    say(!!text, `Απάντηση σε ${((Date.now() - t0) / 1000).toFixed(1)}″: «${text.slice(0, 200)}»`);
+    if (!text) return 1;
+  } catch (e) { say(false, e.message); return 1; }
+  const c = readConf();
+  say(!!c, c ? `Σύζευξη με ${c.server}: το cloud μπορεί να στέλνει ερωτήσεις σε αυτόν τον υπολογιστή.` : 'Δεν έχει γίνει σύζευξη με το cloud (Ρυθμίσεις → Υπολογιστές).');
+  return 0;
+}
+
 const [cmd, a1, a2] = process.argv.slice(2);
-if (cmd === 'pair') pair(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
+if (cmd === 'ai-test') aiTest().then((code) => process.exit(code), (e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'ollama') {
+  // the address of Ollama for this worker (e.g. another, stronger PC of the shop): node worker.js ollama http://192.168.1.20:11434
+  const c = readConf();
+  if (!c) { console.error('Δεν έχει γίνει σύζευξη ακόμα.'); process.exit(2); }
+  let u = '';
+  try { u = a1 && a1 !== 'default' ? require('./lib/localai').resolveUrl(a1) : ''; } catch (e) { console.error(e.message); process.exit(1); }
+  if (u) c.ollamaUrl = u; else delete c.ollamaUrl;
+  writeConf(c);
+  console.log('Ollama: ' + (u || 'η συνηθισμένη διεύθυνση (127.0.0.1:11434)') + '. Ξεκίνα ξανά τον worker.');
+}
+else if (cmd === 'pair') pair(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'status') { const c = readConf(); console.log(c ? `Σύζευξη: ${c.name} → ${c.server} (από ${c.pairedAt})` : 'Δεν έχει γίνει σύζευξη.'); if (a1 === '--all') console.log(JSON.stringify(caps(), null, 2)); else { const c2 = caps(); console.log(`${c2.cpus} πυρήνες · ${Math.round(c2.ramMB / 1024)} GB · έκδοση ${c2.version}`); } }
 else if (process.env.SFK_RUNNER) runnerLoop().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });
 else supervise().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });

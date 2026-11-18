@@ -162,6 +162,7 @@
       mkPanel.appendChild(App.marketSummary(mk, p.price, mk.master ? null : { site, id: p.id, refresh: () => openProduct(site, id) }));
     } else mkPanel.appendChild(h('p', { class: 'muted' }, 'Δεν έχει γίνει έρευνα ακόμα για αυτό το προϊόν.'));
     body.appendChild(mkPanel);
+    body.appendChild(researchPanel(site, p.id));
 
     // Supplier, categories, attributes
     body.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Στοιχεία'),
@@ -182,6 +183,35 @@
     drawer.open(body, { wide: false });
   }
   App.openProduct = openProduct;
+
+  /** What the research on the internet did for a product (searches, engines, pages and why), opened on demand. */
+  const RS = { complete: ['Ολοκληρώθηκε', 'ok'], partial: ['Ολοκληρώθηκε με ελλείψεις', 'warn'], not_found: ['Δεν βρέθηκε το ίδιο προϊόν', ''], no_results: ['Καμία σελίδα καταστήματος στις αναζητήσεις', ''],
+    pages_failed: ['Δεν διαβάστηκαν οι σελίδες', 'crit'], search_failed: ['Απέτυχαν οι μηχανές αναζήτησης', 'crit'], blocked: ['Οι μηχανές ζήτησαν παύση (συνεχίζει)', 'warn'], cancelled: ['Διακόπηκε', 'warn'], error: ['Σφάλμα', 'crit'], never: ['Δεν έχει γίνει ακόμα', ''] };
+  const PO = { same: 'ίδιο προϊόν', similar: 'παρόμοιο', other: 'άλλο προϊόν', error: 'δεν άνοιξε', no_data: 'χωρίς στοιχεία', not_product: 'όχι προϊόν', skipped: 'παραλείφθηκε' };
+  const NEED = { sku: 'κωδικός', ean: 'EAN', images: 'φωτογραφίες', brand: 'μάρκα', price: 'τιμή' };
+  function researchPanel(site, id) {
+    const det = h('details', { class: 'panel' }, h('summary', null, h('b', null, 'Τι έκανε η έρευνα στο internet')));
+    let loaded = false;
+    det.addEventListener('toggle', async () => {
+      if (!det.open || loaded) return;
+      loaded = true;
+      const box = h('div', { style: { marginTop: '10px' } }, h('span', { class: 'muted' }, 'Φόρτωση…'));
+      det.appendChild(box);
+      try {
+        const t = await GET('/api/codes/trace', { site, id });
+        const st = RS[t.status] || [t.status, ''];
+        clear(box).appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]),
+          t.at ? h('span', { class: 'faint' }, 'Τελευταία: ' + fmt.ago(t.at)) : null, t.okAt ? h('span', { class: 'faint' }, '· επιτυχής: ' + fmt.ago(t.okAt)) : null,
+          (t.needsLeft || []).length ? h('span', { class: 'faint' }, '· λείπουν ακόμα: ' + t.needsLeft.map((x) => NEED[x] || x).join(', ')) : null));
+        if (t.sum) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, `${t.sum.queries} αναζητήσεις · ${t.sum.results} αποτελέσματα · άνοιξαν ${t.sum.opened} σελίδες (διαβάστηκαν ${t.sum.read}) · ίδιο προϊόν σε ${t.sum.exact} · απορρίφθηκαν ${t.sum.rejected} · σφάλματα ${t.sum.errors}`));
+        if ((t.queries || []).length) box.appendChild(h('ul', { class: 'todo-list' }, t.queries.map((q) => h('li', null, h('span', { class: 'mono' }, q.q), ` → ${q.n} αποτελέσματα`, q.error ? h('span', { class: 'crit' }, ' · ' + q.error) : null,
+          (q.engines || []).length ? h('span', { class: 'faint' }, ' (' + q.engines.map((e) => e.id + ': ' + (e.state === 'ok' ? e.n : e.state === 'blocked' || e.state === 'paused' ? 'παύση' : 'σφάλμα')).join(', ') + ')') : null))));
+        if ((t.pages || []).length) box.appendChild(h('ul', { class: 'todo-list' }, t.pages.map((x) => h('li', { class: x.outcome === 'same' ? '' : x.outcome === 'error' ? 'crit' : '' }, h('b', null, (PO[x.outcome] || x.outcome) + ': '), h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, x.host), x.why ? h('span', { class: 'faint' }, ' — ' + x.why) : null))));
+        if (t.nextAt) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0 0' } }, 'Επόμενη αναζήτηση για ό,τι λείπει: ' + new Date(t.nextAt).toLocaleDateString('el-GR')));
+      } catch (e) { clear(box).appendChild(h('div', { class: 'note crit' }, e.message)); }
+    });
+    return det;
+  }
 
   function costField(site, p) {
     const inp = h('input', { type: 'text', placeholder: 'χωρίς ΦΠΑ', style: { width: '120px' }, value: p.cost ? String(p.cost.cost).replace('.', ',') : '' });

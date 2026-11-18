@@ -344,7 +344,7 @@ function candFeatures(c) {
     sku: U.normSku(c.s || ''), women: WOMEN.test(up), kids: KIDS.test(up), colors: colorsOf(toks), used: USED.test(up),
     codes: codeTokens(c.n, ''), flags: flagsOf(up),
     // proof beyond the words: the code (and the maker's part number), the EAN, what kind it says it is, sets, what comes with it
-    code: codeBase(c.s), mpn: c.m ? codeBase(c.m) : null, gtin: gtinOf(c.g), kind: /^[Α-Ω]{4,}$/.test(first) ? first : '',
+    code: codeBase(c.s), mpn: c.m ? codeBase(c.m) : null, gtin: gtinOf(c.g), gtins: c.gs && c.gs.length ? new Set(c.gs.map(gtinOf).filter(Boolean)) : null, kind: /^[Α-Ω]{4,}$/.test(first) ? first : '',
     bundle: toks.some((t) => BUNDLE.test(ntok(t))), parts: partsOf(toks), img: imageKey(c.i),
   };
 }
@@ -364,6 +364,8 @@ function compare(f, cand, cf) {
   if (f.bt.length && cf.brandKey && !brandOk) return { match: 'none', score: 0 }; // another brand
   // the same EAN is the same product, whatever the titles say
   if (f.gtin && cf.gtin && f.gtin === cf.gtin) return { match: 'exact', score: 1, why: '', how: 'ean', ev: ['ίδιο EAN ' + f.gtin] };
+  // … also the EAN of one of their sizes / colours (a product of theirs with an EAN per variant)
+  if (f.gtin && cf.gtins && cf.gtins.has(f.gtin) && (!f.bt.length || brandOk || !cf.brandKey)) return { match: 'exact', score: 1, why: '', how: 'ean', ev: ['ίδιο EAN ' + f.gtin + ' (ενός μεγέθους/χρώματος)'] };
   // the same code: whole, or the same base with the brand agreeing (K01014-1755507139 = K01014)
   // (not when a title names another code of the same shape than its own code field: «… BDU ARCTIC PANTS K05068» filed
   // under K05001 — one of the two is wrong, so the code proves nothing)
@@ -381,6 +383,9 @@ function compare(f, cand, cf) {
   const extraN = cf.keys.filter((k) => isNamed(k) && !f.keys.includes(k) && !f.bt.includes(k) && !f.keys.some((o, i) => k === o + (f.keys[i + 1] || '')));
   const editionClash = baseHit && !skuFull && !nameClash && missN.length > 0 && extraN.length > 0;
   if (nameClash || editionClash) baseHit = false;
+  // the same model code but two different EANs (both real): another size, pack or edition of the model — the person decides
+  const eanClash = baseHit && !skuFull && f.gtin && cf.gtin && f.gtin !== cf.gtin && !(cf.gtins && cf.gtins.has(f.gtin));
+  if (eanClash) return { match: 'similar', score: 0.7, why: `Ίδιος κωδικός μοντέλου (${f.code.base}) αλλά άλλο EAN: ίσως άλλο μέγεθος / συσκευασία`, how: 'sku', ev: ['ίδιος κωδικός μοντέλου', 'ίδια μάρκα'] };
   const skuHit = skuFull || baseHit;
   const ratio = f.keys.length ? hit.length / f.keys.length : 0;
   if (nameClash) return { match: 'similar', score: 0.6, why: `Ίδιος κωδικός μοντέλου (${f.code.base}) αλλά άλλο όνομα: έλεγξέ το`, how: 'sku', ev: ['ίδιος κωδικός μοντέλου', 'ίδια μάρκα'] };
@@ -495,6 +500,7 @@ function* indexGen(compId) {
     if (cf.sku) put('#' + cf.sku, i);
     for (const cb of [cf.code, cf.mpn]) if (cb) { put('~' + cb.base, i); if (cb.run && cb.run !== cb.base) put('~' + cb.run, i); }
     if (cf.gtin) put('=' + cf.gtin, i);
+    if (cf.gtins) for (const g of cf.gtins) put('=' + g, i);
   }
   const res = { cat, items, feats, post };
   idxCache.set(compId, res);
@@ -532,6 +538,7 @@ function* quickIndexGen(compId, work) {
     if (cf.sku) put('#' + cf.sku, i);
     for (const cb of [cf.code, cf.mpn]) if (cb) { put('~' + cb.base, i); if (cb.run && cb.run !== cb.base) put('~' + cb.run, i); }
     if (cf.gtin) put('=' + cf.gtin, i);
+    if (cf.gtins) for (const g of cf.gtins) put('=' + g, i);
   }
   return { cat, items, feats, post };
 }
@@ -600,6 +607,9 @@ function stats(list, ctx) {
     if (c.match !== 'exact') { c.flag = 'similar'; continue; }
     if (s.marketGreekOnly && c.country === 'other') { c.flag = 'foreign'; c.note = 'κατάστημα εξωτερικού'; continue; }
     if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
+    // not known whether it is in stock (a page that does not say; an internet price found before this was kept): it
+    // is shown, but never counts for a change of price (only prices a buyer can pay today do)
+    if (!c.manual && (c.inStock == null || (c.web && !c.avail))) { c.flag = 'unknown'; c.note = 'άγνωστη διαθεσιμότητα: δεν μετράει'; continue; }
     if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < (c.web ? Date.now() - WEB_DAYS * 864e5 : weekAgo)) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
     c.used = true; c.flag = 'used';
   }
@@ -638,6 +648,7 @@ function stats(list, ctx) {
     minShop: cheapest ? cheapest.shop : '', maxShop: dearest ? dearest.shop : '',
     similar: list.filter((c) => c.flag === 'similar').length,
     outOfStock: list.filter((c) => c.flag === 'out').length,
+    unknownStock: list.filter((c) => c.flag === 'unknown').length,
     suspect: list.filter((c) => c.flag === 'suspect').length,
     // how much to trust the market price: 3+ shops high, 2 medium, 1 low
     confidence: prices.length >= 3 ? 'high' : prices.length === 2 ? 'medium' : prices.length === 1 ? 'low' : '',
@@ -690,7 +701,8 @@ function decision(ours, st, list, floor, costVat) {
   }
   if (!st.count || !ours) {
     let reason = 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο σε άλλο κατάστημα.';
-    if (st.outOfStock) reason = 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής.';
+    if (st.outOfStock && !st.unknownStock) reason = 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής.';
+    else if (st.unknownStock) reason = `Βρέθηκε σε ${st.unknownStock} ${st.unknownStock === 1 ? 'κατάστημα' : 'καταστήματα'} χωρίς επιβεβαιωμένη διαθεσιμότητα: δεν μετράει για αλλαγή τιμής.`;
     else if (sus.length) reason = 'Οι μόνες τιμές που βρέθηκαν είναι ύποπτες.' + susText;
     else if (st.similar) reason = 'Υπάρχουν μόνο παρόμοια προϊόντα: επιβεβαίωσε αν είναι ίδια.';
     return Object.assign({ action: 'nodata', reason }, none);
@@ -759,10 +771,14 @@ function mergeWeb(byKey) {
     const [site, id] = key.split(':');
     const p = byId[site] && byId[site].get(Number(id));
     if (!p) continue;
-    const offers = (hits || []).filter((h) => Number(h.price) > 0 && h.host && !compHosts.has(h.host)).map((h) => ({
-      shop: h.host, competitorId: 'web:' + h.host, name: h.name || '', sku: h.code || '', brand: h.brand || '', url: h.url, price: U.r2(Number(h.price)), priceMax: 0, regular: 0,
-      inStock: h.inStock !== false, img: h.img || '', match: 'exact', score: h.how === 'code' ? 1 : 0.9, how: h.how === 'code' ? 'sku' : 'words',
-      ev: [h.how === 'code' ? 'ίδιος κωδικός' : 'ίδια μάρκα και μοντέλο', 'βρέθηκε στο internet'], country: /\.(gr|cy)$/.test(h.host) || /[\u0370-\u03ff]{3,}/.test(h.name || '') ? 'GR' : 'other', /* a Greek shop: .gr / .cy, or its title in Greek */ seenAt: at, web: true,
+    // (only prices in euro; a page that showed another currency gave none) · in stock only when the page said so
+    // (unknown stays unknown) · the date is the day the PAGE was read, not the day of this merge
+    const offers = (hits || []).filter((h) => Number(h.price) > 0 && h.host && !compHosts.has(h.host) && (!h.currency || h.currency === 'EUR')).map((h) => ({
+      shop: h.host, competitorId: 'web:' + h.host, name: h.name || '', sku: h.code || '', brand: h.brand || '', url: h.url, price: U.r2(Number(h.price)), priceMax: 0, regular: Number(h.regular) > h.price ? U.r2(Number(h.regular)) : 0,
+      inStock: h.avail === 'in' ? true : h.avail === 'out' ? false : null, avail: h.avail || 'unknown', img: h.img || '',
+      // the same code with titles that differ: shown as «similar» until a person says yes (never counted by itself)
+      match: h.match === 'code' ? 'similar' : 'exact', why: h.match === 'code' ? 'Ίδιος κωδικός, αλλά οι τίτλοι διαφέρουν: επιβεβαίωσέ το' : '', score: h.how === 'code' || h.how === 'ean' ? 1 : 0.9, how: h.how === 'ean' ? 'ean' : h.how === 'code' ? 'sku' : 'words',
+      ev: [h.how === 'ean' ? 'ίδιο EAN' : h.how === 'code' ? 'ίδιος κωδικός' : 'ίδια μάρκα και μοντέλο', 'βρέθηκε στο internet'].concat(h.priceKind === 'from' ? ['τιμή «από» (τα μεγέθη έχουν άλλες τιμές)'] : []), country: /\.(gr|cy)$/.test(h.host) || /[\u0370-\u03ff]{3,}/.test(h.name || '') ? 'GR' : 'other', /* a Greek shop: .gr / .cy, or its title in Greek */ seenAt: h.at || at, web: true,
     }));
     const prev = all[key] || null;
     if (!offers.length && !(prev && prev.competitors.some((c) => c.web))) continue;
@@ -984,7 +1000,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 4; // 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
+const MATCH_VERSION = 5; // 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -1098,7 +1114,7 @@ function addManual(site, id, input) {
 }
 
 /** Recalculate suggestions after settings or our prices change. */
-const LOGIC_VERSION = 3; // bump when the rules of stats()/suggest()/decision() change
+const LOGIC_VERSION = 4; // bump when the rules of stats()/suggest()/decision() change // 4: unknown stock never counts
 function recompute() {
   const catalog = require('./catalog');
   const all = results();
@@ -1228,7 +1244,7 @@ function setCost(site, id, cost, source, rrp) {
   });
 }
 
-module.exports = { setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
+module.exports = { MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,

@@ -159,7 +159,15 @@
           h('label', { class: 'check', style: { marginTop: '10px' } }, en, 'Ενεργό'),
           h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Δοκιμή', { cls: 'sm' }, async () => {
             clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή…'));
-            try { await POST('/api/settings', { localAI: { enabled: en.checked, url: url.value, model: model.value } }); const r = await GET('/api/ai/status'); clear(res).appendChild(h('div', { class: 'note ok' }, 'Βρέθηκε. Μοντέλα: ' + (r.models.join(', ') || 'κανένα — τρέξε ollama pull'))); } catch (e) { clear(res).appendChild(h('div', { class: 'note crit' }, e.message)); }
+            clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή: το Ollama, τα μοντέλα και μια πραγματική απάντηση (την πρώτη φορά το μοντέλο φορτώνει: έως 1–2 λεπτά)…'));
+            try {
+              await POST('/api/settings', { localAI: { enabled: en.checked, url: url.value, model: model.value } });
+              const r = await POST('/api/ai/test', {});
+              clear(res).appendChild(h('div', { class: 'note ' + (r.ok ? 'ok' : 'crit') },
+                h('b', null, r.ok ? 'Το AI δουλεύει' + (r.model ? ' (' + r.model + ')' : '') + '.' : 'Το AI δεν δουλεύει ακόμα:'),
+                h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))),
+                server && !r.ok ? h('div', { class: 'faint', style: { marginTop: '6px' } }, 'Στο PC με το Ollama, στον φάκελο του worker: «runtime\\node.exe app\\worker.js ai-test» δείχνει τα ίδια βήματα εκεί.') : null));
+            } catch (e) { clear(res).appendChild(h('div', { class: 'note crit' }, e.message)); }
           })), res));
         box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value } })));
       }
@@ -212,7 +220,7 @@
               h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
                 h('div', { style: { minWidth: 0 } }, h('h3', { style: { margin: 0 } }, h('span', { class: 'dot ' + (w.online ? '' : 'off'), 'aria-hidden': 'true' }), ' ', w.name || 'Υπολογιστής'),
                   h('div', { class: 'faint' }, (w.online ? (w.active === false || (L && L.dormant) ? (w.mode === 'off' ? 'σταματημένο (χωρίς χρήση πόρων)' : 'σε αναμονή: το πρόγραμμα είναι κλειστό') : 'σε λειτουργία') : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${nz(c.cpus)} πυρήνες · ${nz(Math.round((c.ramMB || 0) / 1024))} GB` + (L && L.battery ? ' · σε μπαταρία (καμία νέα εργασία)' : '')),
-                  h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.ollama && c.ollama.length ? `AI (Ollama): ✓ ${c.ollama.slice(0, 3).join(', ')}` : 'AI (Ollama): δεν βρέθηκε σε αυτόν τον υπολογιστή'),
+                  h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.ollama && c.ollama.length ? `AI (Ollama${c.ollamaInfo && c.ollamaInfo.version ? ' ' + c.ollamaInfo.version : ''}): ✓ ${c.ollama.slice(0, 3).join(', ')}` : 'AI (Ollama): ' + (c.ollamaInfo && c.ollamaInfo.error ? c.ollamaInfo.error : 'δεν βρέθηκε σε αυτόν τον υπολογιστή')),
                   d.workerRev && c.rev !== d.workerRev ? h('div', { class: 'note', style: { marginTop: '6px', fontSize: '13px' } }, 'Παλιά έκδοση του φακέλου σε αυτόν τον υπολογιστή: κατέβασε ξανά τον φάκελο (DIAKOMISTIS-CLOUD.txt ★★ βήμα 5) και ξεκίνα τον worker από τον νέο φάκελο.') : null),
                 h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } },
                   App.seg([['always', 'Πάντα (παρασκήνιο)'], ['app', 'Μόνο με ανοιχτό πρόγραμμα'], ['off', 'Σταματημένο']], w.mode || 'always', (v) => POST('/api/workers/mode', { id: w.id, mode: v }).then(() => toast(v === 'off' ? 'Ο υπολογιστής σταματά: δεν θα χρησιμοποιεί κανέναν πόρο (σε 15″).' : v === 'app' ? 'Θα δουλεύει μόνο όσο είναι ανοιχτό το πρόγραμμα σε κάποια οθόνη.' : 'Θα δουλεύει συνέχεια, στο παρασκήνιο.')).catch(fail)),

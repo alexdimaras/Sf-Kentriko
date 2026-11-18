@@ -158,10 +158,12 @@ function productOf(html, url) {
   const offersOf = (x) => [].concat(x.offers || []).flatMap((o) => (o && o.offers ? [].concat(o.offers) : [o])).filter(Boolean);
   const same = (u) => { if (!u || typeof u !== 'string') return false; try { const a = new URL(u, url), b = new URL(url); return a.host === b.host && a.pathname.replace(/\/$/, '') === b.pathname.replace(/\/$/, ''); } catch (_) { return false; } };
   const p = list.find((x) => offersOf(x).length && (same(x.url) || same(x['@id'] || '') || offersOf(x).some((o) => same(o.url || '')))) || list.find((x) => offersOf(x).length) || list[0];
-  let price = 0, cur = 'EUR', stock = true, high = 0;
+  // stock: true / false only when the page says so; nothing said = unknown (null) — never taken for «in stock»
+  let price = 0, cur = 'EUR', stock = null, high = 0;
   if (p) {
     const all = offersOf(p);
-    const out = (o) => /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || 'InStock'));
+    const out = (o) => /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
+    const said = (o) => /InStock|LimitedAvailability|OnlineOnly|InStoreOnly|OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
     // the price a buyer can pay today: only the offers in stock (none in stock → sold out, with its lowest price)
     const inStock = all.filter((o) => !out(o));
     const offs = inStock.length ? inStock : all;
@@ -173,20 +175,19 @@ function productOf(html, url) {
       if (o.priceCurrency) cur = String(o.priceCurrency).toUpperCase();
     }
     if (prices.length) { price = Math.min(...prices); high = Math.max(high, Math.max(...prices)); }
-    if (all.length) stock = inStock.length > 0;
+    if (all.some(said)) stock = all.some((o) => said(o) && !out(o));
   }
   // shops whose block has no price: the meta tags Facebook reads
   if (!(price > 0)) {
     price = U.parseNumber(metaOf(html, 'product:price:amount') || metaOf(html, 'og:price:amount'));
     cur = (metaOf(html, 'product:price:currency') || metaOf(html, 'og:price:currency') || cur).toUpperCase();
-    const av = metaOf(html, 'product:availability') || metaOf(html, 'og:availability');
-    if (av) stock = !/out|oos|sold/i.test(av);
   }
+  if (stock === null) { const av = metaOf(html, 'product:availability') || metaOf(html, 'og:availability'); if (av) stock = !/out|oos|sold/i.test(av) ? (/in ?stock|instock|available/i.test(av) ? true : null) : false; }
   const name = str(p && p.name) || metaOf(html, 'og:title');
   if (!name || !(price > 0)) return null;
   const img = p ? [].concat(p.image || [])[0] : '';
   return {
-    n: U.untexturize(name), s: str(p && p.sku), m: str(p && p.mpn), g: String(str(p && (p.gtin13 || p.gtin || p.gtin12 || p.gtin14 || p.gtin8 || p.ean)) || '').replace(/\D/g, ''),
+    n: U.untexturize(name), s: str(p && p.sku), m: str(p && p.mpn), g: require('./extract').validGtin(str(p && (p.gtin13 || p.gtin || p.gtin12 || p.gtin14 || p.gtin8 || p.ean))),
     b: str(p && p.brand), u: url, p: U.r2(price), pm: high > price ? U.r2(high) : 0, r: 0, st: stock,
     i: typeof img === 'string' ? img : str(img && (img.url || img.contentUrl)) || metaOf(html, 'og:image'), c: cur || 'EUR',
   };

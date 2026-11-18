@@ -148,7 +148,7 @@
     };
     const runAI = async (kind, b) => {
       b.disabled = true; const old = b.textContent; b.textContent = 'Γράφει…';
-      try { d = await POST('/api/draft/ai', { id: d.id, kind }); d.descMode = 'ai'; App.$$('button', modeSeg).forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.v === 'ai'))); drawDesc(); refreshDerived(); } catch (e) { fail(e); }
+      try { d = await POST('/api/draft/ai', { id: d.id, kind }); d.descMode = 'ai'; if ((d.aiNotes || []).length) toast(d.aiNotes.join(' ')); App.$$('button', modeSeg).forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.v === 'ai'))); drawDesc(); refreshDerived(); } catch (e) { fail(e); }
       b.disabled = false; b.textContent = old;
     };
     const autoShort = h('input', { type: 'checkbox', checked: d.autoShort !== false, onchange: (e) => save({ autoShort: e.target.checked }) });

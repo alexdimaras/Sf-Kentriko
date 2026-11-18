@@ -8,7 +8,8 @@ const settings = require('./settings');
 const http = require('./http');
 const U = require('./util');
 
-const WOO_FIELDS = 'id,name,sku,permalink,prices,is_in_stock,brands,attributes,images,type';
+// global_unique_id: WooCommerce's own GTIN / EAN field (9.2+), when the shop's API gives it
+const WOO_FIELDS = 'id,name,sku,permalink,prices,is_in_stock,brands,attributes,images,type,global_unique_id';
 
 function file(id) { return 'comp-' + id; }
 function load(id) { return store.read(file(id), () => ({ products: [], at: null })); }
@@ -18,6 +19,14 @@ function brandOfWoo(p) {
   if (p.brands && p.brands[0] && p.brands[0].name) return U.decodeEntities(p.brands[0].name);
   const a = (p.attributes || []).find((x) => /κατασκευαστ|brand|μάρκ|μαρκ|marka/i.test(x.name || ''));
   return a && a.terms && a.terms[0] ? U.decodeEntities(a.terms[0].name) : '';
+}
+/** A real GTIN / EAN (check digit), never a made-up number: the shop's field, or an «EAN» attribute with one value. */
+function gtinOf(v) { return require('./extract').validGtin(v); }
+function wooGtin(p) {
+  const d = gtinOf(p.global_unique_id || p.gtin || p.ean || '');
+  if (d) return d;
+  const a = (p.attributes || []).find((x) => /^(ean|gtin|upc|barcode|ean-?13|κωδικός ean|κωδικοσ ean|γραμμωτός κώδικας)$/i.test(U.collapse(U.decodeEntities(x.name || ''))) && x.terms && x.terms.length === 1);
+  return a ? gtinOf(a.terms[0].name) : '';
 }
 function fromWoo(p) {
   const pr = p.prices || {};
@@ -34,9 +43,10 @@ function fromWoo(p) {
     p: f(pr.price) || (range ? f(range.min_amount) : 0),
     pm: range ? f(range.max_amount) : 0,
     r: f(pr.regular_price),
-    st: p.is_in_stock !== false,
+    st: p.is_in_stock === true ? true : p.is_in_stock === false ? false : null,
     i: img ? (img.thumbnail || img.src || '') : '',
     c: pr.currency_code || 'EUR',
+    ...(wooGtin(p) ? { g: wooGtin(p) } : {}),
   };
 }
 function fromShopify(p, base) {
@@ -48,11 +58,17 @@ function fromShopify(p, base) {
   const prices = pool.map((v) => U.parseNumber(v.price)).filter((x) => x > 0);
   const compare = pool.map((v) => U.parseNumber(v.compare_at_price)).filter((x) => x > 0);
   const img = (p.images && p.images[0] && p.images[0].src) || '';
+  // one code / EAN for the product only when all its sizes and colours share it (the first size's code is not the
+  // product's): the common part of the codes (K16110-01-S, -M → K16110-01); every EAN of the variants kept apart (gs)
+  const skus = [...new Set(vs.map((v) => String(v.sku || '').trim()).filter(Boolean))];
+  const eans = [...new Set(vs.map((v) => gtinOf(v.barcode)).filter(Boolean))];
+  const sku = skus.length <= 1 ? skus[0] || '' : require('./extract').commonCode(skus);
   return {
     id: p.id,
     n: U.decodeEntities(p.title || ''),
-    s: (vs.find((v) => v.sku) || {}).sku || '',
-    g: (vs.find((v) => v.barcode) || {}).barcode || '',
+    s: sku,
+    g: eans.length === 1 && vs.every((v) => gtinOf(v.barcode) === eans[0]) ? eans[0] : '',
+    ...(eans.length > 1 ? { gs: eans.slice(0, 20) } : {}),
     b: p.vendor || '',
     u: base + '/products/' + p.handle,
     p: prices.length ? Math.min(...prices) : 0,

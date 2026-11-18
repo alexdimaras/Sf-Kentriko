@@ -175,9 +175,11 @@ async function paced(eng, state) {
  */
 async function searchWide(q, state) {
   const out = [], seen = new Set();
+  // what each engine did with this search (kept with the research of the product: «which engines, how many results»)
+  const engines = [];
   let any = false;
   await Promise.all(ENGINES.map(async (eng) => {
-    if (state.blocked.has(eng.id)) return;
+    if (state.blocked.has(eng.id)) { engines.push({ id: eng.id, state: 'paused' }); return; }
     try {
       await paced(eng, state);
       const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
@@ -187,14 +189,19 @@ async function searchWide(q, state) {
       state.used.add(eng.name);
       res.forEach((x, i) => { x.rank = i; x.engine = eng.id; });
       out.push(...res);
+      engines.push({ id: eng.id, state: 'ok', n: res.length });
     } catch (e) {
-      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused) tellBlocked(eng.id); }
+      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused) tellBlocked(eng.id); engines.push({ id: eng.id, state: 'blocked' }); }
+      else engines.push({ id: eng.id, state: 'error', error: String(e.message || e).slice(0, 120) });
+      if (state.signal && state.signal.aborted) throw Object.assign(new Error('Σταμάτησε.'), { cancelled: true });
     }
   }));
-  if (!any && ENGINES.every((e) => state.blocked.has(e.id))) throw new Blocked('all');
+  if (!any && ENGINES.every((e) => state.blocked.has(e.id))) throw Object.assign(new Blocked('all'), { engines });
   // the two lists interleaved by rank: the best of each engine first
   out.sort((a, b) => a.rank - b.rank);
-  return out.filter((x) => { const k = String(x.url).replace(/[?#].*$/, '').replace(/\/$/, ''); if (seen.has(k)) return false; seen.add(k); return true; });
+  const list = out.filter((x) => { const k = String(x.url).replace(/[?#].*$/, '').replace(/\/$/, ''); if (seen.has(k)) return false; seen.add(k); return true; });
+  list.engines = engines;
+  return list;
 }
 async function search(q, state) {
   for (const eng of ENGINES) {

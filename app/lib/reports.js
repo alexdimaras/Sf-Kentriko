@@ -91,7 +91,7 @@ function marketReport(site, q) {
     diffPct: r.vsMedian, rank: r.rank ? r.rank + 'ος από ' + r.of : '',
     verdict: r.action, confidence: r.stats.confidence || '', master: r.master ? 'από ' + siteName('sf') : '',
     why: (r.careful ? 'Μεγάλη πτώση: έλεγξε πριν αλλάξεις. ' : '') + (r.reason || ''),
-    detail: r.competitors.filter((o) => !o.ignored).sort((a, b) => a.price - b.price).map((o) => ({ shop: o.shop, name: o.name, url: o.url, price: o.price, vsUs: r.ourPrice ? U.r2((o.price - r.ourPrice) / r.ourPrice) : null, prevPrice: o.prevPrice || null, stock: o.inStock !== false, flag: o.flag || (o.match === 'exact' ? 'used' : 'similar'), why: o.note || o.why || (o.manual ? 'καταχωρήθηκε με το χέρι' : ''), img: o.img || '' })),
+    detail: r.competitors.filter((o) => !o.ignored).sort((a, b) => a.price - b.price).map((o) => ({ shop: o.shop, name: o.name, url: o.url, price: o.price, vsUs: r.ourPrice ? U.r2((o.price - r.ourPrice) / r.ourPrice) : null, prevPrice: o.prevPrice || null, stock: o.inStock === true ? true : o.inStock === false ? false : null, flag: o.flag || (o.match === 'exact' ? 'used' : 'similar'), why: o.note || o.why || (o.manual ? 'καταχωρήθηκε με το χέρι' : ''), img: o.img || '' })),
   }));
   const m = ov.meta || {};
   const pill = (k) => ({ key: 'verdict', value: pillText('verdict', k) });
