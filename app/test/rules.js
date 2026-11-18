@@ -194,7 +194,9 @@ function shop() {
   const attrsOf = (r) => [1, 2, 3, 4].map((n) => [r[`Attribute ${n} name`], r[`Attribute ${n} value(s)`]]).filter((x) => x[0]);
   ok(rows[0].Type === 'variable' && attrsOf(rows[0]).some(([, v]) => v === 'M, L') && rows.filter((r) => r.Type === 'variation').length === 2, 'sizes become a WooCommerce attribute with one variation each');
   ok(attrsOf(rows[0]).some(([, v]) => /ΜΑΥΡΟ|Black/i.test(v)), 'a product in one colour keeps the colour as an attribute (not only in the title)', JSON.stringify(attrsOf(rows[0])));
-  ok(rows.filter((r) => r.Type === 'variation').every((r) => r.Parent === 'K05007' && !r.SKU && attrsOf(r).length >= 1), 'each variation belongs to the product\'s one code (no code of its own) and has its size attribute');
+  // (the owner's decision 18/11/2026, as Google asks: each variation its own code — here the supplier's own code of that size)
+  const vr = rows.filter((r) => r.Type === 'variation');
+  ok(vr.every((r) => r.Parent === 'K05007' && attrsOf(r).length >= 1) && vr.map((r) => r.SKU).join() === 'K05007-01-M,K05007-01-L', 'each variation belongs to the product and has its own distinct code (the supplier\'s code of that size) and its size attribute', JSON.stringify(vr.map((r) => r.SKU)));
   require(APP + '/lib/settings').save({ variantSku: 'suffix' });
   ok(wooexport.draftRows(d, 'sf').filter((r) => r.Type === 'variation').every((r) => r.SKU), 'with «own code per size/colour» each variation gets its code');
   require(APP + '/lib/settings').save({ variantSku: 'same' });
@@ -325,10 +327,18 @@ function shop() {
     const fakeC = { skus: { sf: new Set(['K07014XL']), st: new Set() }, vars: { sf: new Map([[50, [
       { id: 51, type: 'variation', parent: 50, varLabel: 'Μέγεθος: XL', sku: '' }, { id: 52, type: 'variation', parent: 50, varLabel: 'Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο', sku: '' },
       { id: 53, type: 'variation', parent: 50, varLabel: '', sku: '' }, { id: 54, type: 'variation', parent: 50, varLabel: 'Μέγεθος: L', sku: 'K07014-L' }]]]) } };
-    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014').length === 0, 'by default every size / colour keeps the product\'s one code (no K07014-SAND / K07014-MAVRO)');
+    // the owner's decision (18/11/2026): a distinct code per size / colour, as Google asks for variants — «same» stays possible
+    require(APP + '/lib/settings').save({ variantSku: 'same' });
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014').length === 0, 'with «one code for all» every size / colour keeps the product\'s one code');
     require(APP + '/lib/settings').save({ variantSku: 'suffix' });
     const vc = fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014');
-    require(APP + '/lib/settings').save({ variantSku: 'same' });
+    ok(require(APP + '/lib/settings').DEFAULTS.variantSku === 'suffix', 'the default: a distinct code per size / colour (Google)');
+    // codes that are not codes: the moment of a WordPress copy at their end, or the same code twice
+    const junkC = { skus: { sf: new Set(), st: new Set() }, vars: { sf: new Map([[60, [
+      { id: 61, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 58', sku: '58-1756480828' }, { id: 62, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 56', sku: '56-1758873781' }, { id: 63, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 54', sku: 'K05068-54' }]]]) } };
+    const jc = fixes.variationCodes(junkC, 'sf', { id: 60 }, 'K05068');
+    ok(jc.length === 2 && jc[0].sku === 'K05068-58' && jc[0].was === '58-1756480828' && jc[1].sku === 'K05068-56', 'the real «58-1756480828» of the site (a copy\'s date) → K05068-58; the good K05068-54 is left alone', JSON.stringify(jc));
+    ok(fixes.junkSku('K16107-1755357657').base === 'K16107' && !fixes.junkSku('14002001') && !fixes.junkSku('K05001-2.0-MC-1'), 'a product code with the date of a copy at its end is told apart from a real code');
     ok(vc.length === 3 && vc[0].sku === 'K07014-XL-2' && vc[1].sku === 'K07014-43UK812-MAVRO' && vc[2].sku === 'K07014-3' && new Set(vc.map((v) => v.sku)).size === 3, 'with the setting «own code per size/colour»: «K07014-MAVRO»-style codes, never one already used, the ones with a code left alone', JSON.stringify(vc.map((v) => v.sku)));
   }
 

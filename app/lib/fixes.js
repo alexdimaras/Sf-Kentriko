@@ -218,12 +218,25 @@ function variationsOf(C, site) {
  * A code for every size / colour without one: the product's code and the values of the variation, in Latin letters
  * («SF-24761-XL», «K07014-MAVRO-42»). The same labels give the same codes on both sites. → [{ id, label, sku }]
  */
+/**
+ * A code that is not a code: a WordPress copy of a product writes the moment of the copy at its end
+ * (K16107-1755357657, 58-1756480828: «-» + ten digits of a date between 2017 and 2033). → the code before it, or ''.
+ */
+function junkSku(sku) {
+  const m = String(sku || '').trim().match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
+  return m ? { base: m[1].replace(/[-_.\s]+$/, '') } : null;
+}
 function variationCodes(C, site, p, code) {
-  if (settings.all().variantSku !== 'suffix') return []; // one code for the product and all its sizes / colours
-  const vs = (variationsOf(C, site).get(p.id) || []).filter((v) => !String(v.sku || '').trim());
+  if (settings.all().variantSku === 'same') return []; // one code for the product and all its sizes / colours
+  // without a code, or with a «code» that is a date of a copy (58-1756480828), or the same code twice: a distinct one
+  const all = variationsOf(C, site).get(p.id) || [];
+  const count = new Map();
+  for (const v of all) if (v.sku) count.set(U.normSku(v.sku), (count.get(U.normSku(v.sku)) || 0) + 1);
+  const bad = (v) => !String(v.sku || '').trim() || !!junkSku(v.sku) || count.get(U.normSku(v.sku)) > 1 || U.normSku(v.sku) === U.normSku(code);
+  const vs = all.filter(bad);
   if (!vs.length || !code) return [];
   const taken = new Set();
-  for (const v of variationsOf(C, site).get(p.id) || []) if (v.sku) taken.add(U.normSku(v.sku));
+  for (const v of all) if (v.sku && !bad(v)) taken.add(U.normSku(v.sku));
   const out = [];
   vs.forEach((v, i) => {
     const vals = String(v.varLabel || '').split(',').map((x) => (x.includes(':') ? x.slice(x.indexOf(':') + 1) : x).trim()).filter(Boolean);
@@ -233,7 +246,7 @@ function variationCodes(C, site, p, code) {
     // (only this site counts: the same product on the other site has, rightly, the same codes)
     while (taken.has(U.normSku(c)) || C.skus[site].has(U.normSku(c))) c = code + '-' + (suf ? suf + '-' : '') + ++n;
     taken.add(U.normSku(c));
-    out.push({ id: v.id, label: v.varLabel || '', sku: c });
+    out.push({ id: v.id, label: v.varLabel || '', sku: c, was: String(v.sku || '') });
   });
   return out;
 }
@@ -527,10 +540,16 @@ function proposalsFor(site, p, C) {
         const vars = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
         add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Μία μόνο πηγή (κατάστημα με το ίδιο προϊόν): έλεγξέ τον.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
       }
+    } else if (junkSku(p.sku) && junkSku(p.sku).base.length >= 4 && !C.skus[site].has(U.normSku(junkSku(p.sku).base))) {
+      // a «code» that ends with the date a product was copied (K16107-1755357657): the code before it — it is the
+      // product's own code, written once more without the tail (Google and the price lists read the clean one)
+      const clean = junkSku(p.sku).base;
+      const vars = p.type === 'variable' ? variationCodes(C, site, p, clean) : [];
+      add(Object.assign({}, base, { field: 'sku', from: p.sku, to: clean, vars, why: `Ο κωδικός «${p.sku}» έχει στο τέλος αυτόματο αριθμό (την ώρα που αντιγράφηκε το προϊόν στο WordPress): ο σωστός είναι «${clean}».` + (vars.length ? ` Μαζί παίρνουν δικό τους κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: { kind: 'rule', label: 'Από τον ίδιο τον κωδικό του προϊόντος' }, level: 'high' }));
     } else if (p.type === 'variable') {
-      // the product has a code, some of its sizes / colours do not
+      // the product has a code, some of its sizes / colours do not (or have a date of a copy, or the same code twice)
       const vars = variationCodes(C, site, p, String(p.sku).trim());
-      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: '', to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα δεν έχει' : vars.length + ' μεγέθη/χρώματα δεν έχουν'} κωδικό: παίρνουν τον κωδικό του προϊόντος (${p.sku}) με το μέγεθος/χρώμα στο τέλος, ώστε κάθε ένα να είναι μοναδικό.`, source: { kind: 'rule', label: 'Από τον κωδικό του προϊόντος' }, level: 'high' }));
+      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: vars.filter((v) => v.was).map((v) => ({ label: v.label, sku: v.was })), to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα δεν έχει' : vars.length + ' μεγέθη/χρώματα δεν έχουν'} δικό τους σωστό κωδικό: παίρνουν τον κωδικό του προϊόντος (${p.sku}) με το μέγεθος/χρώμα στο τέλος, ώστε κάθε ένα να είναι μοναδικό — όπως ζητά η Google για τις παραλλαγές.` + (vars.some((v) => v.was) ? ` (Οι παλιοί «${vars.find((v) => v.was).was}…» είναι αυτόματοι αριθμοί ή διπλοί.)` : ''), source: { kind: 'rule', label: 'Από τον κωδικό του προϊόντος' }, level: 'high' }));
     }
     if (p.type === 'simple' && !p.ean) {
       // EAN: from the supplier (sure source) and from the shops with the same product; different EANs → nothing
@@ -1047,4 +1066,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

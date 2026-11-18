@@ -14,9 +14,12 @@ const DEFAULTS = {
   floorMargin: 25,
   // the price changes only when at least this many shops (in stock, not suspect) agree
   minShops: 2,
-  // sizes / colours of a product: 'same' = the product's one code for all of them (the colour / size stays an attribute);
-  // 'suffix' = their own code, the product's code with the colour / size at the end (K13079-SAND)
-  variantSku: 'same',
+  // sizes / colours of a product: 'suffix' = each its own code (what Google asks for the variants of a product: a
+  // distinct SKU per variant) — the maker's code of that colour when there is one, else the product's code with the
+  // colour / size at the end (K13079-SAND: the shop's own code, never an EAN, never a made-up maker's code);
+  // 'same' = the product's one code for all of them. (The owner's decision, 18/11/2026: like Google.)
+  variantSku: 'suffix',
+  skuPolicy: 0,
   // a competitor price this many % under the others (or under the supplier's retail price) is suspect: old stock, mistake
   suspectPct: 30,
   marketGreekOnly: true,
@@ -62,8 +65,17 @@ function merge(def, val) {
   return out;
 }
 
-function all() { return merge(DEFAULTS, store.read('settings', {})); }
-
+/**
+ * The settings. A decision of the owner reaches settings saved before it WITHOUT writing anything at the start (a write
+ * there could come before the data is brought back from the database / GitHub and replace it): it is applied when they
+ * are read, and kept with the next save. (skuPolicy 2, 18/11/2026: a distinct code per size / colour, as Google asks.)
+ */
+function all() {
+  const stored = store.read('settings', {}) || {};
+  const m = merge(DEFAULTS, stored);
+  if ((Number(stored.skuPolicy) || 0) < 2) { m.variantSku = 'suffix'; m.skuPolicy = 2; }
+  return m;
+}
 function save(patch) {
   const cur = all();
   const next = merge(cur, patch || {});
@@ -80,7 +92,8 @@ function save(patch) {
   next.marketHour = clampNum(next.marketHour, 0, 23, 0);
   next.marketAuto = !!next.marketAuto;
   next.supplierFindAuto = next.supplierFindAuto !== false;
-  next.variantSku = next.variantSku === 'suffix' ? 'suffix' : 'same';
+  next.variantSku = next.variantSku === 'same' ? 'same' : 'suffix';
+  next.skuPolicy = 2;
   const wr = next.webResearch;
   wr.maxQueries = Math.round(clampNum(wr.maxQueries, 2, 30, 12)); wr.pagesPerQuery = Math.round(clampNum(wr.pagesPerQuery, 2, 20, 8));
   wr.perHost = Math.round(clampNum(wr.perHost, 1, 10, 4)); wr.maxPages = Math.round(clampNum(wr.maxPages, 5, 200, 60));

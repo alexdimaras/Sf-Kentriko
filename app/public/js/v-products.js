@@ -276,7 +276,7 @@
   }
   function familyExport(site, f) {
     const sku = h('input', { type: 'text', placeholder: 'κωδικός του νέου προϊόντος' });
-    const mode = select([['same', 'Ένας κωδικός για όλα τα χρώματα (κανόνας καταστήματος)'], ['own', 'Κάθε χρώμα κρατά τον κωδικό του (καλύτερο για Google)']], 'same', () => {});
+    const mode = select([['own', 'Κάθε χρώμα κρατά τον κωδικό του — όπως ζητά η Google'], ['same', 'Ένας κωδικός για όλα τα χρώματα']], App.state.settings && App.state.settings.variantSku === 'same' ? 'same' : 'own', () => {});
     const out = h('div');
     modal.open(h('div', { class: 'stack s' }, dlgHead('Αρχεία μετατροπής: ' + f.title),
       h('p', { class: 'faint' }, 'Τίποτα δεν αλλάζει στο site μέχρι να ανεβάσεις τα αρχεία, με τη σειρά. Τα παλιά προϊόντα γίνονται «Πρόχειρο» (δεν σβήνονται) και οι παλιές διευθύνσεις οδηγούν με 301 στο νέο προϊόν, με το σωστό χρώμα επιλεγμένο.'),

@@ -62,7 +62,7 @@
       case 'brand': return beforeAfter(from ? h('del', null, from) : none('Χωρίς μάρκα'), h('ins', null, to));
       case 'gtin': return beforeAfter(from ? h('del', null, from) : none('Χωρίς EAN'), [h('ins', { class: 'mono' }, to), h('span', { class: 'faint' }, ' · σωστό ψηφίο ελέγχου')]);
       case 'sku': return beforeAfter(from ? h('del', null, from) : none('Χωρίς κωδικό'), [h('ins', { class: 'mono' }, to), (c.vars || []).length ? varList(c.vars) : null]);
-      case 'varsku': return beforeAfter(none(`${(to || []).length} χωρίς κωδικό`), varList(to || []));
+      case 'varsku': return beforeAfter(Array.isArray(from) && from.length ? [none(`${(to || []).length - from.length} χωρίς κωδικό · ${from.length} με λάθος κωδικό:`), varList(from)] : none(`${(to || []).length} χωρίς κωδικό`), varList(to || []));
       default: return null;
     }
   }
