@@ -150,12 +150,12 @@
         const model = inp(s.localAI.model, { placeholder: 'π.χ. qwen2.5:7b' });
         const res = h('div');
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Δωρεάν AI (προαιρετικό)'),
-          h('p', { class: 'muted' }, 'Για περιγραφές όταν δεν υπάρχει επίσημο κείμενο, ή μετάφραση αγγλικών κειμένων. Χρειάζεται το δωρεάν πρόγραμμα Ollama και υπολογιστή με τουλάχιστον 16 GB μνήμη. Χωρίς αυτό, όλα τα υπόλοιπα δουλεύουν κανονικά.'),
-          h('div', { class: 'note', style: { marginBottom: '10px' } }, h('b', null, 'Δεν χρειάζεται σε κάθε υπολογιστή. '), server
-            ? 'Το AI το καλεί ο διακομιστής, όχι ο browser: αρκεί ΕΝΑ Ollama, στον διακομιστή ή σε έναν δυνατό υπολογιστή που ο διακομιστής φτάνει (γράψε εδώ τη διεύθυνσή του).'
-            : 'Το καλεί το πρόγραμμα, όχι ο browser: αρκεί ΕΝΑΣ δυνατός υπολογιστής με Ollama. Στους άλλους γράψε εδώ τη διεύθυνσή του (π.χ. http://192.168.1.20:11434) — σε εκείνον το Ollama ξεκινά με OLLAMA_HOST=0.0.0.0. Με τη λειτουργία διακομιστή ρυθμίζεται μία φορά για όλους.'),
-          h('ol', { class: 'steps' }, h('li', null, 'Κατέβασε και εγκατάστησε το Ollama από το ollama.com.'), h('li', null, 'Άνοιξε τη γραμμή εντολών και γράψε: ollama pull qwen2.5:7b'), h('li', null, 'Ενεργοποίησε εδώ και πάτα «Δοκιμή».')),
-          h('div', { class: 'grid3', style: { marginTop: '12px' } }, field('Διεύθυνση', url), field('Μοντέλο', model, 'Κενό = το πρώτο εγκατεστημένο')),
+          h('p', { class: 'muted' }, 'Για περιγραφές όταν δεν υπάρχει επίσημο κείμενο, ή μετάφραση αγγλικών κειμένων. Χρειάζεται το δωρεάν πρόγραμμα Ollama σε υπολογιστή με τουλάχιστον 16 GB μνήμη. Χωρίς αυτό, όλα τα υπόλοιπα δουλεύουν κανονικά.'),
+          server
+            ? h('div', { class: 'note', style: { marginBottom: '10px' } }, h('b', null, 'Το Ollama τρέχει στο PC σου, όχι στο cloud. '), 'Το πρόγραμμα του στέλνει τις ερωτήσεις μέσω του υπολογιστή που βοηθά (SF-Kentro-Worker). Χρειάζονται: το Ollama ανοιχτό στο PC, ο worker της νέας έκδοσης σε λειτουργία. Στις Ρυθμίσεις → Υπολογιστές φαίνεται «AI (Ollama): ✓» όταν το βρει.')
+            : h('div', { class: 'note', style: { marginBottom: '10px' } }, h('b', null, 'Δεν χρειάζεται σε κάθε υπολογιστή. '), 'Το καλεί το πρόγραμμα, όχι ο browser: αρκεί ΕΝΑΣ δυνατός υπολογιστής με Ollama. Στους άλλους γράψε εδώ τη διεύθυνσή του (π.χ. http://192.168.1.20:11434).'),
+          h('ol', { class: 'steps' }, h('li', null, 'Κατέβασε και εγκατάστησε το Ollama από το ollama.com (στο PC που βοηθά).'), h('li', null, 'Άνοιξε τη γραμμή εντολών και γράψε: ollama pull qwen2.5:7b'), server ? h('li', null, 'Ξεκίνα τον worker από τον νέο φάκελο, περίμενε 1 λεπτό, ενεργοποίησε εδώ και πάτα «Δοκιμή».') : h('li', null, 'Ενεργοποίησε εδώ και πάτα «Δοκιμή».')),
+          h('div', { class: 'grid3', style: { marginTop: '12px' } }, server ? null : field('Διεύθυνση', url), field('Μοντέλο', model, 'Κενό = το πρώτο εγκατεστημένο')),
           h('label', { class: 'check', style: { marginTop: '10px' } }, en, 'Ενεργό'),
           h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Δοκιμή', { cls: 'sm' }, async () => {
             clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή…'));
@@ -200,6 +200,7 @@
               h('div', { class: 'kpi' }, h('b', null, hours(rs.hoursLeft)), h('span', null, 'μέχρι να τελειώσουν')),
               h('div', { class: 'kpi' }, h('b', null, nz(rs.found)), h('span', null, 'βρέθηκαν σε άλλα καταστήματα'))),
             h('div', { class: 'gauge ok', style: { marginTop: '12px' } }, h('div', { class: 'gauge-top' }, h('span', null, `Ελέγχθηκαν ${nz(rs.looked)} από ${nz(total)}`), h('b', null, pct + '%')), h('div', { class: 'gauge-bar' }, h('i', { style: { width: pct + '%' } }))),
+            d.queue ? h('p', { class: 'faint', style: { margin: '10px 0 0' } }, `Στη σειρά: ${nz(d.queue.waiting)} ομάδες των 20 προϊόντων περιμένουν · ${nz(d.queue.running)} τρέχουν τώρα.`) : null,
             rs.perHour ? null : h('p', { class: 'faint', style: { margin: '10px 0 0' } }, (st.online || 0) ? 'Οι υπολογιστές ξεκινούν· ο ρυθμός φαίνεται μετά από λίγα λεπτά.' : 'Κανένας υπολογιστής ανοιχτός: το πρόγραμμα στο cloud κάνει 25 προϊόντα τη μέρα. Άνοιξε έναν υπολογιστή που βοηθά για συνεχή, γρήγορη έρευνα.')));
           for (const w of d.workers || []) {
             const c = w.caps || {};
@@ -210,8 +211,12 @@
             root.appendChild(h('div', { class: 'panel worker-card' },
               h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
                 h('div', { style: { minWidth: 0 } }, h('h3', { style: { margin: 0 } }, h('span', { class: 'dot ' + (w.online ? '' : 'off'), 'aria-hidden': 'true' }), ' ', w.name || 'Υπολογιστής'),
-                  h('div', { class: 'faint' }, (w.online ? 'σε λειτουργία' : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${nz(c.cpus)} πυρήνες · ${nz(Math.round((c.ramMB || 0) / 1024))} GB · έκδοση ${c.version || '—'}` + (L && L.battery ? ' · σε μπαταρία (καμία νέα εργασία)' : ''))),
-                btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox(`Αφαίρεση του «${w.name}»;`, 'Ο υπολογιστής δεν θα μπορεί πια να συνδεθεί. Οι εργασίες του γυρίζουν στη σειρά. Για να ξαναμπεί θέλει νέο κωδικό σύζευξης.', 'Αφαίρεση', true)) POST('/api/workers/revoke', { id: w.id }).then(() => App.route()).catch(fail); })),
+                  h('div', { class: 'faint' }, (w.online ? (w.active === false || (L && L.dormant) ? (w.mode === 'off' ? 'σταματημένο (χωρίς χρήση πόρων)' : 'σε αναμονή: το πρόγραμμα είναι κλειστό') : 'σε λειτουργία') : 'κλειστό · τελευταία ' + fmt.ago(w.lastSeen)) + ` · ${nz(c.cpus)} πυρήνες · ${nz(Math.round((c.ramMB || 0) / 1024))} GB` + (L && L.battery ? ' · σε μπαταρία (καμία νέα εργασία)' : '')),
+                  h('div', { class: 'faint', style: { fontSize: '12.5px' } }, c.ollama && c.ollama.length ? `AI (Ollama): ✓ ${c.ollama.slice(0, 3).join(', ')}` : 'AI (Ollama): δεν βρέθηκε σε αυτόν τον υπολογιστή'),
+                  d.workerRev && c.rev !== d.workerRev ? h('div', { class: 'note', style: { marginTop: '6px', fontSize: '13px' } }, 'Παλιά έκδοση του φακέλου σε αυτόν τον υπολογιστή: κατέβασε ξανά τον φάκελο (DIAKOMISTIS-CLOUD.txt ★★ βήμα 5) και ξεκίνα τον worker από τον νέο φάκελο.') : null),
+                h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } },
+                  App.seg([['always', 'Πάντα (παρασκήνιο)'], ['app', 'Μόνο με ανοιχτό πρόγραμμα'], ['off', 'Σταματημένο']], w.mode || 'always', (v) => POST('/api/workers/mode', { id: w.id, mode: v }).then(() => toast(v === 'off' ? 'Ο υπολογιστής σταματά: δεν θα χρησιμοποιεί κανέναν πόρο (σε 15″).' : v === 'app' ? 'Θα δουλεύει μόνο όσο είναι ανοιχτό το πρόγραμμα σε κάποια οθόνη.' : 'Θα δουλεύει συνέχεια, στο παρασκήνιο.')).catch(fail)),
+                btn('Αφαίρεση', { cls: 'sm ghost' }, async () => { if (await confirmBox(`Αφαίρεση του «${w.name}»;`, 'Ο υπολογιστής δεν θα μπορεί πια να συνδεθεί. Οι εργασίες του γυρίζουν στη σειρά. Για να ξαναμπεί θέλει νέο κωδικό σύζευξης.', 'Αφαίρεση', true)) POST('/api/workers/revoke', { id: w.id }).then(() => App.route()).catch(fail); }))),
               L ? h('div', { class: 'wk-live' },
                 h('div', { class: 'wk-gauges' },
                   bar('Επεξεργαστής', L.cpu, `${nz(L.cpu)}%`),
@@ -220,7 +225,7 @@
                 h('div', { class: 'wk-side' }, spark(hist.get(w.id) || []), h('div', { class: 'faint', style: { fontSize: '12px' } }, 'επεξεργαστής, τελευταία 3 λεπτά'))) : null,
               L ? h('div', { class: 'wk-rates' },
                 h('span', null, h('b', null, nz(L.perHour.products)), ' προϊόντα/ώρα'), h('span', null, h('b', null, nz(L.perHour.pages)), ' σελίδες/ώρα'), h('span', null, h('b', null, nz(L.perHour.searches)), ' αναζητήσεις/ώρα'),
-                ...Object.entries(L.engines || {}).map(([k, v]) => h('span', { class: 'pill ' + (v === 'ok' ? 'ok' : 'warn') }, (k === 'ddg' ? 'DuckDuckGo' : 'Bing') + (v === 'ok' ? ' ✓' : ' σε παύση'))))
+                ...Object.entries(L.engines || {}).map(([k, v]) => h('span', { class: 'pill ' + (v === 'ok' ? 'ok' : 'warn'), title: v === 'ok' ? '' : 'Η μηχανή ζήτησε παύση: ξαναδοκιμάζει σε 10 λεπτά, πιο αργά. Οι άλλες συνεχίζουν.' }, ({ ddg: 'DuckDuckGo', bing: 'Bing', yahoo: 'Yahoo' }[k] || k) + (v === 'ok' ? ' ✓' : ' σε παύση'))))
                 : h('div', { class: 'faint', style: { marginTop: '6px' } }, w.online ? 'Περιμένει τις πρώτες μετρήσεις… (παλιότερη έκδοση; ξανακατέβασε τον φάκελο)' : 'Κλειστό: ανοίγει μόνο του με τα Windows.'),
               (w.jobs || []).length ? h('ul', { class: 'why' }, w.jobs.map((j) => h('li', null, [j.label || 'Εργασία', j.total ? `${nz(j.done)}/${nz(j.total)}` : '', j.msg || ''].filter(Boolean).join(' · ')))) : null));
           }

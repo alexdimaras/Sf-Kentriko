@@ -61,7 +61,7 @@ function web() {
     if (req.url.startsWith('/shop1/') || req.url.startsWith('/shop2/')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(page(req.url.startsWith('/shop1/') ? 1 : 2).replace(/PORT/g, port)); }
     res.writeHead(404); res.end();
   });
-  return new Promise((r) => srv.listen(0, '0.0.0.0', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_OLLAMA_URL = b + '/ollama'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
+  return new Promise((r) => srv.listen(0, '0.0.0.0', () => { const b = 'http://127.0.0.1:' + srv.address().port; process.env.SFK_SEARCH_DDG = b + '/ddg'; process.env.SFK_OLLAMA_URL = b + '/ollama'; process.env.SFK_SEARCH_BING = b + '/bing'; process.env.SFK_SEARCH_YAHOO = b + '/bing'; process.env.SFK_SEARCH_FAST = '1'; r({ srv, state }); }));
 }
 
 (async () => {

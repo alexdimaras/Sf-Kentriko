@@ -121,9 +121,25 @@ function parseBing(html) {
   }
   return out;
 }
+// Yahoo: the links of the results go through r.search.yahoo.com/…/RU=<the address>/RK=… (taken from there)
+function parseYahoo(html) {
+  if (/captcha|unusual traffic/i.test(html.slice(0, 30000)) && !/RU=/.test(html)) throw new Blocked('Yahoo');
+  const out = [], seen = new Set();
+  const re = /RU=([^/"&]+)\/RK=/g;
+  let m;
+  while ((m = re.exec(html))) {
+    let url;
+    try { url = decodeURIComponent(m[1]); } catch (_) { continue; }
+    if (!/^https?:\/\//i.test(url) || /(^|\.)(yahoo|bing|yimg)\.com/i.test(new URL(url).hostname) || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ url, title: '', snippet: '' });
+  }
+  return out;
+}
 const ENGINES = [
   { id: 'ddg', name: 'DuckDuckGo', url: (q) => (process.env.SFK_SEARCH_DDG || 'https://html.duckduckgo.com/html/') + '?q=' + encodeURIComponent(q) + '&kl=gr-el', parse: parseDdg, host: 'duckduckgo.com' },
   { id: 'bing', name: 'Bing', url: (q) => (process.env.SFK_SEARCH_BING || 'https://www.bing.com/search') + '?q=' + encodeURIComponent(q) + '&setlang=el&cc=GR', parse: parseBing, host: 'bing.com' },
+  { id: 'yahoo', name: 'Yahoo', url: (q) => (process.env.SFK_SEARCH_YAHOO || 'https://search.yahoo.com/search') + '?p=' + encodeURIComponent(q) + '&ei=UTF-8', parse: parseYahoo, host: 'yahoo.com', wideOnly: true },
 ];
 // a calm pace for each search engine, like a person searching: 4–7 seconds between two searches on the same one
 // (a helping computer may set its own: SFK_SEARCH_GAP_MS)
@@ -182,7 +198,7 @@ async function searchWide(q, state) {
 }
 async function search(q, state) {
   for (const eng of ENGINES) {
-    if (state.blocked.has(eng.id)) continue;
+    if (state.blocked.has(eng.id) || eng.wideOnly) continue;
     await paced(eng, state);
     try {
       const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
@@ -428,4 +444,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };
+module.exports = { parseYahoo, count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };

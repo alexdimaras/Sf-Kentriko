@@ -231,7 +231,10 @@ function cleanCaps(caps) {
   return {
     cpus: Math.max(0, Math.min(256, Number(c.cpus) || 0)), cpuModel: String(c.cpuModel || '').slice(0, 80), ramMB: Math.max(0, Number(c.ramMB) || 0), freeMB: Math.max(0, Number(c.freeMB) || 0),
     version: String(c.version || '').slice(0, 20), platform: String(c.platform || '').slice(0, 20), types: Array.isArray(c.types) ? c.types.map(String).slice(0, 30) : [],
-    slots: Math.max(1, Math.min(4, Number(c.slots) || 1)), battery: !!c.battery, busyUser: !!c.busyUser,
+    // (as many as the computer says, up to 32: a cap of 4 left 8 of the 12 runners of a strong PC without work)
+    slots: Math.max(1, Math.min(32, Number(c.slots) || 1)), battery: !!c.battery, busyUser: !!c.busyUser,
+    ollama: Array.isArray(c.ollama) ? c.ollama.map((x) => String(x).slice(0, 80)).slice(0, 20) : null,
+    rev: String(c.rev || '').slice(0, 20),
   };
 }
 /** The worker of a token (constant-time compare of the hashes), or null. */
@@ -253,6 +256,15 @@ async function touchWorker(w, caps) {
   const stale = t - new Date(w.lastSeen || 0).getTime() > 60000;
   w.lastSeen = iso(t);
   await backend.saveWorker(w, { light: !stale && before });
+}
+/** How a computer works: 'always' (in the background), 'app' (only while the program is open somewhere), 'off'. */
+async function setMode(id, mode) {
+  const w = await backend.worker(id);
+  if (!w || w.revoked) return false;
+  w.mode = ['always', 'app', 'off'].includes(mode) ? mode : 'always';
+  await backend.saveWorker(w);
+  changed();
+  return true;
 }
 async function hello(workerId, caps) { const w = await backend.worker(workerId); if (!w) return null; await touchWorker(w, caps || {}); changed(); return w; }
 async function revoke(id) {
@@ -335,7 +347,7 @@ async function workersView() {
   const t = now();
   const jobsBy = new Map();
   for (const j of await backend.live()) if (j.workerId) { const a = jobsBy.get(j.workerId) || []; a.push(view(j)); jobsBy.set(j.workerId, a); }
-  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
+  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'always', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
 }
 async function stats() {
   const l = await backend.live();
@@ -343,4 +355,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { setMode, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

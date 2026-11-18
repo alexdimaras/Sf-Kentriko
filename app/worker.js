@@ -23,7 +23,7 @@ fs.mkdirSync(process.env.SFK_DATA, { recursive: true });
 const CONF = path.join(HOME, 'worker.json');
 const POLL = Number(process.env.SFK_POLL_MS) || 15000;
 // a shop's own connection: the searches can come a little faster than from the cloud (each engine 2.5–4 s apart)
-process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '600';
+process.env.SFK_SEARCH_GAP_MS = process.env.SFK_SEARCH_GAP_MS || '1200';
 
 const store = require('./lib/store');
 const coord = require('./lib/coord');
@@ -54,6 +54,7 @@ function caps() {
     // the internet search reads web pages: it needs the page reader (in the full program folder)
     types: ['market.shop'].concat(canRead() ? ['codes.web'] : [], ollama.ok ? ['ai.call'] : []),
     ollama: ollama.ok ? ollama.models.slice(0, 20) : null,
+    rev: require('./lib/workerrev'),
     // as many jobs side by side as the computer can carry: one per core, ~1 GB each
     slots: slotsOf(),
     battery: onBattery(),
@@ -217,11 +218,13 @@ async function supervise() {
   const runners = new Map(); // index → { p, rss, job }
   const counts = []; // [time, kind]
   // the pace of the searches adapts: a little faster while the engines answer, twice slower after a refusal
-  const MIN_GAP = Number(process.env.SFK_SEARCH_GAP_MS) || 900, MAX_GAP = 8000;
-  const gapBy = { ddg: 1000, bing: 1000 };
+  // the pace that worked without refusals (1,5″ per engine ≈ 1.300 products an hour): from the start, not after an
+  // hour; a refusal halves the pace of that engine, and every 3 minutes without one it comes back 15% (never below 1,2″)
+  const MIN_GAP = Math.max(800, Number(process.env.SFK_SEARCH_GAP_MS) || 1200), MAX_GAP = 6000, START_GAP = 1500;
+  const gapBy = {};
   let okSince = Date.now();
   const lastBy = {}, pausedUntil = {};
-  let stopping = false, paused = false;
+  let stopping = false, paused = false, dormant = false;
   const start = (i, lane) => {
     const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i), SFK_RUNNER_LANE: lane || '' }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const r = { p, rss: 0, job: null };
@@ -231,13 +234,13 @@ async function supervise() {
       if (m.t === 'mem') r.rss = Number(m.rss) || 0;
       else if (m.t === 'job') r.job = m.job || null;
       else if (m.t === 'count') counts.push([Date.now(), String(m.k)]);
-      else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || 1500) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
+      else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
       else if (m.t === 'permit') {
         // one search at a time per engine for the whole computer, at a steady pace
         if ((pausedUntil[m.eng] || 0) > Date.now()) { p.send({ t: 'permit', id: m.id, ok: false }); return; }
         // ten minutes without a refusal: 10% faster (never below the floor)
-        if (Date.now() - okSince > 10 * 60000) { for (const e of Object.keys(gapBy)) gapBy[e] = Math.max(MIN_GAP, Math.round(gapBy[e] * 0.9)); okSince = Date.now(); }
-        const gap = gapBy[m.eng] || 1500;
+        if (Date.now() - okSince > 3 * 60000) { for (const e of Object.keys(gapBy)) gapBy[e] = Math.max(MIN_GAP, Math.round(gapBy[e] * 0.85)); okSince = Date.now(); }
+        const gap = gapBy[m.eng] || (gapBy[m.eng] = START_GAP);
         const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + gap + Math.random() * gap * 0.3);
         lastBy[m.eng] = at;
         setTimeout(() => { try { p.send({ t: 'permit', id: m.id, ok: true }); } catch (_) { /* gone */ } }, at - Date.now());
@@ -245,7 +248,7 @@ async function supervise() {
     });
     p.on('exit', (code) => {
       runners.delete(i);
-      if (stopping) return;
+      if (stopping || (dormant && !lane)) return; // stopped on purpose (the mode of this computer)
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
       setTimeout(() => start(i, lane), 5000);
     });
@@ -271,25 +274,38 @@ async function supervise() {
       runners: runners.size, slots: K, busy: [...runners.values()].filter((r) => r.job).length,
       jobs: [...runners.values()].filter((r) => r.job).map((r) => r.job.label).slice(0, 16),
       perHour: { products: per('product'), pages: per('page'), searches: per('search'), jobs: per('job') },
-      engines: Object.fromEntries(['ddg', 'bing'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
+      engines: Object.fromEntries(['ddg', 'bing', 'yahoo'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
       gaps: Object.assign({}, gapBy),
-      battery: paused,
+      battery: paused, dormant,
     };
     try { await api.call('POST', '/api/worker/load', { load }); } catch (e) { if (e.fatal) { stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(3); } }
   };
   setInterval(() => { report().catch(() => {}); }, Number(process.env.SFK_LOAD_MS) || 3000);
-  // «I am here, this is what I can do», once a minute; on battery the runners take no new work
+  // «I am here, this is what I can do», every 15 seconds; on battery the runners take no new work. The mode set in
+  // Ρυθμίσεις → Υπολογιστές: when this computer should not work (stopped, or «only while the program is open» and it
+  // is closed), the runners are stopped altogether — nothing of the computer is used — and started again when it should
+  let n = 0;
   for (;;) {
     try {
-      await probeOllama();
+      if (n++ % 4 === 0) await probeOllama();
       const c = caps();
       if (c.battery !== paused) { paused = c.battery; for (const r of runners.values()) r.p.send({ t: 'pause', on: paused }); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
-      await api.call('POST', '/api/worker/hello', { caps: c });
+      const h = await api.call('POST', '/api/worker/hello', { caps: c });
+      const should = !h || h.active !== false;
+      if (!should && !dormant) {
+        dormant = true;
+        for (const [i, r] of runners) if (i < K) r.p.kill();
+        log(h && h.mode === 'off' ? 'σταμάτησε από τις Ρυθμίσεις (κανένας πόρος δεν χρησιμοποιείται)' : 'το πρόγραμμα είναι κλειστό: αναμονή χωρίς χρήση πόρων');
+      } else if (should && dormant) {
+        dormant = false;
+        for (let i = 0; i < K; i++) if (!runners.has(i)) start(i);
+        log('συνέχεια της δουλειάς');
+      }
     } catch (e) {
       if (e.fatal) { log(e.message); stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(3); }
       log('σύνδεση: ' + e.message);
     }
-    await new Promise((x) => setTimeout(x, 60000));
+    await new Promise((x) => setTimeout(x, 15000));
   }
 }
 function cpuTimes() {

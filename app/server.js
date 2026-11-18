@@ -556,10 +556,12 @@ const routes = {
   'POST /api/jobs/cancel': (b) => (String(b.id || '').startsWith('q') && coordReady ? coord.cancel(b.id) : jobs.cancel(b.id)),
   // the computers of the shops (administrators)
   'GET /api/workers': async () => {
-    const ws = (await coord.workersView()).map((w) => { const l = workerLoad.get(w.id); return Object.assign({}, w, { load: l && Date.now() - l.at < 20000 ? l : null }); });
-    return { workers: ws, stats: await coord.stats(), research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
+    const ws = (await coord.workersView()).map((w) => { const l = workerLoad.get(w.id); return Object.assign({}, w, { active: workerActive(w), load: l && Date.now() - l.at < 20000 ? l : null }); });
+    const lq = await coord.liveOf('codes.web');
+    return { workers: ws, stats: await coord.stats(), queue: { waiting: lq.filter((j) => j.status === 'queued').length, running: lq.filter((j) => j.status !== 'queued').length }, workerRev: WORKER_REV, research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
   },
   'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
+  'POST /api/workers/mode': async (b) => ({ ok: await coord.setMode(String(b.id || ''), String(b.mode || '')) }),
   'POST /api/workers/revoke': async (b) => ({ ok: await coord.revoke(String(b.id || '')) }),
   'GET /api/audit': (q) => audit.list(Math.min(1000, Number(q.n) || 200)),
   'POST /api/shutdown': () => { if (SERVER) throw new Error('Ο διακομιστής δεν κλείνει από εδώ.'); setTimeout(() => process.exit(0), 300); return { ok: true }; },
@@ -586,7 +588,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['POST /api/workers/mode', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -750,7 +752,7 @@ function cleanLoad(l) {
     runners: lnum(l.runners, 64), slots: lnum(l.slots, 64), busy: lnum(l.busy, 64), battery: !!l.battery,
     jobs: (Array.isArray(l.jobs) ? l.jobs : []).slice(0, 16).map((x) => String(x || '').slice(0, 80)),
     perHour: { products: lnum(ph.products, 1e6), pages: lnum(ph.pages, 1e6), searches: lnum(ph.searches, 1e6), jobs: lnum(ph.jobs, 1e6) },
-    engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok' },
+    engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok', yahoo: eng.yahoo === 'paused' ? 'paused' : 'ok' }, dormant: !!l.dormant,
   };
 }
 function storeName() { return (() => { const c = cloudsave.status(); return !c.enabled ? 'στον φάκελο του διακομιστή' : c.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (και αντίγραφο στο GitHub κάθε μέρα)' : 'στο ιδιωτικό αποθετήριο GitHub'; })(); }
@@ -790,9 +792,10 @@ async function handleWorker(req, res, url, q, key0) {
       return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
     }
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : 256 * 1024) : {};
-    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name }); }
+    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'always', active: workerActive(w) }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
-    if (key0 === 'POST /api/worker/claim') return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) });
+    // a question to its AI is answered whatever the mode; other work only when it is on
+    if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'always' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
     if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log));
     if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
     if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
@@ -852,7 +855,7 @@ async function feedWebResearch() {
   // the screens show which products wait for the search
   market.setQueuedWeb(live.flatMap((j) => ((j.payload && j.payload.items) || []).map((x) => x.k)));
   if (settings.all().webResearchAuto === false) return;
-  const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('codes.web') && !w.caps.battery);
+  const ws = (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('codes.web') && !w.caps.battery && workerActive(w));
   if (!ws.length) return;
   // every runner of every computer busy, and two groups more waiting for each computer
   const want = ws.reduce((n, w) => n + (Number(w.caps.slots) || 1) + 2, 0) - live.length;
@@ -915,6 +918,8 @@ async function handleApi(req, res, url) {
   const q = Object.fromEntries(url.searchParams);
   const key0 = req.method + ' ' + url.pathname;
   if (url.pathname.startsWith('/api/worker/')) return handleWorker(req, res, url, q, key0);
+  // the program is open somewhere (a screen asks something): the computers set to «only while the program is open» work
+  if (SERVER && key0 !== 'GET /api/events') lastUiAt = Date.now();
   if (key0 === 'GET /api/events') return serveEvents(req, res, url);
   if (req.method === 'GET' && url.pathname.startsWith('/api/export/')) {
     const sess = sessionOf(req, false);
@@ -1058,6 +1063,11 @@ function listen(p, tries) {
 }
 
 const STARTED_AT = Date.now();
+let lastUiAt = 0;
+// the newest worker (app/worker.js REV): an older one on a computer is said so in Ρυθμίσεις → Υπολογιστές
+const WORKER_REV = require('./lib/workerrev');
+/** Should this computer work now? 'off': never · 'app': while a screen of the program was open in the last 2 minutes · else always. */
+function workerActive(w) { const m = (w && w.mode) || 'always'; return m === 'off' ? false : m === 'app' ? Date.now() - lastUiAt < 120000 : true; }
 // which change of the code runs here: from the host (Render gives the commit), its title and date from GitHub (public)
 const build = { version: VERSION, sha: String(process.env.RENDER_GIT_COMMIT || process.env.SFK_GIT_COMMIT || '').slice(0, 40), branch: process.env.RENDER_GIT_BRANCH || '', startedAt: new Date(STARTED_AT).toISOString(), message: '', committedAt: '' };
 function buildInfo() { return Object.assign({}, build, { url: build.sha ? 'https://github.com/alexdimaras/Sf-Kentriko/commit/' + build.sha : '' }); }
