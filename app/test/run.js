@@ -182,7 +182,7 @@ function supplierSite() {
   // photos: no supplier has the hat → a careful search; the page of ANOTHER product is refused; the source is shown
   const rr = await fixes.findSources(null, { maxPages: 5, maxResearch: 5 });
   const hatImgs = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 150 && c.field === 'images');
-  ok(rr.researched >= 1 && hatImgs && hatImgs.source.kind === 'research' && /\/p\/maui$/.test(hatImgs.source.url) && hatImgs.level === 'medium', 'photos from a researched page of the same product, with the source and "medium" level', JSON.stringify(hatImgs && hatImgs.source));
+  ok(rr.researched >= 1 && hatImgs && hatImgs.source.kind === 'web' && /\/p\/maui$/.test(hatImgs.source.url) && hatImgs.level === 'medium', 'photos from a researched page of the same product (the research on the internet), with the source and "medium" level', JSON.stringify([rr, hatImgs && hatImgs.source]));
   ok(hatImgs && hatImgs.to.every((u) => /maui/.test(u)), 'photos of another product on a result page are never taken');
 
   section('Λειτουργία διακομιστή: χρήστες και ασφάλεια');

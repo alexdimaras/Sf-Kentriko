@@ -150,9 +150,13 @@ function web() {
     const wj = (await get('/api/jobs')).find((x) => x.distributed && /internet/.test(x.label || ''));
     ok(wj && wj.worker === os.hostname(), 'the searching was done by the shop\'s computer', JSON.stringify(wj && [wj.worker, wj.status]));
     ok(webSrv.state.searches >= 1, 'it searched the «internet»');
+    // a new shop of the internet counts after a yes for that shop (Τιμές → «Έγκριση τιμών»)
+    const gl0 = (await get('/api/market?site=sf&q=GLOVE')).rows[0];
+    ok(gl0 && gl0.stats.count === 0 && gl0.competitors.filter((c) => c.web).every((c) => c.flag === 'newshop'), 'before the shops are approved their prices are shown, not counted', JSON.stringify(gl0 && gl0.competitors.map((c) => c.flag)));
+    for (const c of (gl0 ? gl0.competitors : []).filter((x) => x.web)) await post('/api/codes/shop', { host: c.shop, answer: 'approve' });
     const gl = (await get('/api/market?site=sf&q=GLOVE')).rows[0];
     const wo = gl && gl.competitors.filter((c) => c.web);
-    ok(gl && wo.length === 2 && wo.every((c) => c.match === 'exact' && c.price === 27.9) && gl.stats.count >= 1, 'a product no competitor sells gets its prices from the shops of the internet (2 shops, the same product) → it has a market price (a shop with an English-only page counts as foreign)', JSON.stringify(gl && [gl.stats.count, wo.map((c) => c.shop)]));
+    ok(gl && wo.length === 2 && wo.every((c) => c.match === 'exact' && c.price === 27.9) && gl.stats.count >= 1, 'a product no competitor sells gets its prices from the shops of the internet (2 shops, the same product) → it has a market price (a shop with an English-only page counts as foreign)', JSON.stringify(gl && [gl.stats.count, wo.map((c) => [c.shop, c.flag, c.match, c.inStock, c.note])]));
 
     section('Το AI (Ollama) του υπολογιστή, για το πρόγραμμα στο cloud');
     const ai = await until(async () => { const r = await fetch(base + '/api/ai/status', { headers: H }); const j = await r.json(); return j && j.models && j.models.length ? j : null; }, 30000);

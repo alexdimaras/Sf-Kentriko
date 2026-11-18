@@ -9,8 +9,8 @@
     hold: ['Σωστή τιμή', 'Μέσα στην αγορά.'],
     nodata: ['Χωρίς στοιχεία', 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο αλλού.'],
   };
-  const FLAG = { used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], unknown: ['άγνωστη διαθεσιμότητα', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], ignored: ['δεν μετράει', ''] };
-  const flagOf = (c) => c.flag || (c.ignored ? 'ignored' : c.match === 'exact' ? (c.used === false ? 'out' : 'used') : 'similar');
+  const FLAG = { used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], unknown: ['άγνωστη διαθεσιμότητα', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], family: ['άλλη παραλλαγή', 'warn'], newshop: ['νέο κατάστημα', 'warn'], ignored: ['δεν μετράει', ''] };
+  const flagOf = (c) => c.flag || (c.ignored ? 'ignored' : c.match === 'exact' ? (c.used === false ? 'out' : 'used') : c.match === 'family' ? 'family' : 'similar');
   const pct = (v) => (v > 0 ? '+' : '') + Math.round(v * 100) + '%';
   /**
    * How sure it is the SAME product, in %: a person's yes 99, the same EAN 98, the same code 96, brand + model + the rest
@@ -30,11 +30,15 @@
   const confPill = (c) => { const v = confOf(c); return h('span', { class: 'pill conf ' + (v >= 90 ? 'ok' : v >= 70 ? 'warn' : ''), title: 'Πόσο σίγουρο είναι ότι πρόκειται για το ίδιο ακριβώς προϊόν' + (c.web ? ' (βρέθηκε στο internet)' : '') }, v + '%'); };
   App.offerConfidence = confOf;
   // where the search on the internet stands for a product without a price
+  const WEBSTATE = { partial: 'ολοκληρώθηκε με ελλείψεις', complete: 'ολοκληρώθηκε', pages_failed: 'δεν διαβάστηκαν οι σελίδες', search_failed: 'απέτυχαν οι μηχανές', blocked: 'μπλοκαρίστηκε προσωρινά', cancelled: 'διακόπηκε', error: 'σφάλμα', due: 'χρειάζεται επανάληψη', stale: 'παλιά έρευνα' };
   const webPill = (w) => {
     w = w || { state: 'never' };
     if (w.state === 'queued') return h('div', { class: 'pill warn', title: 'Περιμένει σειρά στους υπολογιστές που βοηθούν' }, 'σε σειρά για internet');
-    if (w.state === 'notfound') return h('div', { class: 'pill', title: `Ελέγχθηκε ${fmt.ago(w.at)}: ${w.hits ? w.hits + ' σελίδες με το ίδιο προϊόν, χωρίς τιμή' : 'κανένα κατάστημα με το ίδιο ακριβώς προϊόν'}` }, 'internet: δεν βρέθηκε · ' + fmt.ago(w.at));
     if (w.state === 'found') return h('div', { class: 'pill ok' }, `internet: ${w.prices} τιμές`);
+    // found, but without a price (or not in euro): the product IS found
+    if (w.state === 'noprice') return h('div', { class: 'pill', title: `Ελέγχθηκε ${fmt.ago(w.at)}: το ίδιο προϊόν σε ${w.hits} σελίδες, χωρίς τιμή σε ευρώ` }, `internet: βρέθηκε σε ${w.hits}, χωρίς τιμή`);
+    if (w.state === 'notfound') return h('div', { class: 'pill', title: `Ελέγχθηκε ${fmt.ago(w.at)}: κανένα κατάστημα με το ίδιο ακριβώς προϊόν${w.family ? ` (άλλη παραλλαγή του μοντέλου σε ${w.family})` : ''}` }, 'internet: δεν βρέθηκε · ' + fmt.ago(w.at));
+    if (WEBSTATE[w.state]) return h('div', { class: 'pill ' + (/failed|blocked|error/.test(w.state) ? 'crit' : 'warn'), title: `Τελευταία προσπάθεια ${fmt.ago(w.at)}` }, 'internet: ' + WEBSTATE[w.state]);
     return h('div', { class: 'pill', title: 'Δεν έχει αναζητηθεί ακόμα στο internet' }, 'internet: όχι ακόμα');
   };
   const actPill = (a) => h('span', { class: 'act ' + a, title: (ACT[a] || ACT.nodata)[1] }, (ACT[a] || ACT.nodata)[0]);
@@ -104,15 +108,16 @@
         tb.appendChild(h('tr', { class: c.used ? '' : 'unused' },
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', minWidth: 0 } }, c.img ? thumb(c.img, 'sm') : null,
             h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill', style: { marginLeft: '6px' } }, 'χειροκίνητα') : null,
-              h('div', { class: 'faint ell', title: c.name }, c.name), c.why && f === 'similar' ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
+              h('div', { class: 'faint ell', title: c.name }, c.name), c.why && (f === 'similar' || f === 'family') ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
               // why the program says it is the same product (code, EAN, brand, model words, photo)
               c.confirmed ? h('div', { class: 'ev' }, 'ίδιο: το επιβεβαίωσες εσύ') : (c.ev && c.ev.length && f !== 'similar' ? h('div', { class: 'ev', title: 'Με τι αναγνωρίστηκε ως το ίδιο προϊόν' }, c.ev.join(' · ')) : null)))),
           h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),
           h('td', { class: 'num' }, ours ? h('span', { class: 'price-diff ' + (vs < -0.005 ? 'down' : vs > 0.005 ? 'up' : '') }, pct(vs)) : ''),
-          h('td', null, c.inStock === false ? h('span', { class: 'faint' }, 'εξαντλημένο') : 'διαθέσιμο'),
+          h('td', null, c.inStock === false ? h('span', { class: 'faint' }, 'εξαντλημένο') : c.inStock === true || c.manual ? 'διαθέσιμο' : h('span', { class: 'faint' }, 'άγνωστο')),
           h('td', null, h('span', { class: 'pill ' + FLAG[f][1] }, FLAG[f][0]), confPill(c), c.note && f !== 'used' ? h('div', { class: 'hint', style: { margin: '2px 0 0' } }, c.note) : null),
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', justifyContent: 'flex-end' } }, c.url ? h('button', { class: 'x', title: 'Άνοιγμα της σελίδας τους', onclick: () => App.openUrl(c.url) }, icon('ext')) : null,
             ctx && !c.manual && c.match !== 'exact' && !c.ignored ? h('button', { class: 'btn sm', title: 'Είναι το ίδιο προϊόν: να μετράει στην τιμή', onclick: () => decide(ctx, c.url, 'yes') }, icon('check'), 'Ίδιο') : null,
+            ctx && c.flag === 'newshop' ? h('button', { class: 'btn sm', title: 'Είναι πραγματικό κατάστημα: οι τιμές του να μετράνε (για όλα τα προϊόντα)', onclick: () => App.POST('/api/codes/shop', { host: c.shop, answer: 'approve' }).then(() => ctx.refresh && ctx.refresh()).catch(App.fail) }, icon('check'), 'Έγκριση καταστήματος') : null,
             ctx && !c.ignored ? h('button', { class: 'btn sm ghost', title: 'Δεν είναι το ίδιο προϊόν / να μη μετράει', onclick: () => decide(ctx, c.url, 'no') }, icon('x'), 'Όχι') : null,
             ctx && (c.ignored || c.confirmed) ? h('button', { class: 'btn sm ghost', title: 'Να το κρίνει ξανά το πρόγραμμα', onclick: () => decide(ctx, c.url, '') }, 'Επαναφορά') : null))));
       }
@@ -292,7 +297,7 @@
   async function renderConfirm(main, site) {
     const ov = await GET('/api/market', { site, similar: '1', per: 300 });
     const items = [];
-    for (const r of ov.rows) for (const c of r.competitors) if (c.match === 'similar' && !c.ignored && !c.manual) items.push({ r, c });
+    for (const r of ov.rows) for (const c of r.competitors) if ((c.match === 'similar' || c.match === 'family') && !c.ignored && !c.manual) items.push({ r, c });
     if (!items.length) { main.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Τίποτα για επιβεβαίωση'), h('p', null, 'Όλα τα ταιριάσματα είναι σίγουρα ή έχουν ήδη κριθεί.'))); return; }
     main.appendChild(h('p', { class: 'muted' }, `${fmt.plural(ov.total, 'προϊόν σας έχει', 'προϊόντα σας έχουν')} παρόμοια στους ανταγωνιστές, όχι σίγουρα ίδια (έκδοση, χρώμα, μέγεθος). Ό,τι απαντήσεις το θυμάται για πάντα και ξαναυπολογίζει την τιμή. Πλήκτρα: Ν = ίδιο, Ο = όχι.${ov.total > 300 ? ' Εμφανίζονται τα πρώτα· όταν τελειώσουν, ανανέωσε τη σελίδα.' : ''}`));
     const list = h('div', { class: 'stack s' });
@@ -363,9 +368,13 @@
     const cs = await GET('/api/codes').catch(() => null);
     if (cs) main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('h2', null, 'Καταστήματα που βρέθηκαν στο internet'),
       h('p', { class: 'muted' }, `Η αναζήτηση κωδικών στο internet έχει δει ${fmt.num(cs.looked)} προϊόντα (μένουν ${fmt.num(cs.waiting)}). Όσα καταστήματα πουλάνε τουλάχιστον 3 ίδια προϊόντα με εσάς προτείνονται εδώ: με «Προσθήκη» μπαίνουν στην έρευνα τιμών.`),
+      cs.sites ? h('p', { class: 'faint' }, `Sites που συνάντησε η έρευνα: ${fmt.num(cs.sites)}.` + (cs.failed ? ` Έρευνες που απέτυχαν και θα ξαναγίνουν: ${fmt.num(cs.failed)}.` : '')) : null,
       cs.shops.length ? h('div', { class: 'stack s' }, cs.shops.map((x) => h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
-        h('div', null, h('b', null, x.host), h('span', { class: 'faint' }, ` · ${fmt.num(x.count)} ίδια προϊόντα`)),
-        btn('Προσθήκη', { cls: 'sm', icon: 'new' }, () => POST('/api/competitors', { url: x.url, name: x.host.replace(/\.(gr|com|eu)$/, '') }).then(() => { toast('Προστέθηκε· διαβάζεται στην επόμενη έρευνα.'); App.route(); }).catch(fail)))))
+        h('div', null, h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, h('b', null, x.host)), h('span', { class: 'pill' }, x.label || 'κατάστημα'), h('span', { class: 'faint' }, ` · ${fmt.num(x.count)} ίδια προϊόντα · σε ${fmt.num(x.seen || 0)} έρευνες`), x.approved ? h('span', { class: 'pill ok' }, 'οι τιμές του μετράνε') : null),
+        h('div', { class: 'row tight' },
+          !x.approved ? btn('Έγκριση τιμών', { cls: 'sm', icon: 'check', title: 'Πραγματικό κατάστημα: οι τιμές του (για ίδια προϊόντα, διαθέσιμα) να μετράνε' }, () => POST('/api/codes/shop', { host: x.host, answer: 'approve' }).then(() => { toast('Εγκρίθηκε.'); App.route(); }).catch(fail)) : null,
+          btn('Στους ανταγωνιστές', { cls: 'sm', icon: 'new', title: 'Να διαβάζεται όλος ο κατάλογός του (WooCommerce / Shopify / χάρτης site)' }, () => POST('/api/competitors', { url: x.url, name: x.host.replace(/\.(gr|com|eu)$/, '') }).then(() => { toast('Προστέθηκε· διαβάζεται στην επόμενη έρευνα.'); App.route(); }).catch(fail)),
+          btn('Όχι', { cls: 'sm ghost', title: 'Δεν είναι αξιόπιστο / σχετικό: να μην προτείνεται και οι τιμές του να μη φαίνονται' }, () => POST('/api/codes/shop', { host: x.host, answer: 'reject' }).then(() => App.route()).catch(fail))))))
         : h('p', { class: 'faint' }, 'Κανένα ακόμα.'),
       h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Ψάξε κωδικούς τώρα (25 προϊόντα)', { cls: 'sm', icon: 'search' }, () => POST('/api/codes/find', { max: 25 }).then((job) => watchJob(job, { done: () => App.route() })).catch(fail)))));
     main.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl comps' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Κατάστημα'), h('th', null, 'Ανάγνωση'), h('th', { class: 'num' }, 'Προϊόντα'), h('th', null, ''))), tb)));

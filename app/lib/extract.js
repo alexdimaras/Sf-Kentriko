@@ -187,7 +187,8 @@ async function enrichShopify(out, url, gap, signal) {
   out.variants = vs.map((v) => {
     const attrs = {};
     opts.forEach((o, i) => { const name = typeof o === 'string' ? o : o.name; const val = v['option' + (i + 1)]; if (name && val && !/^title$/i.test(name)) attrs[name] = val; });
-    return { name: v.title, sku: v.sku || '', ean: validGtin(v.barcode), attrs, price: (Number(v.price) || 0) / 100, regular: (Number(v.compare_at_price) || 0) / 100, inStock: v.available === true ? true : v.available === false ? false : null };
+    const fi = v.featured_image && (v.featured_image.src || v.featured_image);
+    return { name: v.title, sku: v.sku || '', ean: validGtin(v.barcode), attrs, price: (Number(v.price) || 0) / 100, regular: (Number(v.compare_at_price) || 0) / 100, inStock: v.available === true ? true : v.available === false ? false : null, images: typeof fi === 'string' ? [fi.startsWith('//') ? 'https:' + fi : fi] : [] };
   }).filter((v) => Object.keys(v.attrs).length);
   if (p.price) out.price = Number(p.price) / 100;
   if (p.compare_at_price && Number(p.compare_at_price) > Number(p.price)) out.regular = Number(p.compare_at_price) / 100;
@@ -280,10 +281,10 @@ function finish(out) {
     let size = v.size || '', color = v.color || '';
     for (const [k, val] of Object.entries(attrs)) {
       if (!size && /size|μέγεθ|μεγεθ|νούμερ|νουμερ/i.test(k)) size = val;
-      else if (!color && /colou?r|χρώμ|χρωμ/i.test(k)) color = val;
+      else if (!color && /colou?r|χρώμ|χρωμ|farbe|pattern|σχέδιο|σχεδιο|camo/i.test(k)) color = val;
     }
     // unknown stays unknown (it used to become «in stock»)
-    return { name: v.name || '', sku: v.sku || '', ean: validGtin(v.ean), size: String(size || '').trim(), color: String(color || '').trim(), price: Number(v.price) || 0, regular: Number(v.regular) || 0, inStock: v.inStock === true ? true : v.inStock === false ? false : null };
+    return { name: v.name || '', sku: v.sku || '', ean: validGtin(v.ean), size: String(size || '').trim(), color: String(color || '').trim(), price: Number(v.price) || 0, regular: Number(v.regular) || 0, inStock: v.inStock === true ? true : v.inStock === false ? false : null, images: cleanImages(v.images || [], out.url || 'https://x/').slice(0, 6) };
   }).filter((v) => v.size || v.color).slice(0, 120);
   // the product's availability from its sizes / colours when the page said nothing for the product itself
   if (out.availability === 'unknown' && out.variants.length) out.availability = availAll(out.variants.map((v) => (v.inStock === true ? 'in' : v.inStock === false ? 'out' : 'unknown')));
@@ -333,10 +334,12 @@ function productFromJsonLd(blocks, pageUrl) {
     if (v.size) attrs.size = str(typeof v.size === 'object' ? v.size.name : v.size);
     if (v.color) attrs.color = str(v.color);
     if (v.pattern && !attrs.color) attrs.color = str(v.pattern);
-    prod.variants.push({ name: str(v.name), sku: str(v.sku), ean: gtin(v), attrs, price: vo.price, regular: vo.regular, inStock: vo.availability === 'in' ? true : vo.availability === 'out' ? false : null });
+    // each variant keeps ITS photos (the photo of the black one is never the olive one's)
+    const vimg = imagesFrom(v.image);
+    prod.variants.push({ name: str(v.name), sku: str(v.sku), ean: gtin(v), attrs, price: vo.price, regular: vo.regular, inStock: vo.availability === 'in' ? true : vo.availability === 'out' ? false : null, images: vimg });
     avs.push(vo.availability);
     if (!prod.currency && vo.currency) prod.currency = vo.currency;
-    prod.images.push(...imagesFrom(v.image));
+    prod.images.push(...vimg);
   }
   // the product's price: the lowest of the sizes / colours IN STOCK when they say so (a cheaper size that is sold out
   // is no price — an «AggregateOffer» low price often is one); else the product's own, else the lowest variant's
@@ -407,8 +410,9 @@ function mergeWooVariations(out, json, imgs) {
       let dv = val; try { dv = decodeURIComponent(val); } catch (_) { /* keep */ }
       attrs[k.replace(/^attribute_(pa_)?/, '')] = dv;
     }
-    out.variants.push({ name: Object.values(attrs).join(' / '), sku: v.sku || '', ean: validGtin(v.global_unique_id || v.gtin || v.ean || v._gtin || ''), attrs, price: Number(v.display_price) || 0, regular: Number(v.display_regular_price) || 0, inStock: v.is_in_stock === true ? true : v.is_in_stock === false ? false : null });
-    if (v.image && v.image.full_src) imgs.push(v.image.full_src);
+    const vimg = v.image && (v.image.full_src || v.image.src) ? [v.image.full_src || v.image.src] : [];
+    out.variants.push({ name: Object.values(attrs).join(' / '), sku: v.sku || '', ean: validGtin(v.global_unique_id || v.gtin || v.ean || v._gtin || ''), attrs, price: Number(v.display_price) || 0, regular: Number(v.display_regular_price) || 0, inStock: v.is_in_stock === true ? true : v.is_in_stock === false ? false : null, images: vimg });
+    imgs.push(...vimg);
     if (!out.price && v.display_price) out.price = Number(v.display_price);
   }
 }

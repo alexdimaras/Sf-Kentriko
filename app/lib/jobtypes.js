@@ -98,7 +98,9 @@ function registerAI() {
       // the same address the worker checks every minute (worker.json «ollamaUrl», else SFK_OLLAMA_URL, else 127.0.0.1)
       const base = localai.resolveUrl(process.env.SFK_WORKER_OLLAMA_URL || '');
       const b = payload.body || {};
-      const body = path === '/api/generate' ? { model: String(b.model || ''), prompt: String(b.prompt || '').slice(0, 60000), stream: false, keep_alive: b.keep_alive || '15m', options: b.options && typeof b.options === 'object' ? b.options : {} } : null;
+      // structured output (Ollama «format»: 'json' or a JSON Schema) and a system text travel too (they used to be dropped)
+      const fmt = b.format === 'json' ? 'json' : b.format && typeof b.format === 'object' && JSON.stringify(b.format).length < 8000 ? b.format : undefined;
+      const body = path === '/api/generate' ? Object.assign({ model: String(b.model || ''), prompt: String(b.prompt || '').slice(0, 60000), stream: false, keep_alive: b.keep_alive || '15m', options: b.options && typeof b.options === 'object' ? b.options : {} }, fmt ? { format: fmt } : {}, b.system ? { system: String(b.system).slice(0, 4000) } : {}) : null;
       const t0 = Date.now();
       let j;
       try { j = await localai.ollamaFetch(base, path, body, { timeout: path === '/api/tags' ? 15000 : Number(payload.timeout) || 300000, signal: api.signal }); } catch (e) {
@@ -106,12 +108,12 @@ function registerAI() {
         throw Object.assign(new Error(e.message), { fatal: true, cancelled: !!e.cancelled });
       }
       if (path === '/api/tags') return { models: (j.models || []).map((x) => ({ name: x.name, size: x.size || 0, details: x.details ? { family: x.details.family || '', families: x.details.families || [], parameter_size: x.details.parameter_size || '' } : {} })) };
-      return { response: String(j.response || ''), model: String(j.model || body.model), eval_count: Number(j.eval_count) || 0, done_reason: String(j.done_reason || ''), ms: Date.now() - t0 };
+      return { response: String(j.response || ''), model: String(j.model || body.model), eval_count: Number(j.eval_count) || 0, prompt_eval_count: Number(j.prompt_eval_count) || 0, done_reason: String(j.done_reason || ''), ms: Date.now() - t0 };
     },
     async apply(job, result) {
       const r = result || {};
       if (r.models) return { models: r.models.slice(0, 50).map((x) => ({ name: String(x.name || '').slice(0, 100), size: Number(x.size) || 0, details: { family: String((x.details || {}).family || '').slice(0, 40), families: ((x.details || {}).families || []).slice(0, 6).map((f) => String(f).slice(0, 40)), parameter_size: String((x.details || {}).parameter_size || '').slice(0, 20) } })) };
-      return { response: String(r.response || '').slice(0, 40000), model: String(r.model || '').slice(0, 100), eval_count: Number(r.eval_count) || 0, done_reason: String(r.done_reason || '').slice(0, 20), ms: Number(r.ms) || 0 };
+      return { response: String(r.response || '').slice(0, 40000), model: String(r.model || '').slice(0, 100), eval_count: Number(r.eval_count) || 0, prompt_eval_count: Number(r.prompt_eval_count) || 0, done_reason: String(r.done_reason || '').slice(0, 20), ms: Number(r.ms) || 0 };
     },
   });
 }
@@ -120,24 +122,39 @@ function registerAI() {
 function cleanResearch(r) {
   const str = (v, n) => String(v == null ? '' : v).slice(0, n);
   const url = (v) => (/^https?:\/\//.test(String(v || '')) ? String(v).slice(0, 500) : '');
-  const out = { read: Number(r.read) || 0, hits: r.hits.slice(0, 12).filter((h) => h && typeof h === 'object').map((h) => ({
+  const num = (v) => (Number(v) > 0 ? U.r2(Number(v)) : 0);
+  const avail = (v) => (['in', 'out'].includes(v) ? v : 'unknown');
+  const CLS = ['competitor', 'supplier', 'maker', 'marketplace', 'irrelevant', 'shop', 'own'];
+  const cls = (v) => (CLS.includes(v) ? v : '');
+  const at = (v) => (/^\d{4}-\d\d-\d\dT/.test(String(v || '')) ? str(v, 30) : U.nowIso());
+  const out = { read: Number(r.read) || 0, hits: r.hits.slice(0, 20).filter((h) => h && typeof h === 'object').map((h) => ({
     host: str(h.host, 100), url: url(h.url), name: str(h.name, 200), brand: str(h.brand, 60), code: str(h.code, 60), sku: str(h.sku, 60), mpn: str(h.mpn, 60),
-    ean: String(h.ean || '').replace(/\D/g, '').slice(0, 14), price: Number(h.price) > 0 ? U.r2(Number(h.price)) : 0, regular: Number(h.regular) > 0 ? U.r2(Number(h.regular)) : 0,
-    currency: str(h.currency, 5).toUpperCase(), avail: ['in', 'out'].includes(h.avail) ? h.avail : 'unknown', priceKind: ['single', 'from', 'other-colour'].includes(h.priceKind) ? h.priceKind : 'single',
-    img: url(h.img), images: (Array.isArray(h.images) ? h.images : []).map(url).filter(Boolean).slice(0, 4),
-    how: ['code', 'ean'].includes(h.how) ? h.how : 'words', match: h.match === 'code' ? 'code' : 'exact', at: /^\d{4}-\d\d-\d\dT/.test(String(h.at || '')) ? str(h.at, 30) : U.nowIso(), proof: str(h.proof, 200),
+    ean: String(h.ean || '').replace(/\D/g, '').slice(0, 14), price: num(h.price), regular: num(h.regular),
+    currency: str(h.currency, 5).toUpperCase(), avail: avail(h.avail), priceKind: ['single', 'from', 'other-colour'].includes(h.priceKind) ? h.priceKind : 'single',
+    img: url(h.img), images: (Array.isArray(h.images) ? h.images : []).map(url).filter(Boolean).slice(0, 4), imgHow: ['variant', 'page', 'filename', 'none'].includes(h.imgHow) ? h.imgHow : '',
+    how: ['code', 'ean'].includes(h.how) ? h.how : 'words', match: h.match === 'code' ? 'code' : 'exact', cls: cls(h.cls), at: at(h.at), proof: str(h.proof, 200),
+    ...(h.ai && typeof h.ai === 'object' ? { ai: { verdict: str(h.ai.verdict, 12), reason: str(h.ai.reason, 160) } } : {}),
   })).filter((h) => h.host) };
   // what happened (a result from an older worker has none: it is kept as before)
-  const ST = ['complete', 'partial', 'not_found', 'no_results', 'pages_failed', 'search_failed', 'blocked', 'cancelled', 'error'];
+  const ST = ['complete', 'partial', 'family_only', 'not_found', 'no_results', 'pages_failed', 'search_failed', 'blocked', 'cancelled', 'error'];
   if (ST.includes(r.status)) {
     out.status = r.status;
     out.queries = Number(r.queries) || 0;
+    out.stop = str(r.stop, 10);
     out.needsLeft = (Array.isArray(r.needsLeft) ? r.needsLeft : []).filter((x) => ['sku', 'ean', 'images', 'brand', 'price'].includes(x));
-    if (r.sum && typeof r.sum === 'object') out.sum = JSON.parse(JSON.stringify(r.sum, (k, v) => (typeof v === 'string' ? v.slice(0, 40) : v)).slice(0, 2000));
+    if (r.sum && typeof r.sum === 'object') out.sum = JSON.parse(JSON.stringify(r.sum, (k, v) => (typeof v === 'string' ? v.slice(0, 40) : v)).slice(0, 3000));
+    out.family = (Array.isArray(r.family) ? r.family : []).slice(0, 20).filter((x) => x && typeof x === 'object').map((x) => ({ host: str(x.host, 100), url: url(x.url), name: str(x.name, 200), colour: str(x.colour, 60), sku: str(x.sku, 60), ean: String(x.ean || '').replace(/\D/g, '').slice(0, 14), price: num(x.price), avail: avail(x.avail), img: url(x.img), cls: cls(x.cls), at: at(x.at),
+      variants: (Array.isArray(x.variants) ? x.variants : []).slice(0, 8).map((v) => ({ colour: str(v.colour, 40), size: str(v.size, 20), sku: str(v.sku, 60), ean: String(v.ean || '').replace(/\D/g, '').slice(0, 14), price: num(v.price), avail: avail(v.avail), img: url(v.img) })) })).filter((x) => x.host && x.url);
+    if (r.aiq && Array.isArray(r.aiq.list)) out.aiq = { at: at(r.aiq.at), list: r.aiq.list.slice(0, 6).map((q) => str(q, 120)).filter(Boolean), model: str(r.aiq.model, 60) };
     const t = r.trace && typeof r.trace === 'object' ? r.trace : null;
-    if (t) out.trace = { at: str(t.at, 30), error: str(t.error, 200),
-      queries: (Array.isArray(t.queries) ? t.queries : []).slice(0, 12).map((q) => ({ q: str(q.q, 160), n: Number(q.n) || 0, error: str(q.error, 140), engines: Array.isArray(q.engines) ? q.engines.slice(0, 4).map((e) => ({ id: str(e.id, 10), state: str(e.state, 10), n: Number(e.n) || 0, error: str(e.error, 120) })) : null })),
-      pages: (Array.isArray(t.pages) ? t.pages : []).slice(0, 40).map((x) => ({ url: url(x.url).slice(0, 300), host: str(x.host, 100), q: Number(x.q) || 0, outcome: str(x.outcome, 16), why: str(x.why, 140) })) };
+    if (t) out.trace = { at: str(t.at, 30), error: str(t.error, 200), mode: t.mode === 'full' ? 'full' : 'auto', stop: str(t.stop, 10),
+      queries: (Array.isArray(t.queries) ? t.queries : []).slice(0, 40).map((q) => ({ q: str(q.q, 160), why: str(q.why, 12), n: Number(q.n) || 0, error: str(q.error, 140), engines: Array.isArray(q.engines) ? q.engines.slice(0, 8).map((e) => ({ id: str(e.id, 10), state: str(e.state, 10), n: Number(e.n) || 0, error: str(e.error, 120) })) : null })),
+      results: (Array.isArray(t.results) ? t.results : []).slice(0, 400).map((x) => ({ q: Number(x.q) || 0, url: url(x.url).slice(0, 300), host: str(x.host, 100), title: str(x.title, 120), engine: str(x.engine, 10), rank: Number.isFinite(x.rank) ? x.rank : null, cls: cls(x.cls), open: str(x.open, 30) })),
+      pages: (Array.isArray(t.pages) ? t.pages : []).slice(0, 200).map((x) => ({ url: url(x.url).slice(0, 300), host: str(x.host, 100), q: Number(x.q) || 0, cls: cls(x.cls), outcome: str(x.outcome, 16), why: str(x.why, 160), at: at(x.at), title: str(x.title, 120),
+        ...(x.facts && typeof x.facts === 'object' ? { facts: { title: str(x.facts.title, 120), sku: str(x.facts.sku, 60), ean: String(x.facts.ean || '').replace(/\D/g, '').slice(0, 14), price: num(x.facts.price), avail: avail(x.facts.avail), colour: str(x.facts.colour, 40) } } : {}),
+        ...(x.imgs != null ? { imgs: Number(x.imgs) || 0, imgHow: str(x.imgHow, 10) } : {}),
+        ...(x.ai && typeof x.ai === 'object' ? { ai: { verdict: str(x.ai.verdict, 12), reason: str(x.ai.reason, 160), confidence: Number(x.ai.confidence) || 0 } } : {}) })),
+      domains: (Array.isArray(t.domains) ? t.domains : []).slice(0, 120).map((d) => ({ host: str(d.host, 100), cls: cls(d.cls) })).filter((d) => d.host) };
   }
   return out;
 }
@@ -159,12 +176,18 @@ function registerCodes() {
       const done = new Set(payload.doneKeys || []);
       return done.size ? Object.assign({}, payload, { items: (payload.items || []).filter((x) => !done.has(x.k)) }) : payload;
     },
-    async run(payload, api) {
+    async run(payload, api, io0) {
       const cf = require('./codefind');
       const sfind = require('./supplierfind');
       const extract = require('./extract');
       const state = { blocked: new Set(), used: new Set(), signal: api.signal };
-      const io = { own: new Set(payload.own || []), search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500, signal: state.signal }), cancelled: api.cancelled, parallel: api.cloud ? 2 : 6 };
+      // the optional search APIs: their keys come on the computer's own line, never inside the job (io.searchKeys)
+      try { state.apis = api.cloud ? require('./searchkeys').config() : (io0 && io0.searchKeys ? await io0.searchKeys() : null); } catch (_) { state.apis = null; }
+      const io = { own: new Set(payload.own || []), compHosts: new Set(payload.compHosts || []), supplierHosts: new Set(payload.supplierHosts || []), limits: payload.limits || null,
+        search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500, signal: state.signal }), cancelled: api.cancelled, parallel: api.cloud ? 2 : 6 };
+      // the AI of this computer, when it has one: a few more searches, and a second look at doubtful pages (never more)
+      const aiTools = payload.ai && !api.cloud ? require('./airesearch').forWorker(api, payload.aiModel || '') : null;
+      if (aiTools) io.judge = aiTools.judge;
       const results = {};
       const items = (payload.items || []).slice(0, 40);
       let i = 0;
@@ -174,8 +197,11 @@ function registerCodes() {
         if (api.cancelled()) break;
         api.progress(i, items.length, `Έρευνα στο internet: ${it.name}`);
         let r = null;
+        // the AI proposes searches for a product that was searched before without the same product being found
+        let aiq = null;
+        if (aiTools && !(it.aiQueries || []).length && (it.mode === 'full' || (it.round || 0) >= 1)) { try { aiq = await aiTools.queries(it); if (aiq && aiq.list.length) it.aiQueries = aiq.list; } catch (_) { aiq = null; } }
         for (;;) {
-          try { r = await cf.lookUp(it, io); break; } catch (e) {
+          try { r = await cf.lookUp(it, io); if (aiq) r.aiq = aiq; break; } catch (e) {
             if (!(e instanceof sfind.Blocked)) { r = { hits: [], read: 0, status: e && e.cancelled ? 'cancelled' : 'error', trace: { at: U.nowIso(), queries: [], pages: [], error: String(e.message || e).slice(0, 200) } }; break; }
             // the search engines rest: on a computer, wait a minute and go on (up to a quarter of an hour); in the cloud
             // (one job at a time there) stop: the products left are due again in a few hours
@@ -195,6 +221,7 @@ function registerCodes() {
         i++;
       }
       if (api.partial && Object.keys(sent).length) await api.partial({ results: sent });
+      if (aiTools && aiTools.stats.calls) api.log(`AI του υπολογιστή: ${aiTools.stats.calls} ερωτήσεις, ${Math.round(aiTools.stats.ms / 1000)}″, ${aiTools.stats.tokens} tokens`);
       return { results };
     },
     async applyPartial(job, result) {

@@ -383,8 +383,16 @@ const routes = {
     if (b.site && b.id) {
       const p = catalog.byId(b.site === 'st' ? 'st' : 'sf').get(Number(b.id));
       if (!p) throw new Error('Δεν βρέθηκε το προϊόν.');
-      const items = cf.itemsFor([(b.site === 'st' ? 'st' : 'sf') + ':' + p.id]);
-      return jobs.start('codes', 'Κωδικός από το internet: ' + p.name.slice(0, 60), (job) => webCodes(job, { items }));
+      // «Πλήρης έρευνα Internet» (mode full): the whole plan, also for a product that has its code and EAN
+      const mode = b.mode === 'full' ? 'full' : '';
+      const items = cf.itemsFor([(b.site === 'st' ? 'st' : 'sf') + ':' + p.id], mode);
+      const label = (mode ? 'Πλήρης έρευνα Internet: ' : 'Έρευνα στο internet: ') + p.name.slice(0, 60);
+      return (async () => {
+        // a computer that searches is on: it goes first in its queue (a person is waiting); else it is done here
+        const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web') && workerActive(w)) : [];
+        if (ws.length) { const j = await coord.enqueue('codes.web', webPayload(items), { priority: 40, label, by: 'person' }); return coord.job(j.id); }
+        return jobs.start('codes', label, (job) => webCodes(job, { items }));
+      })();
     }
     if (Array.isArray(b.keys) && b.keys.length) {
       // chosen products (e.g. «Χωρίς στοιχεία»): to the computers first in the queue, or here when there is none
@@ -393,9 +401,7 @@ const routes = {
       return (async () => {
         const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web')) : [];
         if (ws.length) {
-          const s0 = settings.all();
-          const own = ['sf', 'st'].map((x) => { try { return new URL(s0.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
-          for (let i = 0; i < items.length; i += 10) await coord.enqueue('codes.web', { items: items.slice(i, i + 10), own }, { dedupKey: 'codes.web:pick:' + items[i].k + ':' + Date.now(), priority: 20, auto: true });
+          for (let i = 0; i < items.length; i += 10) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 10)), { dedupKey: 'codes.web:pick:' + items[i].k + ':' + Date.now(), priority: 20, auto: true });
           await feedWebResearch();
           return { queued: items.length, computers: ws.length };
         }
@@ -405,13 +411,40 @@ const routes = {
     return jobs.start('codes', 'Κωδικοί από το internet', (job) => webCodes(job, { max: Math.min(200, Number(b.max) || 25) }));
   },
   'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
+  // families: the same model sold as separate products, one per colour — proposals, a yes, then the files of the change
+  'GET /api/families': (q) => require('./lib/families').list(q.site === 'st' ? 'st' : 'sf'),
+  'GET /api/families/of': (q) => require('./lib/families').ofProduct(q.site === 'st' ? 'st' : 'sf', q.id) || { none: true },
+  'POST /api/families/decide': (b, _, ctx) => require('./lib/families').decide(b.site === 'st' ? 'st' : 'sf', String(b.key || ''), String(b.answer || ''), ctx && ctx.user ? ctx.user.name : ''),
+  'POST /api/families/export': (b) => {
+    const r = require('./lib/families').exportFiles(b.site === 'st' ? 'st' : 'sf', String(b.key || ''), { parentSku: b.parentSku, variantSkus: b.variantSkus });
+    return { title: r.family.title, mode: r.mode, parentSku: r.parentSku, notes: r.notes, files: r.files.map((f) => Object.assign({ what: f.what }, saveExport(f.name, f.csv))) };
+  },
+  // a person's question to the AI about one product: better title / features / category, from its real facts only
+  'POST /api/ai/suggest': async (b) => {
+    const site = b.site === 'st' ? 'st' : 'sf';
+    const p = catalog.byId(site).get(Number(b.id));
+    if (!p) throw new Error('Δεν βρέθηκε το προϊόν.');
+    const cf = require('./lib/codefind');
+    const key = site === 'st' && catalog.links().stToSf.has(p.id) ? 'sf:' + catalog.links().stToSf.get(p.id) : site + ':' + p.id;
+    const hits = cf.hitsFor(key);
+    const facts = [`Τίτλος: ${p.name}`, p.brand ? `Μάρκα: ${p.brand}` : '', p.sku ? `Κωδικός: ${p.sku}` : '', ...(p.attrs || []).map((a) => `${a.name}: ${a.terms.join(', ')}`), U.stripTags(p.desc || '').slice(0, 1500), ...hits.slice(0, 4).map((h) => `Σε κατάστημα (${h.host}): ${h.name}`)].filter(Boolean).join('\n');
+    return require('./lib/airesearch').suggestFor(p, facts);
+  },
+  // the live page of a product as Google reads it: what the site already produces, what is missing, how to fix it
+  'GET /api/seo/audit': (q) => require('./lib/seoaudit').audit(q.site === 'st' ? 'st' : 'sf', q.id),
+  'GET /api/ai/log': () => { const d = store.read('ai-log', null) || {}; return { totals: d.totals || {}, items: (d.items || []).slice(-30).reverse() }; },
+  // a site of the internet: approved (its prices count) / rejected / nothing; the list of sites by kind
+  'POST /api/codes/shop': (b) => require('./lib/codefind').decideShop(b.host, b.answer),
+  'GET /api/codes/sites': (q) => require('./lib/codefind').sites(q),
+  'GET /api/search-keys': () => require('./lib/searchkeys').view(),
+  'POST /api/search-keys': (b) => require('./lib/searchkeys').save(b),
   // what the internet research did for one product: searches, engines, pages opened, why each was kept or left out
   'GET /api/codes/trace': (q) => {
     const site = q.site === 'st' ? 'st' : 'sf';
     const id = Number(q.id);
     let key = site + ':' + id;
     if (site === 'st') { const sfId = catalog.links().stToSf.get(id); if (sfId != null) key = 'sf:' + sfId; }
-    return require('./lib/codefind').traceFor(key) || { status: 'never' };
+    return require('./lib/codefind').traceFor(key, q) || { status: 'never' };
   },
   'GET /api/flow': (q) => require('./lib/flow').view(q),
   'POST /api/market/manual': (b) => market.addManual(b.site, b.id, b),
@@ -593,7 +626,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['POST /api/workers/mode', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -722,7 +755,7 @@ let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
   'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
-  'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
+  'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
@@ -790,6 +823,8 @@ async function handleWorker(req, res, url, q, key0) {
       if (q.have && q.have === pk.v) return send(res, 200, Buffer.alloc(0), 'application/gzip', { ETag: pk.v });
       return send(res, 200, pk.gz, 'application/gzip', { ETag: pk.v });
     }
+    // the optional search APIs of the research (keys opened only here, for a paired computer; never in a job)
+    if (key0 === 'GET /api/worker/search-keys') return send(res, 200, { apis: require('./lib/searchkeys').config() });
     if (key0 === 'GET /api/worker/comp') {
       const j = await coord.rawJob(String(q.job || ''));
       if (!j || j.workerId !== w.id) return send(res, 403, { error: 'Δεν είναι δική σου εργασία.' });
@@ -821,15 +856,23 @@ async function webCodes(job, opts) {
     // (never a product that is already waiting in the queue: the same product twice was searched twice)
     const busy = new Set((await coord.liveOf('codes.web')).flatMap((j) => ((j.payload && j.payload.items) || []).map((x) => x.k)));
     const items = cf.candidates((o.max || 200) + busy.size).filter((x) => !busy.has(x.k)).slice(0, o.max || 200);
-    const s = settings.all();
-    const own = ['sf', 'st'].map((x) => { try { return new URL(s.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
     const day = market.localDay(new Date());
     let n = 0;
-    for (let i = 0; i < items.length; i += 20) { await coord.enqueue('codes.web', { items: items.slice(i, i + 20), own }, { dedupKey: `codes.web:${day}:${i / 20}`, auto: !!o.auto, priority: o.auto ? 0 : 5 }); n++; }
+    for (let i = 0; i < items.length; i += 20) { await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20)), { dedupKey: `codes.web:${day}:${i / 20}`, auto: !!o.auto, priority: o.auto ? 0 : 5 }); n++; }
     job && job.log(`Κωδικοί από το internet: ${items.length} προϊόντα σε ${n} ομάδες, στους υπολογιστές των μαγαζιών.`);
     return { queued: items.length };
   }
   return cf.run(job, { max: o.max || 25, items: o.items });
+}
+/**
+ * A group of products for the research on the internet, with what the computer needs to class the sites and to stay
+ * within the limits of the settings (no key of a search API: those it asks for on its own line).
+ */
+function webPayload(items) {
+  const cf = require('./lib/codefind');
+  const s = settings.all();
+  const ch = cf.contextHosts();
+  return { items, own: [...cf.ownHosts()], compHosts: ch.compHosts, supplierHosts: ch.supplierHosts, limits: s.webResearch, ai: !!(s.localAI && s.localAI.enabled && s.localAI.research !== false), aiModel: (s.localAI && s.localAI.model) || '' };
 }
 /**
  * The free AI (Ollama) in server mode: the cloud has none, so a question goes to a shop's computer that has it
@@ -893,9 +936,7 @@ async function feedWebResearch() {
   const cf = require('./lib/codefind');
   const items = cf.candidates(400).filter((x) => !busy.has(x.k)).slice(0, want * 20);
   if (!items.length) return;
-  const s = settings.all();
-  const own = ['sf', 'st'].map((x) => { try { return new URL(s.sites[x].url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } }).filter(Boolean);
-  for (let i = 0; i < items.length; i += 20) await coord.enqueue('codes.web', { items: items.slice(i, i + 20), own }, { dedupKey: 'codes.web:' + items[i].k + ':' + Date.now(), auto: true, priority: 0 });
+  for (let i = 0; i < items.length; i += 20) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20)), { dedupKey: 'codes.web:' + items[i].k + ':' + Date.now(), auto: true, priority: 0 });
 }
 async function useWorkers() { return SERVER && coordReady && (await coord.workersView()).length > 0; }
 /**
@@ -1199,7 +1240,7 @@ function afterStart() {
           // 2. competitor prices for every product (on the computers of the shops when there are any)
           const res = (await useWorkers()) ? await distributedResearch(job, { auto: true }) : await market.run(null, job, { auto: true });
           // 3. missing descriptions / photos / brands: sources from the suppliers, for approval (a few pages a day)
-          if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60 }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
+          if (!job.cancelled()) { try { const f = await fixes.findSources(job, { maxPages: 60, viaQueue: await useWorkers() }); if (f) job.log(`Διορθώσεις: πηγές για ${f.found} προϊόντα (${f.pages} σελίδες αντιπροσώπων).`); } catch (e) { job.log('Διορθώσεις: ' + e.message); } }
           // 4. codes (SKU / EAN) of products without one, from the shops of the internet with the same product
           if (!job.cancelled()) { try { const c = await webCodes(job, { auto: true, max: 25 }); if (c && c.looked != null) job.log(`Κωδικοί από το internet: ${c.looked} προϊόντα, κάτι βρέθηκε για ${c.withCode}.`); } catch (e) { job.log('Κωδικοί από το internet: ' + e.message); } }
           return res;

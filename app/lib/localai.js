@@ -134,10 +134,48 @@ async function ask(prompt, opts) {
   if (!c.enabled && !o.force) throw aiError('disabled', 'Το τοπικό AI είναι κλειστό (Ρυθμίσεις → AI: «Ενεργό»).');
   const model = o.model || (await chooseModel()).model;
   const t0 = Date.now();
-  const r = await call('/api/generate', { model, prompt, stream: false, keep_alive: '15m', options: { temperature: o.temperature == null ? 0.3 : o.temperature, num_ctx: NUM_CTX, num_predict: o.maxTokens || 1200 } }, o.timeout || GEN_TIMEOUT, { model });
+  const body = Object.assign({ model, prompt, stream: false, keep_alive: '15m', options: { temperature: o.temperature == null ? 0.3 : o.temperature, num_ctx: NUM_CTX, num_predict: o.maxTokens || 1200 } }, o.format ? { format: o.format } : {}, o.system ? { system: o.system } : {});
+  const r = await call('/api/generate', body, o.timeout || GEN_TIMEOUT, { model });
   const text = cleanAnswer(r.response);
   if (!text) throw aiError('empty', `Το μοντέλο ${model} δεν έδωσε απάντηση. Δοκίμασε ξανά ή άλλο μοντέλο.`);
-  return { text, model, ms: Date.now() - t0, tokens: Number(r.eval_count) || 0, cut: r.done_reason === 'length' };
+  const out = { text, model, ms: Date.now() - t0, tokens: Number(r.eval_count) || 0, promptTokens: Number(r.prompt_eval_count) || 0, cut: r.done_reason === 'length' };
+  logUse(o.task || 'text', out);
+  return out;
+}
+/** Every question to the AI written down (task, model, time, tokens): the screen shows what the AI costs. */
+function logUse(task, a) {
+  try {
+    require('./store').update('ai-log', {}, (d) => {
+      d.items = (d.items || []).concat([{ at: new Date().toISOString(), task: String(task).slice(0, 20), model: a.model, ms: a.ms, tokens: a.tokens, promptTokens: a.promptTokens || 0, ok: a.ok !== false }]).slice(-300);
+      const t = (d.totals = d.totals || {})[task] || { calls: 0, ms: 0, tokens: 0 };
+      t.calls++; t.ms += a.ms || 0; t.tokens += (a.tokens || 0) + (a.promptTokens || 0); d.totals[task] = t;
+      return d;
+    });
+  } catch (_) { /* never in the way */ }
+}
+
+/**
+ * A structured answer (Ollama structured outputs: the JSON Schema goes as «format»). The answer is parsed and checked
+ * with validate(obj) → the clean object or null; one more try only when the answer is not valid JSON / not valid.
+ * Older Ollama without schemas: asked again with format 'json'. → { data, model, ms, tokens, tries }
+ */
+async function askJson(prompt, schema, validate, opts) {
+  const o = Object.assign({ temperature: 0, maxTokens: 500 }, opts || {});
+  let last = null, tries = 0;
+  for (const fmt of [schema, schema, 'json']) {
+    tries++;
+    let a;
+    try { a = await ask(prompt, Object.assign({}, o, { format: fmt })); } catch (e) {
+      if (/format|schema|invalid/i.test(e.message) && fmt !== 'json') { last = e; continue; }
+      throw e;
+    }
+    let obj = null;
+    try { obj = JSON.parse(a.text.replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch (_) { obj = null; }
+    const clean = obj && validate ? validate(obj) : obj;
+    if (clean) return Object.assign({ data: clean, tries }, a);
+    last = aiError('bad_json', 'Το AI δεν έδωσε έγκυρη δομημένη απάντηση.');
+  }
+  throw last || aiError('bad_json', 'Το AI δεν έδωσε έγκυρη δομημένη απάντηση.');
 }
 async function generate(prompt, opts) { return (await ask(prompt, opts)).text; }
 
@@ -276,4 +314,4 @@ async function translateFull(html) {
 }
 async function translate(html) { return (await translateFull(html)).html; }
 
-module.exports = { setRemote, status, generate, ask, test, describe, describeFull, translate, translateFull, pickModel, modelsOf, resolveUrl, ollamaFetch, guardFacts, cleanAnswer, toHtml, DEFAULT_URL, where };
+module.exports = { askJson, logUse, setRemote, status, generate, ask, test, describe, describeFull, translate, translateFull, pickModel, modelsOf, resolveUrl, ollamaFetch, guardFacts, cleanAnswer, toHtml, DEFAULT_URL, where };

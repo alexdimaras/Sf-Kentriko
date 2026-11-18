@@ -195,7 +195,10 @@ function typeGroupsOf(toks) {
   return groups;
 }
 const PATTERNS = new Set(['MULTICAM', 'KRYPTEK', 'ATACS', 'PENCOTT', 'CAMO', 'WOODLAND', 'FLECKTARN', 'MARPAT', 'DIGITAL', 'URBAN', 'ACU', 'UCP', 'TROPIC', 'ARID', 'ALPINE', 'SNOW', 'TIGER', 'REALTREE', 'MOSSYOAK']);
-const COLOR_ALIAS = { GRAY: 'GREY', OD: 'OLIVE', BLK: 'BLACK', GRN: 'GREEN', WHT: 'WHITE', NAVYBLUE: 'NAVY', DARKBLUE: 'NAVY', MC: 'MULTICAM' };
+const COLOR_ALIAS = { GRAY: 'GREY', OD: 'OLIVE', BLK: 'BLACK', GRN: 'GREEN', WHT: 'WHITE', NAVYBLUE: 'NAVY', DARKBLUE: 'NAVY', MC: 'MULTICAM',
+  // the German shops and makers (Mil-Tec, Brandit…): their colour words
+  OLIV: 'OLIVE', OLIVGRUN: 'OLIVE', SCHWARZ: 'BLACK', GRAU: 'GREY', ROT: 'RED', BLAU: 'BLUE', WEISS: 'WHITE', BRAUN: 'BROWN', STEINGRAU: 'GREY', OLIVEDRAB: 'OLIVE' };
+for (const k of Object.keys(COLOR_ALIAS)) COLORS.add(k);
 const GREEK_COLORS = [[/^ΜΑΥΡ/, 'BLACK'], [/^(ΛΕΥΚ|ΑΣΠΡ)/, 'WHITE'], [/^ΓΚΡΙ/, 'GREY'], [/^ΜΠΛΕ/, 'BLUE'], [/^ΚΟΚΚΙΝ/, 'RED'], [/^ΚΑΦΕ/, 'BROWN'], [/^ΠΡΑΣΙΝ/, 'GREEN'],
   [/^ΛΑΔΙ/, 'OLIVE'], [/^ΧΑΚΙ/, 'KHAKI'], [/^ΜΠΕΖ/, 'BEIGE'], [/^ΠΟΡΤΟΚΑΛ/, 'ORANGE'], [/^ΚΙΤΡΙΝ/, 'YELLOW'], [/^ΡΟΖ$/, 'PINK'], [/^ΜΩΒ$/, 'PURPLE'], [/^ΑΣΗΜ/, 'SILVER'],
   [/^ΧΡΥΣ/, 'GOLD'], [/^ΠΑΡΑΛΛΑΓ/, 'CAMO'], [/^ΕΡΗΜΟΥ$/, 'DESERT'], [/^ΑΜΜΟΥ$/, 'SAND'], [/^ΜΠΟΡΝΤΟ/, 'RED'], [/^ΔΙΑΦΑΝ/, 'CLEAR'], [/^ΦΙΜΕ$/, 'SMOKE']];
@@ -423,6 +426,12 @@ function compare(f, cand, cf) {
     if (mod) { match = 'similar'; why = `Έχει επιπλέον «${mod}» (άλλη έκδοση;)`; }
     else if (lost) { match = 'similar'; why = `Δεν έχει το «${lost}» (άλλη έκδοση;)`; }
     else if (code) { match = 'similar'; why = `Έχει άλλο κωδικό μοντέλου «${code}»`; }
+    // only general words (ASSAULT MOLLE SMALL): together they still name one model when ALL of them are there, three
+    // or more, with the same brand, the same colour named on both sides and nothing more in their title
+    else if (!realHit && !codeHit && ratio === 1 && f.keys.length >= 3 && brandOk && !extra.length && f.colors.size && cf.colors.size) {
+      const same = [...f.colors].every((c) => cf.colors.has(c)) && [...cf.colors].every((c) => f.colors.has(c));
+      if (!same) { match = 'family'; why = `Ίδιο μοντέλο, άλλη παραλλαγή: εκείνοι ${[...cf.colors].join(' ')}, εμείς ${[...f.colors].join(' ')}`; }
+    }
     else if (!realHit && !codeHit) { match = 'similar'; why = 'Ταιριάζουν μόνο γενικές λέξεις/νούμερα (' + hit.join(' ') + ')'; }
     else if (missing.some((k) => /\d/.test(k) || (k.length <= 4 && /^[A-Z]+$/.test(k)))) { match = 'similar'; why = 'Δεν έχει το «' + missing.find((k) => /\d/.test(k) || k.length <= 4) + '» (άλλη έκδοση;)'; }
     else if (missing.length && extra.length) { match = 'similar'; why = `Εμείς «${missing.slice(0, 2).join(' ')}», εκείνοι «${extra.slice(0, 2).join(' ')}»`; }
@@ -438,7 +447,10 @@ function compare(f, cand, cf) {
   if (match === 'exact' && !skuHit) {
     const partMissing = f.parts.find((st) => !cf.nameKey.includes(' ' + st));
     const partExtra = cf.parts.find((st) => !f.nameKey.includes(' ' + st));
-    if (codeClash(f.code, cf.code)) { match = 'similar'; why = `Άλλος κωδικός: εμείς ${f.code.base}, εκείνοι ${cf.code.base}`; }
+    const colourOnly = f.colors.size && cf.colors.size && [...f.colors].some((c) => !cf.colors.has(c)) && [...cf.colors].some((c) => !f.colors.has(c));
+    // two codes of one model that differ where the colour differs (PL-RCN-CD-11 coyote / -02 olive): the same family
+    if (codeClash(f.code, cf.code) && colourOnly) { match = 'family'; why = `Ίδιο μοντέλο, άλλη παραλλαγή: εκείνοι ${[...cf.colors].join(' ')} (${cf.code.base}), εμείς ${[...f.colors].join(' ')} (${f.code.base})`; }
+    else if (codeClash(f.code, cf.code)) { match = 'similar'; why = `Άλλος κωδικός: εμείς ${f.code.base}, εκείνοι ${cf.code.base}`; }
     else if (f.gtin && cf.gtin && f.gtin !== cf.gtin) { match = 'similar'; why = 'Άλλο EAN'; }
     else if (f.bundle !== cf.bundle) { match = 'similar'; why = cf.bundle ? 'Εκείνοι πουλάνε σετ / πακέτο' : 'Εμείς πουλάμε σετ / πακέτο'; }
     else if (partMissing) { match = 'similar'; why = 'Το δικό μας έχει και κάτι ακόμα («με …») που δεν φαίνεται στο δικό τους'; }
@@ -447,15 +459,15 @@ function compare(f, cand, cf) {
   }
   if (f.used || cf.used) { if (f.used !== cf.used) { match = 'similar'; why = 'Μεταχειρισμένο / καινούργιο'; } }
   if (match === 'exact' && (f.women !== cf.women || f.kids !== cf.kids)) { match = 'similar'; why = f.women !== cf.women ? 'Γυναικείο / ανδρικό;' : 'Παιδικό;'; }
-  // colours: same model in another solid colour costs the same; another camo pattern often does not
+  // colours: the MODEL may be the same, the VARIANT is not. Each title names a colour the other does not (URBAN of
+  // «URBAN LINE» on both sides proves nothing) → «the same family, another variant»: shown, never counted as the same
+  // product (its price, code, EAN and photos are the other colour's) — unless the whole code or the EAN is the same
   let colour = 0;
   if (f.colors.size && cf.colors.size) {
-    const common = [...f.colors].some((c) => cf.colors.has(c));
-    colour = common ? 1 : -1;
-    if (!common && match === 'exact' && !skuHit) {
-      const pat = [...f.colors, ...cf.colors].some((c) => PATTERNS.has(c));
-      if (pat) { match = 'similar'; why = 'Άλλο χρώμα/παραλλαγή: ' + [...cf.colors].join(' '); } else why = 'Άλλο χρώμα (' + [...cf.colors].join(' ') + ')';
-    }
+    const onlyOurs = [...f.colors].filter((c) => !cf.colors.has(c)), onlyTheirs = [...cf.colors].filter((c) => !f.colors.has(c));
+    const clash = onlyOurs.length > 0 && onlyTheirs.length > 0;
+    colour = clash ? -1 : [...f.colors].some((c) => cf.colors.has(c)) ? 1 : 0;
+    if (clash && match === 'exact' && !skuFull) { match = 'family'; why = `Ίδιο μοντέλο, άλλη παραλλαγή: εκείνοι ${onlyTheirs.join(' ')}, εμείς ${onlyOurs.join(' ')}`; }
   }
   if (match === 'exact' && !skuFull && f.price > 0 && cand.p > 0) {
     const r = cand.p / f.price;
@@ -562,7 +574,7 @@ function bestIn(f, ix, comp, confirmed, ignored) {
     if (confirmed && confirmed.has(c.u)) s = { match: 'exact', score: 1, why: '', how: 'confirmed' };
     if (s.match === 'none') continue;
     // the same product wins over a similar one; an in-stock listing wins over an out-of-stock one
-    const rank = (s.match === 'exact' ? 2 : 1) + (c.st ? 0.5 : 0) + s.score / 10;
+    const rank = (s.match === 'exact' ? 3 : s.match === 'family' ? 2 : 1) + (c.st ? 0.5 : 0) + s.score / 10;
     if (!best || rank > best.rank || (rank === best.rank && c.p < best.c.p)) best = { rank, c, s };
   }
   if (!best) return null;
@@ -604,6 +616,9 @@ function stats(list, ctx) {
   for (const c of list) {
     c.used = false; c.note = ''; c.flag = '';
     if (c.ignored) { c.flag = 'ignored'; continue; }
+    // another colour / size of the same model: its price is that variant's (counted only after a person's yes)
+    if (c.web && c.pendingShop && !c.confirmed) { c.flag = 'newshop'; c.note = 'νέο κατάστημα του internet: μετράει όταν εγκρίνεις το κατάστημα'; continue; }
+    if (c.match === 'family') { c.flag = 'family'; c.note = c.note || 'άλλη παραλλαγή του ίδιου μοντέλου: η τιμή της δεν μετράει'; continue; }
     if (c.match !== 'exact') { c.flag = 'similar'; continue; }
     if (s.marketGreekOnly && c.country === 'other') { c.flag = 'foreign'; c.note = 'κατάστημα εξωτερικού'; continue; }
     if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
@@ -647,6 +662,8 @@ function stats(list, ctx) {
     count: prices.length, min: prices[0] || 0, max: prices[prices.length - 1] || 0, median: U.median(prices),
     minShop: cheapest ? cheapest.shop : '', maxShop: dearest ? dearest.shop : '',
     similar: list.filter((c) => c.flag === 'similar').length,
+    family: list.filter((c) => c.flag === 'family').length,
+    newShops: list.filter((c) => c.flag === 'newshop').length,
     outOfStock: list.filter((c) => c.flag === 'out').length,
     unknownStock: list.filter((c) => c.flag === 'unknown').length,
     suspect: list.filter((c) => c.flag === 'suspect').length,
@@ -704,6 +721,8 @@ function decision(ours, st, list, floor, costVat) {
     if (st.outOfStock && !st.unknownStock) reason = 'Κανείς άλλος δεν το έχει διαθέσιμο: δεν χρειάζεται μείωση τιμής.';
     else if (st.unknownStock) reason = `Βρέθηκε σε ${st.unknownStock} ${st.unknownStock === 1 ? 'κατάστημα' : 'καταστήματα'} χωρίς επιβεβαιωμένη διαθεσιμότητα: δεν μετράει για αλλαγή τιμής.`;
     else if (sus.length) reason = 'Οι μόνες τιμές που βρέθηκαν είναι ύποπτες.' + susText;
+    else if (st.newShops) reason = `Βρέθηκε σε ${st.newShops} ${st.newShops === 1 ? 'νέο κατάστημα' : 'νέα καταστήματα'} του internet: μετράει μόλις εγκρίνεις το κατάστημα.`;
+    else if (st.family) reason = `Βρέθηκε το ίδιο μοντέλο σε άλλο χρώμα/παραλλαγή (${st.family}): η τιμή του δεν μετράει για το δικό σου, εκτός αν επιβεβαιώσεις ότι ισχύει και γι' αυτό.`;
     else if (st.similar) reason = 'Υπάρχουν μόνο παρόμοια προϊόντα: επιβεβαίωσε αν είναι ίδια.';
     return Object.assign({ action: 'nodata', reason }, none);
   }
@@ -766,6 +785,11 @@ function mergeWeb(byKey) {
   const byId = { sf: catalog.byId('sf'), st: catalog.byId('st') };
   const compHosts = new Set(competitors().map((c) => U.hostOf(c.url)).filter(Boolean));
   const at = U.nowIso();
+  // a shop of the internet that is not on our list: its price is shown, and counts only after a person's yes for that
+  // shop (Τιμές → «Έγκριση καταστήματος», or adding it to the competitors); a rejected shop is not shown at all
+  const needOk = (settings.all().webResearch || {}).approveNewShops !== false;
+  const shopDec = require('./codefind').shopDecisions();
+  const approved = new Set(shopDec.approved), rejected = new Set(shopDec.rejected);
   let n = 0;
   for (const [key, hits] of Object.entries(byKey || {})) {
     const [site, id] = key.split(':');
@@ -773,7 +797,8 @@ function mergeWeb(byKey) {
     if (!p) continue;
     // (only prices in euro; a page that showed another currency gave none) · in stock only when the page said so
     // (unknown stays unknown) · the date is the day the PAGE was read, not the day of this merge
-    const offers = (hits || []).filter((h) => Number(h.price) > 0 && h.host && !compHosts.has(h.host) && (!h.currency || h.currency === 'EUR')).map((h) => ({
+    const offers = (hits || []).filter((h) => Number(h.price) > 0 && h.host && !compHosts.has(h.host) && !rejected.has(h.host) && (!h.currency || h.currency === 'EUR')).map((h) => ({
+      pendingShop: needOk && !approved.has(h.host) && h.cls !== 'supplier' && h.cls !== 'maker',
       shop: h.host, competitorId: 'web:' + h.host, name: h.name || '', sku: h.code || '', brand: h.brand || '', url: h.url, price: U.r2(Number(h.price)), priceMax: 0, regular: Number(h.regular) > h.price ? U.r2(Number(h.regular)) : 0,
       inStock: h.avail === 'in' ? true : h.avail === 'out' ? false : null, avail: h.avail || 'unknown', img: h.img || '',
       // the same code with titles that differ: shown as «similar» until a person says yes (never counted by itself)
@@ -823,7 +848,7 @@ function readable() { return competitors().filter((c) => c.enabled !== false && 
  */
 async function wantedPages(list, byId) {
   const pace = require('./bg').pacer();
-  const byBrand = new Map(), codes = new Set();
+  const byBrand = new Map(), codes = new Set(), pairs = new Map();
   for (const t of list) {
     if (pace.due()) await pace.rest();
     const p = byId[t.site] && byId[t.site].get(Number(t.id));
@@ -831,6 +856,9 @@ async function wantedPages(list, byId) {
     const f = features(p);
     const keys = f.alpha.filter((k) => k.length >= 3 && !WEAK.has(k) && !MODIFIERS.has(k));
     for (const b of f.bt) { if (b.length < 3) continue; let set = byBrand.get(b); if (!set) byBrand.set(b, (set = new Set())); for (const k of keys) set.add(k); }
+    // no brand (and no code): two of its model words in the address (RACCOON + MK2) — a product without a brand is
+    // looked for too (it used to be left out of every site map)
+    if (!f.bt.length && keys.length >= 2) for (const k of keys) { let set = pairs.get(k); if (!set) pairs.set(k, (set = new Set())); for (const o of keys) if (o !== k) set.add(o); }
     for (const c of f.codes) codes.add(c);
     if (f.code && f.code.base.length >= 5) codes.add(f.code.base);
   }
@@ -839,6 +867,8 @@ async function wantedPages(list, byId) {
       if (codes.has(t)) return true;
       const ks = byBrand.get(t);
       if (ks) for (const k of tokens) if (ks.has(k)) return true;
+      const ps = pairs.get(t);
+      if (ps) for (const k of tokens) if (ps.has(k)) return true;
     }
     return false;
   };
@@ -1000,7 +1030,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 5; // 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
+const MATCH_VERSION = 6; // 6: another colour = the same family, another variant (not counted) // 5: 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -1114,7 +1144,7 @@ function addManual(site, id, input) {
 }
 
 /** Recalculate suggestions after settings or our prices change. */
-const LOGIC_VERSION = 4; // bump when the rules of stats()/suggest()/decision() change // 4: unknown stock never counts
+const LOGIC_VERSION = 5; // 5: a new shop of the internet counts after a yes for it // // bump when the rules of stats()/suggest()/decision() change // 4: unknown stock never counts
 function recompute() {
   const catalog = require('./catalog');
   const all = results();
@@ -1173,7 +1203,9 @@ function overview(site, q) {
   const ws = require('./codefind').stateOf(rows.map((r) => r.key));
   for (const r of rows) {
     const w = ws[r.key];
-    r.web = queuedWeb.has(r.key) ? { state: 'queued' } : w ? { state: w.prices ? 'found' : 'notfound', at: w.at, hits: w.hits, prices: w.prices } : { state: 'never' };
+    // «no price» is not «not found», and «not found» is not «the search failed»: each said as it is
+    const st = !w ? 'never' : w.prices ? 'found' : w.hits ? 'noprice' : ['not_found', 'no_results', 'family_only'].includes(w.status) || !w.status ? 'notfound' : w.status;
+    r.web = queuedWeb.has(r.key) ? { state: 'queued' } : w ? { state: st, status: w.status || '', at: w.at, hits: w.hits, prices: w.prices, family: w.family || 0 } : { state: 'never' };
   }
   const counts = { lower: 0, raise: 0, hold: 0, watch: 0, nodata: 0, similar: 0, suspect: 0, all: rows.length, products: cat.products.filter((p) => p.type !== 'variation').length, notReady: rows.filter((r) => r.stage && r.stage < 4).length };
   for (const r of rows) { counts[r.action] = (counts[r.action] || 0) + 1; if (r.stats.similar) counts.similar++; if (r.stats.suspect) counts.suspect++; }

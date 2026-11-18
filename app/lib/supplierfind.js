@@ -15,6 +15,8 @@ const KEY = 'supplier-candidates';
 const OWN = /(^|\.)(specialforces|stratiotikaeidi)\.gr$/i;
 // marketplaces, social, search engines, directories, news, big chains: never a supplier
 const NEVER = /(^|\.)(skroutz|bestprice|amazon|ebay|aliexpress|alibaba|temu|shein|wish|etsy|facebook|instagram|youtube|youtu|linkedin|wikipedia|wikiwand|pinterest|tiktok|twitter|x|threads|reddit|quora|google|bing|duckduckgo|yahoo|yandex|baidu|xo|vrisko|11888|europages|kompass|dnb|opencorporates|trustpilot|tripadvisor|glami|shopflix|public|plaisio|kotsovolos|e-shop|insomnia|carousell|car|spitogatos|vendora|gumtree|olx|allegro|idealo|pricerunner|kelkoo|ceneo|heureka|zbozi|compari|gunbroker|armslist|reddit|imdb|fandom|scribd|issuu|slideshare|medium|blogspot|wordpress|wix|weebly)\.[a-z.]+$/i;
+// what kind of site a host is, for the research on the internet (recorded, never thrown away silently)
+const MARKETPLACE = /(^|\.)(skroutz|bestprice|amazon|ebay|aliexpress|alibaba|temu|shein|wish|etsy|glami|shopflix|public|vendora|gumtree|olx|allegro|idealo|pricerunner|kelkoo|ceneo|heureka|zbozi|compari|gunbroker|armslist|carousell)\.[a-z.]+$/i;
 const DIST = /ΑΝΤΙΠΡΟΣΩΠ|ΕΙΣΑΓΩΓ|ΔΙΑΝΟΜ|ΧΟΝΔΡ|ΑΠΟΚΛΕΙΣΤΙΚ|ΕΠΙΣΗΜΟΣ ΑΝΤΙΠΡ|DISTRIBUT|IMPORTER|IMPORT |WHOLESAL|DEALER|RESELLER|OFFICIAL|EXCLUSIVE|B2B|ΕΜΠΟΡΙΑ/;
 const SHOPISH = /ΚΑΛΑΘΙ|ΑΓΟΡΑ ΤΩΡΑ|ΠΡΟΣΘΗΚΗ|ADD TO CART|BUY NOW|ΤΙΜΗ:|€/;
 
@@ -141,6 +143,43 @@ const ENGINES = [
   { id: 'bing', name: 'Bing', url: (q) => (process.env.SFK_SEARCH_BING || 'https://www.bing.com/search') + '?q=' + encodeURIComponent(q) + '&setlang=el&cc=GR', parse: parseBing, host: 'bing.com' },
   { id: 'yahoo', name: 'Yahoo', url: (q) => (process.env.SFK_SEARCH_YAHOO || 'https://search.yahoo.com/search') + '?p=' + encodeURIComponent(q) + '&ei=UTF-8', parse: parseYahoo, host: 'yahoo.com', wideOnly: true },
 ];
+// Optional search APIs (the user's choice, with the user's key): never required — without them the engines above are
+// used. SearXNG is free (a person's own instance, also on the shop's PC); Brave and Google Programmable Search have free
+// daily quotas. Google's own result pages are never scraped (against its terms, and it blocks them anyway).
+// cfg: { searxng: { url }, brave: { key, perDay }, google: { key, cx, perDay } } — kept encrypted (lib/searchkeys.js).
+const usage = { day: '', n: {} };
+function underQuota(id, perDay) {
+  const d = new Date().toISOString().slice(0, 10);
+  if (usage.day !== d) { usage.day = d; usage.n = {}; }
+  if (perDay > 0 && (usage.n[id] || 0) >= perDay) return false;
+  usage.n[id] = (usage.n[id] || 0) + 1;
+  return true;
+}
+function apiEngines(cfg) {
+  const c = cfg || {};
+  const out = [];
+  if (c.searxng && /^https?:\/\//.test(String(c.searxng.url || ''))) {
+    const base = String(c.searxng.url).replace(/\/+$/, '');
+    out.push({ id: 'searxng', name: 'SearXNG', api: true, own: true, perDay: Number(c.searxng.perDay) || 0, url: (q) => `${base}/search?format=json&language=el&q=${encodeURIComponent(q)}`, parse: (j) => (j.results || []).map((r) => ({ url: r.url, title: r.title || '', snippet: r.content || '' })) });
+  }
+  if (c.brave && c.brave.key) out.push({ id: 'brave', name: 'Brave Search API', api: true, perDay: Number(c.brave.perDay) || 60, headers: { 'X-Subscription-Token': c.brave.key, Accept: 'application/json' }, url: (q) => `${process.env.SFK_SEARCH_BRAVE || 'https://api.search.brave.com/res/v1/web/search'}?count=20&q=${encodeURIComponent(q)}`, parse: (j) => (((j.web || {}).results) || []).map((r) => ({ url: r.url, title: r.title || '', snippet: r.description || '' })) });
+  if (c.google && c.google.key && c.google.cx) out.push({ id: 'google', name: 'Google Programmable Search', api: true, perDay: Number(c.google.perDay) || 90, url: (q) => `${process.env.SFK_SEARCH_GOOGLE || 'https://www.googleapis.com/customsearch/v1'}?key=${encodeURIComponent(c.google.key)}&cx=${encodeURIComponent(c.google.cx)}&num=10&q=${encodeURIComponent(q)}`, parse: (j) => (j.items || []).map((r) => ({ url: r.link, title: r.title || '', snippet: r.snippet || '' })) });
+  return out;
+}
+async function apiSearch(eng, q, state) {
+  if (!underQuota(eng.id, eng.perDay)) { const e = new Error('όριο ημέρας του παρόχου'); e.quota = true; throw e; }
+  await paced(eng, state);
+  if (eng.own) {
+    // the person's own instance may be on the shop's network: asked directly (its address was written by an administrator)
+    const r = await fetch(eng.url(q), { headers: { Accept: 'application/json' }, signal: AbortSignal.any([AbortSignal.timeout(20000)].concat(state.signal ? [state.signal] : [])) });
+    if (r.status === 429) throw new Blocked(eng.name);
+    if (!r.ok) throw Object.assign(new Error('HTTP ' + r.status), { status: r.status });
+    return eng.parse(await r.json());
+  }
+  const r = await http.getJson(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal, headers: eng.headers });
+  return eng.parse(r.json || {});
+}
+
 // a calm pace for each search engine, like a person searching: 4–7 seconds between two searches on the same one
 // (a helping computer may set its own: SFK_SEARCH_GAP_MS)
 const lastBy = {};
@@ -178,25 +217,31 @@ async function searchWide(q, state) {
   // what each engine did with this search (kept with the research of the product: «which engines, how many results»)
   const engines = [];
   let any = false;
-  await Promise.all(ENGINES.map(async (eng) => {
+  const all = ENGINES.concat(state.apiEngines || (state.apis ? (state.apiEngines = apiEngines(state.apis)) : []));
+  await Promise.all(all.map(async (eng) => {
     if (state.blocked.has(eng.id)) { engines.push({ id: eng.id, state: 'paused' }); return; }
     try {
-      await paced(eng, state);
-      const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
-      if (r.status === 202) throw new Blocked(eng.name);
-      const res = eng.parse(r.text);
+      let res;
+      if (eng.api) res = await apiSearch(eng, q, state);
+      else {
+        await paced(eng, state);
+        const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
+        if (r.status === 202) throw new Blocked(eng.name);
+        res = eng.parse(r.text);
+      }
       any = true;
       state.used.add(eng.name);
       res.forEach((x, i) => { x.rank = i; x.engine = eng.id; });
       out.push(...res);
       engines.push({ id: eng.id, state: 'ok', n: res.length });
     } catch (e) {
-      if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused) tellBlocked(eng.id); engines.push({ id: eng.id, state: 'blocked' }); }
+      if (e.quota) engines.push({ id: eng.id, state: 'quota', error: e.message });
+      else if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused && !eng.api) tellBlocked(eng.id); engines.push({ id: eng.id, state: 'blocked' }); }
       else engines.push({ id: eng.id, state: 'error', error: String(e.message || e).slice(0, 120) });
       if (state.signal && state.signal.aborted) throw Object.assign(new Error('Σταμάτησε.'), { cancelled: true });
     }
   }));
-  if (!any && ENGINES.every((e) => state.blocked.has(e.id))) throw Object.assign(new Blocked('all'), { engines });
+  if (!any && all.every((e) => state.blocked.has(e.id))) throw Object.assign(new Blocked('all'), { engines });
   // the two lists interleaved by rank: the best of each engine first
   out.sort((a, b) => a.rank - b.rank);
   const list = out.filter((x) => { const k = String(x.url).replace(/[?#].*$/, '').replace(/\/$/, ''); if (seen.has(k)) return false; seen.add(k); return true; });
@@ -451,4 +496,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { parseYahoo, count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };
+module.exports = { apiEngines, MARKETPLACE, parseYahoo, count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };

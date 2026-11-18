@@ -19,6 +19,7 @@
       const q = Object.assign({ site: 'sf', page: 1, per: 50, sort: 'name', dir: 'asc' }, p);
       main.appendChild(pageHead('Προϊόντα', 'Όλα τα προϊόντα των δύο sites, όπως τα βλέπει ο πελάτης. Πάτα σε ένα προϊόν για λεπτομέρειες.', [
         App.reportButtons('products', q, 'Λίστα'),
+        btn('Οικογένειες', { icon: 'link', title: 'Το ίδιο μοντέλο σε ξεχωριστά προϊόντα, ένα ανά χρώμα: προτάσεις για μία σελίδα με επιλογή χρώματος' }, () => familiesDrawer(q.site === 'st' ? 'st' : 'sf')),
         btn('Εισαγωγή CSV', { icon: 'upload' }, () => App.csvImport(q.site)),
         btn('Ανάγνωση από τα sites', { cls: 'primary', icon: 'sync' }, () => App.startSync()),
       ]));
@@ -152,17 +153,22 @@
 
     if (imgs.length > 1) body.appendChild(h('div', { class: 'gallery', style: { marginBottom: '16px' } }, imgs.map((src) => h('img', { src, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }))));
 
-    // Market + cost
+    // 1. the price comparison with the competitors on our list (their catalogs) — apart from the internet research
     const mk = d.market;
-    const mkPanel = h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('h2', null, 'Τιμή αγοράς'),
-      h('div', { class: 'row tight' }, btn('Νέα έρευνα', { cls: 'sm', icon: 'market' }, () => POST('/api/market/run', { targets: [{ site, id: p.id }] }).then((job) => watchJob(job, { done: () => openProduct(site, id) })).catch(fail)),
-        !p.sku ? btn('Βρες κωδικό', { cls: 'sm', icon: 'search', title: 'Αναζήτηση στο internet: καταστήματα με το ίδιο προϊόν' }, () => POST('/api/codes/find', { site, id: p.id }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις → Κωδικοί, για έγκριση.'); openProduct(site, id); } })).catch(fail)) : null,
+    const mkPanel = h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'Σύγκριση τιμών ανταγωνιστών'),
+      h('div', { class: 'row tight', style: { flexWrap: 'wrap' } }, btn('Νέα έρευνα τιμών ανταγωνιστών', { cls: 'sm', icon: 'market', title: 'Οι κατάλογοι των καταστημάτων της λίστας ανταγωνιστών' }, () => POST('/api/market/run', { targets: [{ site, id: p.id }] }).then((job) => watchJob(job, { done: () => openProduct(site, id) })).catch(fail)),
         btn('Χειροκίνητη τιμή', { cls: 'sm' }, () => App.manualPrice(site, p.id, () => openProduct(site, id))))));
     if (mk && mk.stats) {
       mkPanel.appendChild(App.marketSummary(mk, p.price, mk.master ? null : { site, id: p.id, refresh: () => openProduct(site, id) }));
-    } else mkPanel.appendChild(h('p', { class: 'muted' }, 'Δεν έχει γίνει έρευνα ακόμα για αυτό το προϊόν.'));
+    } else mkPanel.appendChild(h('p', { class: 'muted' }, 'Δεν έχει γίνει ακόμα σύγκριση με τους καταχωρισμένους ανταγωνιστές για αυτό το προϊόν (η έρευνα στο internet είναι πιο κάτω).'));
     body.appendChild(mkPanel);
-    body.appendChild(researchPanel(site, p.id));
+    // 2. the research on the whole internet (any shop, maker, supplier) — always possible, also with code and EAN
+    body.appendChild(researchPanel(site, p.id, () => openProduct(site, id)));
+    // 3. the family: the same model as separate products, one per colour
+    body.appendChild(familyPanel(site, p.id));
+    // 4. the page as Google reads it · 5. the AI's proposal (title, features), from the real facts only
+    body.appendChild(seoPanel(site, p.id));
+    body.appendChild(aiPanel(site, p.id));
 
     // Supplier, categories, attributes
     body.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Στοιχεία'),
@@ -184,33 +190,121 @@
   }
   App.openProduct = openProduct;
 
-  /** What the research on the internet did for a product (searches, engines, pages and why), opened on demand. */
-  const RS = { complete: ['Ολοκληρώθηκε', 'ok'], partial: ['Ολοκληρώθηκε με ελλείψεις', 'warn'], not_found: ['Δεν βρέθηκε το ίδιο προϊόν', ''], no_results: ['Καμία σελίδα καταστήματος στις αναζητήσεις', ''],
-    pages_failed: ['Δεν διαβάστηκαν οι σελίδες', 'crit'], search_failed: ['Απέτυχαν οι μηχανές αναζήτησης', 'crit'], blocked: ['Οι μηχανές ζήτησαν παύση (συνεχίζει)', 'warn'], cancelled: ['Διακόπηκε', 'warn'], error: ['Σφάλμα', 'crit'], never: ['Δεν έχει γίνει ακόμα', ''] };
-  const PO = { same: 'ίδιο προϊόν', similar: 'παρόμοιο', other: 'άλλο προϊόν', error: 'δεν άνοιξε', no_data: 'χωρίς στοιχεία', not_product: 'όχι προϊόν', skipped: 'παραλείφθηκε' };
+  /** The research on the internet for a product: its state, every search, every result and page (all kept, page by page), the sources of each value. */
+  const RS = { complete: ['Ολοκληρώθηκε με αποτελέσματα', 'ok'], partial: ['Ολοκληρώθηκε με ελλείψεις', 'warn'], family_only: ['Βρέθηκε μόνο άλλη παραλλαγή του μοντέλου', 'warn'], not_found: ['Ολοκληρώθηκε: δεν βρέθηκε ακριβές προϊόν', ''],
+    no_results: ['Ολοκληρώθηκε: καμία σελίδα καταστήματος', ''], pages_failed: ['Δεν διαβάστηκαν οι σελίδες', 'crit'], search_failed: ['Απέτυχαν οι μηχανές αναζήτησης', 'crit'], blocked: ['Μπλοκαρίστηκε προσωρινά (συνεχίζει)', 'warn'],
+    cancelled: ['Διακόπηκε', 'warn'], error: ['Σφάλμα', 'crit'], due: ['Χρειάζεται επανάληψη', 'warn'], stale: ['Παρωχημένη έρευνα', 'warn'], never: ['Δεν έχει ξεκινήσει', ''], queued: ['Σε αναμονή', 'warn'], running: ['Σε εξέλιξη', 'warn'] };
+  const PO = { same: 'ίδιο προϊόν', family: 'άλλη παραλλαγή', similar: 'παρόμοιο', other: 'άλλο προϊόν', duplicate: 'ίδιο (2η σελίδα)', error: 'δεν άνοιξε', no_data: 'χωρίς στοιχεία', not_product: 'όχι προϊόν', skipped: 'παραλείφθηκε' };
+  const CLS = { competitor: 'ανταγωνιστής', shop: 'νέο κατάστημα', maker: 'κατασκευαστής', supplier: 'προμηθευτής', marketplace: 'marketplace', irrelevant: 'άσχετο', own: 'δικό μας' };
   const NEED = { sku: 'κωδικός', ean: 'EAN', images: 'φωτογραφίες', brand: 'μάρκα', price: 'τιμή' };
-  function researchPanel(site, id) {
-    const det = h('details', { class: 'panel' }, h('summary', null, h('b', null, 'Τι έκανε η έρευνα στο internet')));
-    let loaded = false;
-    det.addEventListener('toggle', async () => {
-      if (!det.open || loaded) return;
-      loaded = true;
-      const box = h('div', { style: { marginTop: '10px' } }, h('span', { class: 'muted' }, 'Φόρτωση…'));
-      det.appendChild(box);
+  const WHY = { code: 'κωδικός', ean: 'EAN', exact: 'ακριβές μοντέλο+χρώμα', title: 'τίτλος', model: 'μάρκα+μοντέλο', family: 'οικογένεια (χωρίς χρώμα)', 'code-alone': 'κωδικός μόνος', 'code-flat': 'κωδικός χωρίς παύλες', mpn: 'κωδικός κατασκευαστή', english: 'αγγλικά', latin: 'λατινικοί όροι', nobrand: 'χωρίς μάρκα', codes: 'κωδικός τίτλου', ai: 'πρόταση AI', catalog: 'κατάλογοι ανταγωνιστών' };
+  const link = (url, text) => h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text || url);
+  const google = (q) => link('https://www.google.com/search?q=' + encodeURIComponent(q), 'Google ↗');
+  function researchPanel(site, id, refresh) {
+    const box = h('div', { style: { marginTop: '8px' } }, h('span', { class: 'muted' }, 'Φόρτωση…'));
+    const panel = h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'Εκτενής έρευνα Internet'),
+      h('div', { class: 'row tight', style: { flexWrap: 'wrap' } },
+        btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search', title: 'Όλο το πλάνο αναζητήσεων, σε κάθε κατάστημα του internet (και όταν έχει ήδη κωδικό / EAN)' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις και στις Τιμές, για έγκριση.'); refresh(); } })).catch(fail)))), box);
+    const pageOf = { pages: 1, results: 1 };
+    const load = async () => {
       try {
-        const t = await GET('/api/codes/trace', { site, id });
+        const t = await GET('/api/codes/trace', { site, id, page: Math.max(pageOf.pages, pageOf.results), per: 40 });
+        clear(box);
         const st = RS[t.status] || [t.status, ''];
-        clear(box).appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]),
+        box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]), t.mode === 'full' ? h('span', { class: 'pill' }, 'πλήρης') : null,
           t.at ? h('span', { class: 'faint' }, 'Τελευταία: ' + fmt.ago(t.at)) : null, t.okAt ? h('span', { class: 'faint' }, '· επιτυχής: ' + fmt.ago(t.okAt)) : null,
           (t.needsLeft || []).length ? h('span', { class: 'faint' }, '· λείπουν ακόμα: ' + t.needsLeft.map((x) => NEED[x] || x).join(', ')) : null));
-        if (t.sum) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, `${t.sum.queries} αναζητήσεις · ${t.sum.results} αποτελέσματα · άνοιξαν ${t.sum.opened} σελίδες (διαβάστηκαν ${t.sum.read}) · ίδιο προϊόν σε ${t.sum.exact} · απορρίφθηκαν ${t.sum.rejected} · σφάλματα ${t.sum.errors}`));
-        if ((t.queries || []).length) box.appendChild(h('ul', { class: 'todo-list' }, t.queries.map((q) => h('li', null, h('span', { class: 'mono' }, q.q), ` → ${q.n} αποτελέσματα`, q.error ? h('span', { class: 'crit' }, ' · ' + q.error) : null,
-          (q.engines || []).length ? h('span', { class: 'faint' }, ' (' + q.engines.map((e) => e.id + ': ' + (e.state === 'ok' ? e.n : e.state === 'blocked' || e.state === 'paused' ? 'παύση' : 'σφάλμα')).join(', ') + ')') : null))));
-        if ((t.pages || []).length) box.appendChild(h('ul', { class: 'todo-list' }, t.pages.map((x) => h('li', { class: x.outcome === 'same' ? '' : x.outcome === 'error' ? 'crit' : '' }, h('b', null, (PO[x.outcome] || x.outcome) + ': '), h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, x.host), x.why ? h('span', { class: 'faint' }, ' — ' + x.why) : null))));
+        if (t.status === 'never') { box.appendChild(h('p', { class: 'faint' }, 'Πάτα «Πλήρης έρευνα Internet»: αναζητήσεις σε όλο το internet (όχι μόνο στους ανταγωνιστές), με κάθε πηγή εδώ.')); return; }
+        const s = t.sum;
+        if (s) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, `${s.queries} αναζητήσεις · ${s.results} αποτελέσματα · ${s.domains || 0} sites (${s.newShops || 0} νέα) · άνοιξαν ${s.opened} σελίδες, διαβάστηκαν ${s.read} · ίδιο προϊόν σε ${s.exact} · άλλη παραλλαγή σε ${s.family || 0} · απορρίφθηκαν ${s.rejected} · σφάλματα ${s.errors}` + (s.engines ? ' · μηχανές: ' + Object.entries(s.engines).map(([k, e]) => `${k} ${e.ok}✓${e.failed ? ' ' + e.failed + '✗' : ''}${e.blocked ? ' ' + e.blocked + '⏸' : ''}`).join(', ') : '')));
+        if ((t.quality || []).length) box.appendChild(h('div', { class: 'note', style: { margin: '6px 0' } }, h('b', null, 'Να το δεις: '), t.quality.join(' · ')));
+        // the sources of each value: only «the same variant»
+        if ((t.hits || []).length) box.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Πηγή'), h('th', null, 'Κωδικός / EAN'), h('th', { class: 'num' }, 'Τιμή'), h('th', null, 'Απόθεμα'), h('th', null, 'Φωτο'), h('th', null, 'Απόδειξη'))),
+          h('tbody', null, t.hits.map((x) => h('tr', null, h('td', null, link(x.url, x.host), h('div', { class: 'faint', style: { fontSize: '12px' } }, (CLS[x.cls] || '') + ' · ' + fmt.ago(x.at))), h('td', { class: 'mono' }, [x.code, x.ean].filter(Boolean).join(' · ') || '—'),
+            h('td', { class: 'num' }, x.price ? fmt.money(x.price) : '—'), h('td', null, x.avail === 'in' ? 'διαθέσιμο' : x.avail === 'out' ? 'εξαντλημένο' : 'άγνωστο'), h('td', null, (x.images || []).length ? `${x.images.length} (${{ variant: 'της παραλλαγής', page: 'σελίδα ενός χρώματος', filename: 'όνομα αρχείου' }[x.imgHow] || '-'})` : '—'), h('td', { class: 'faint' }, x.proof)))))));
+        if ((t.family || []).length) box.appendChild(h('details', null, h('summary', null, `Άλλες παραλλαγές του ίδιου μοντέλου (${t.family.length}) — δεν δίνουν κωδικό, EAN, φωτογραφία ή τιμή για αυτό το προϊόν`),
+          h('ul', { class: 'todo-list' }, t.family.map((x) => h('li', null, link(x.url, x.host), ' — ', x.name, x.colour ? h('span', { class: 'pill' }, x.colour) : null, x.price ? ' · ' + fmt.money(x.price) : '', (x.variants || []).length ? h('div', { class: 'faint' }, 'Παραλλαγές της σελίδας: ' + x.variants.map((v) => [v.colour, v.size].filter(Boolean).join(' ')).join(', ')) : null)))));
+        if ((t.queries || []).length) box.appendChild(h('details', null, h('summary', null, `Αναζητήσεις (${t.queries.length})`), h('ul', { class: 'todo-list' }, t.queries.map((q) => h('li', null, h('span', { class: 'mono' }, q.q), ' ', h('span', { class: 'pill' }, WHY[q.why] || q.why || ''), ` → ${q.n} αποτελέσματα `, q.why !== 'catalog' ? google(q.q.replace(/"/g, '')) : null, q.error ? h('span', { class: 'crit' }, ' · ' + q.error) : null,
+          (q.engines || []).length ? h('div', { class: 'faint' }, q.engines.map((e) => e.id + ': ' + (e.state === 'ok' ? e.n + ' αποτελέσματα' : e.state === 'blocked' || e.state === 'paused' ? 'παύση' : e.state === 'quota' ? 'όριο ημέρας' : 'σφάλμα' + (e.error ? ' (' + e.error + ')' : ''))).join(' · ')) : null)))));
+        if (t.totals && t.totals.results) box.appendChild(h('details', null, h('summary', null, `Αποτελέσματα αναζήτησης (${t.totals.results})`), h('ul', { class: 'todo-list' }, (t.results || []).map((x) => h('li', null, link(x.url, x.host), ' ', h('span', { class: 'pill' }, CLS[x.cls] || x.cls), x.title ? ' — ' + x.title : '', h('span', { class: 'faint' }, ` · ${x.engine}${x.rank != null ? ' #' + (x.rank + 1) : ''} · ${x.open === 'ναι' ? 'άνοιξε' : 'δεν άνοιξε: ' + x.open}`)))),
+          t.totals.results > t.page * t.per ? btn('Περισσότερα', { cls: 'sm' }, () => { pageOf.results++; load(); }) : null));
+        if (t.totals && t.totals.pages) box.appendChild(h('details', { open: true }, h('summary', null, `Σελίδες που διαβάστηκαν (${t.totals.pages})`), h('ul', { class: 'todo-list' }, (t.pages || []).map((x) => h('li', { class: x.outcome === 'error' ? 'crit' : x.outcome === 'family' || x.outcome === 'similar' ? 'warn' : '' }, h('b', null, (PO[x.outcome] || x.outcome) + ': '), link(x.url, x.host), x.cls ? h('span', { class: 'faint' }, ' (' + (CLS[x.cls] || x.cls) + ')') : null,
+          x.title ? h('div', null, x.title) : null, x.why ? h('div', { class: 'faint' }, x.why) : null,
+          x.facts && (x.facts.sku || x.facts.ean || x.facts.price) ? h('div', { class: 'faint' }, [x.facts.sku && 'κωδ. ' + x.facts.sku, x.facts.ean && 'EAN ' + x.facts.ean, x.facts.price && fmt.money(x.facts.price), x.facts.colour && 'χρώμα ' + x.facts.colour].filter(Boolean).join(' · ')) : null,
+          x.ai ? h('div', { class: 'faint' }, `AI: ${x.ai.verdict} — ${x.ai.reason}`) : null))),
+          t.totals.pages > t.page * t.per ? btn('Περισσότερα', { cls: 'sm' }, () => { pageOf.pages++; load(); }) : null));
         if (t.nextAt) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0 0' } }, 'Επόμενη αναζήτηση για ό,τι λείπει: ' + new Date(t.nextAt).toLocaleDateString('el-GR')));
       } catch (e) { clear(box).appendChild(h('div', { class: 'note crit' }, e.message)); }
-    });
-    return det;
+    };
+    load();
+    return panel;
+  }
+
+  /** The same model as separate products, one per colour: the family, a yes, the files of one page with the colours. */
+  function familyPanel(site, id) {
+    const box = h('div');
+    (async () => {
+      try {
+        const f = await GET('/api/families/of', { site, id });
+        if (!f || f.none) return;
+        const st = { pending: ['Πρόταση', 'warn'], approved: ['Εγκρίθηκε', 'ok'], rejected: ['Απορρίφθηκε', ''] }[f.status] || ['', ''];
+        const decide = (answer) => POST('/api/families/decide', { site, key: f.key, answer }).then(() => { toast(answer === 'approved' ? 'Εγκρίθηκε η οικογένεια.' : answer === 'rejected' ? 'Απορρίφθηκε.' : 'Επαναφορά.'); clear(box); box.appendChild(familyPanel(site, id)); }).catch(fail);
+        box.appendChild(h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'Οικογένεια προϊόντος'), h('span', { class: 'pill ' + st[1] }, st[0] + ' · σιγουριά ' + f.confidence + '%')),
+          h('p', null, h('b', null, f.title), ` — το ίδιο μοντέλο σε ${f.members.length} χρώματα, σήμερα ως ξεχωριστά προϊόντα.`),
+          h('ul', { class: 'todo-list' }, f.members.map((m) => h('li', null, h('span', { class: 'pill' }, m.colour), ' ', link(m.url, m.name), h('div', { class: 'faint' }, [m.sku && 'κωδ. ' + m.sku, m.ean && 'EAN ' + m.ean, fmt.money(m.price), m.inStock ? 'διαθέσιμο' : 'εξαντλημένο', `${m.images.length} φωτο`].filter(Boolean).join(' · '))))),
+          h('div', { class: 'faint' }, 'Απόδειξη: ' + f.evidence.join(' · ') + (f.webColours.length ? ` · στο internet υπάρχει και σε: ${f.webColours.join(', ')}` : '')),
+          h('div', { class: 'row tight', style: { marginTop: '8px', flexWrap: 'wrap' } },
+            f.status !== 'approved' ? btn('Έγκριση: είναι το ίδιο μοντέλο', { cls: 'sm primary', icon: 'check' }, () => decide('approved')) : null,
+            f.status !== 'rejected' ? btn('Όχι, άλλα προϊόντα', { cls: 'sm ghost' }, () => decide('rejected')) : null,
+            f.status !== 'pending' ? btn('Επαναφορά', { cls: 'sm ghost' }, () => decide('')) : null,
+            f.status === 'approved' ? btn('Αρχεία μετατροπής σε ένα προϊόν με χρώματα', { cls: 'sm', icon: 'download' }, () => familyExport(site, f)) : null)));
+      } catch (_) { /* nothing to show */ }
+    })();
+    return box;
+  }
+  async function familiesDrawer(site) {
+    const body = h('div', { class: 'stack' }, h('h2', null, 'Οικογένειες προϊόντων · ' + siteName(site)), h('span', { class: 'muted' }, 'Φόρτωση…'));
+    drawer.open(body, { wide: true });
+    try {
+      const list = await GET('/api/families', { site });
+      body.lastChild.remove();
+      body.appendChild(h('p', { class: 'muted' }, `${list.length} προτάσεις: ίδιο είδος, ίδια μάρκα, ίδιες λέξεις μοντέλου, ένα διαφορετικό χρώμα σε κάθε προϊόν. Τίποτα δεν ενώνεται μόνο του: έγκριση → αρχεία για το WooCommerce.`));
+      for (const f of list) body.appendChild(h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('b', null, f.title), h('span', { class: 'pill ' + (f.status === 'approved' ? 'ok' : f.status === 'rejected' ? '' : 'warn') }, ({ pending: 'πρόταση', approved: 'εγκρίθηκε', rejected: 'απορρίφθηκε' })[f.status] + ' · ' + f.confidence + '%')),
+        h('div', { class: 'row tight', style: { flexWrap: 'wrap', marginTop: '6px' } }, f.members.map((m) => h('button', { class: 'btn sm ghost', onclick: () => openProduct(site, m.id) }, m.colour + (m.sku ? ' · ' + m.sku : '') + ' · ' + fmt.money(m.price))))));
+      if (!list.length) body.appendChild(h('p', { class: 'faint' }, 'Καμία.'));
+    } catch (e) { fail(e); }
+  }
+  function familyExport(site, f) {
+    const sku = h('input', { type: 'text', placeholder: 'κωδικός του νέου προϊόντος' });
+    const mode = select([['same', 'Ένας κωδικός για όλα τα χρώματα (κανόνας καταστήματος)'], ['own', 'Κάθε χρώμα κρατά τον κωδικό του (καλύτερο για Google)']], 'same', () => {});
+    const out = h('div');
+    modal.open(h('div', { class: 'stack s' }, dlgHead('Αρχεία μετατροπής: ' + f.title),
+      h('p', { class: 'faint' }, 'Τίποτα δεν αλλάζει στο site μέχρι να ανεβάσεις τα αρχεία, με τη σειρά. Τα παλιά προϊόντα γίνονται «Πρόχειρο» (δεν σβήνονται) και οι παλιές διευθύνσεις οδηγούν με 301 στο νέο προϊόν, με το σωστό χρώμα επιλεγμένο.'),
+      h('label', { class: 'field' }, 'Κωδικός του νέου προϊόντος (κενό = το κοινό μέρος των κωδικών, αν υπάρχει)', sku), h('label', { class: 'field' }, 'Κωδικοί παραλλαγών', mode),
+      btn('Φτιάξε τα αρχεία', { cls: 'primary', icon: 'download' }, () => POST('/api/families/export', { site, key: f.key, parentSku: sku.value, variantSkus: mode.value }).then((r) => {
+        clear(out).appendChild(h('div', { class: 'stack s' }, h('ol', { class: 'steps' }, r.files.map((x) => h('li', null, x.what, ' — ', h('a', { href: x.url, download: x.name }, x.name)))), (r.notes || []).map((n) => h('div', { class: 'note' }, n))));
+      }).catch(fail)), out));
+  }
+
+  /** The live page as Google reads it. */
+  function seoPanel(site, id) {
+    const out = h('div');
+    return h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'SEO της σελίδας'),
+      btn('Έλεγχος SEO', { cls: 'sm', icon: 'search', title: 'Διαβάζει τη σελίδα του site όπως το Google: canonical, δομημένα δεδομένα, παραλλαγές, φωτογραφίες' }, () => { clear(out).appendChild(h('span', { class: 'muted' }, 'Ανάγνωση της σελίδας…')); GET('/api/seo/audit', { site, id }).then((r) => {
+        clear(out).appendChild(h('ul', { class: 'todo-list' }, r.findings.map((x) => h('li', { class: x.level === 'crit' ? 'crit' : x.level === 'warn' ? 'warn' : '' }, h('b', null, x.area + ': '), x.text, x.fix ? h('div', { class: 'faint' }, x.fix) : null))));
+      }).catch((e) => { clear(out).appendChild(h('div', { class: 'note crit' }, e.message)); }); })), out);
+  }
+
+  /** The AI's proposal for the title, features and category (from the real facts; shown, never applied by itself). */
+  function aiPanel(site, id) {
+    const out = h('div');
+    if (!(App.state.settings && App.state.settings.localAI && App.state.settings.localAI.enabled)) return h('div');
+    return h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'Πρόταση AI'),
+      btn('Πρότεινε τίτλο και χαρακτηριστικά', { cls: 'sm', icon: 'bolt', title: 'Από τα πραγματικά στοιχεία του προϊόντος και των πηγών του· τίποτα δεν αλλάζει μόνο του' }, () => { clear(out).appendChild(h('span', { class: 'muted' }, 'Το AI του υπολογιστή γράφει…')); POST('/api/ai/suggest', { site, id }).then((r) => {
+        clear(out).appendChild(h('div', { class: 'stack s' }, r.title ? h('div', null, h('b', null, 'Τίτλος: '), r.title) : h('div', { class: 'faint' }, 'Κανένας τίτλος που να τηρεί τους κανόνες.'), (r.features || []).length ? h('ul', null, r.features.map((x) => h('li', null, x))) : null,
+          r.category ? h('div', null, h('b', null, 'Κατηγορία: '), r.category) : null, (r.removed || []).length ? h('div', { class: 'note' }, `Αφαιρέθηκαν ${r.removed.length} γραμμές με αριθμούς που δεν υπάρχουν στα στοιχεία.`) : null,
+          h('div', { class: 'faint' }, `${r.model || ''}${r.ms ? ' · ' + Math.round(r.ms / 1000) + '″' : ''}${r.cached ? ' · από την προσωρινή μνήμη' : ''}`)));
+      }).catch((e) => { clear(out).appendChild(h('div', { class: 'note crit' }, e.message)); }); })), out);
   }
 
   function costField(site, p) {

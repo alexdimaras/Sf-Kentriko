@@ -49,7 +49,11 @@ function page(o) {
   const q1 = cf.queriesOf({ name: 'ΣΑΚΙΔΙΟ PENTAGON KYLER 36L ΜΑΥΡΟ', brand: 'PENTAGON', sku: 'K16110-01', ean: gtin('521234567890') });
   ok(q1[0] === 'PENTAGON K16110-01' && q1.includes(gtin('521234567890')) && q1.some((q) => /^PENTAGON KYLER 36L$/.test(q)), 'with brand + code + EAN: brand+code first, the EAN, brand + model', JSON.stringify(q1));
   ok(q1.includes('K16110-01') && q1.includes('K1611001') && q1.some((q) => /backpack/i.test(q)), 'the code alone, written without the dash, and the English name of the kind (backpack)', JSON.stringify(q1));
-  ok(q1.length >= 6 && q1.length <= 8 && new Set(q1.map((q) => q.toUpperCase())).size === q1.length, 'six to eight searches, none twice', String(q1.length));
+  ok(q1.length >= 6 && q1.length <= 12 && new Set(q1.map((q) => q.toUpperCase())).size === q1.length, 'six to twelve searches (the setting), none twice', String(q1.length));
+  const plan = cf.planOf({ name: 'ΣΑΚΙΔΙΟ MIL-TEC ASSAULT MOLLE OLIVE SMALL', brand: 'MIL-TEC', sku: '14002001' }, 20);
+  const whys = plan.map((x) => x.why);
+  ok(plan[0].q === 'MIL-TEC 14002001' && plan.some((x) => x.why === 'exact' && /^"MIL-TEC ASSAULT MOLLE SMALL" olive$/.test(x.q)) && plan.some((x) => x.why === 'family' && /^"MIL-TEC ASSAULT MOLLE SMALL" backpack$/.test(x.q)) && whys.includes('english') && whys.includes('code-alone'),
+    'the plan for the MIL-TEC bag: code, the exact model with its colour in quotes, the model without colour (family), English, the code alone', JSON.stringify(plan));
   const q2 = cf.queriesOf({ name: 'ΦΑΚΟΣ ΚΕΦΑΛΗΣ XTAR H3 WARBOY', brand: '', sku: '' });
   ok(q2.length >= 3 && q2.some((q) => q === 'XTAR H3 WARBOY') && q2.some((q) => /headlamp|flashlight/.test(q)), 'no brand and no code: the title, its Latin words, the model words with the English kind (still searched in earnest)', JSON.stringify(q2));
   const q3 = cf.queriesOf({ name: 'ΜΑΧΑΙΡΙ MORAKNIV ELDRIS', brand: 'MORAKNIV', sku: '', round: 1 });
@@ -114,7 +118,7 @@ function page(o) {
   const searches = [];
   const RESULTS = {
     'PENTAGON K16110-01': ['https://shop-a.gr/kyler-multicam', 'https://shop-b.gr/broken', 'https://shop-c.gr/kyler-pro', 'https://www.skroutz.gr/s/1', 'https://shop.example/our-own'],
-    default: ['https://shop-a.gr/kyler-multicam?utm_source=x', 'https://shop-b.gr/broken', 'https://shop-c.gr/kyler-pro', 'https://shop-a.gr/kyler-black', 'https://shop-b.gr/p/kyler-36', 'https://shop-d.com/kyler', 'https://shop-e.gr/kyler', 'https://shop-a.gr/search?q=kyler'],
+    default: ['https://shop-a.gr/kyler-multicam?utm_source=x', 'https://www.skroutz.gr/s/9', 'https://shop-b.gr/broken', 'https://shop-c.gr/kyler-pro', 'https://shop-a.gr/kyler-black', 'https://shop-b.gr/p/kyler-36', 'https://shop-d.com/kyler', 'https://shop-e.gr/kyler', 'https://shop-a.gr/search?q=kyler'],
   };
   const io = (opts) => Object.assign({
     own: new Set(['shop.example']),
@@ -133,7 +137,9 @@ function page(o) {
   ok(!hd || hd.price === 0, 'a price in dollars is never taken as a price', JSON.stringify(hd));
   ok(r.status === 'complete' && r.needsLeft.length === 0, 'the code is given by two shops, photos by two, a price in stock: «complete»', JSON.stringify([r.status, r.needsLeft]));
   const pg = r.trace.pages;
-  ok(pg.some((x) => x.outcome === 'error' && /503/.test(x.why)) && pg.some((x) => x.outcome === 'similar' || x.outcome === 'other') && pg.some((x) => x.outcome === 'skipped') && pg.some((x) => x.outcome === 'same'), 'what happened to each page is written: did not open, other product (why), skipped, the same', JSON.stringify(pg.map((x) => x.outcome)));
+  ok(pg.some((x) => x.outcome === 'error' && /503/.test(x.why)) && pg.some((x) => x.outcome === 'family' && /MULTICAM/.test(x.why)) && pg.some((x) => x.outcome === 'similar' || x.outcome === 'other') && pg.some((x) => x.outcome === 'same'), 'what happened to each page is written: did not open, the same model in another colour (family), other product (why), the same', JSON.stringify(pg.map((x) => x.outcome)));
+  ok(r.trace.results.some((x) => x.cls === 'marketplace' && x.open === 'marketplace') && r.trace.results.some((x) => x.open === 'όχι σελίδα προϊόντος') && r.trace.results.every((x) => x.url && x.host && x.cls), 'every search result is written (address, site, kind of site, opened or why not): marketplaces and search pages too', JSON.stringify(r.trace.results.map((x) => [x.host, x.cls, x.open])));
+  ok(r.family.some((x) => x.host === 'shop-a.gr' && /MULTICAM/.test(x.colour)) && !r.hits.some((h) => /multicam/.test(h.url)), 'the multicam page is kept as «another variant of the model», never as ours');
   ok(r.trace.queries.length >= 1 && r.trace.queries.length < 8 && r.trace.queries[0].engines.some((e) => e.state === 'error') && r.sum.engines.bing.failed >= 1, 'the searches and what each engine did (Bing failed, DuckDuckGo answered); it stopped as soon as all it missed was found', JSON.stringify(r.sum.engines));
 
   // our EAN: the surest proof, whatever the titles
@@ -171,7 +177,7 @@ function page(o) {
   const rt = await cf.lookUp({ k: 'sf:20', name: 'ΣΑΚΙΔΙΟ HELIKON-TEX RACCOON MK2 20L COYOTE', brand: 'HELIKON-TEX', sku: 'PL-RCN-CD-11', price: 89.9, needs: ['ean', 'images'] }, io2);
   const th = rt.hits.map((h) => h.host).sort();
   ok(th.join() === 'en.example,gr.example', 'the same product in English and in Greek (other words, no brand field) is found on both; another colour and the PRO version are not', JSON.stringify(th));
-  ok(rt.trace.pages.some((x) => /Olive/.test(x.why) && /κωδικός|χρώμα/.test(x.why)) && rt.trace.pages.some((x) => /PRO/.test(x.why) && /έκδοση/.test(x.why)), 'and the reasons are written (other code / colour, another version)', JSON.stringify(rt.trace.pages.map((x) => x.why)));
+  ok(rt.trace.pages.some((x) => x.outcome === 'family' && /OLIVE/.test(x.why)) && rt.trace.pages.some((x) => /PRO/.test(x.why) && /έκδοση/.test(x.why)), 'and the reasons are written (the olive one: same family, another variant · the PRO: another version)', JSON.stringify(rt.trace.pages.map((x) => x.why)));
   const ru = await cf.lookUp({ k: 'sf:21', name: 'ΑΡΒΥΛΑ HAIX URBAN LINE ΜΑΥΡΟ', brand: 'HAIX', sku: '', price: 150, needs: ['sku'] }, io2);
   ok(!ru.hits.some((h) => h.host === 'urb.example'), '«URBAN» of a model name is not a colour that makes black = khaki');
 
@@ -214,6 +220,10 @@ function page(o) {
   ok(Math.round((cf.dueAt(nf) - Date.now()) / 864e5) === 7 && Math.round((cf.dueAt(nf3) - Date.now()) / 864e5) === 30, 'not found anywhere: again in 7 days, then 14, then 30');
   // a research result without availability (an older computer): never «in stock»
   W('market', {}); store.forget('market');
+  // a shop of the internet that is not ours to trust yet: shown as «new shop», counted after a yes for the shop
+  market.mergeWeb({ 'sf:1': [{ host: 'b.gr', url: 'https://b.gr/1', name: it.name, price: 71, avail: 'in', how: 'words', at: now }] });
+  ok(market.results()['sf:1'].competitors[0].flag === 'newshop' && market.results()['sf:1'].stats.count === 0, 'a price from a new shop of the internet does not count before the shop is approved');
+  for (const h of ['a.gr', 'b.gr', 'c.gr', 'd.gr']) cf.decideShop(h, 'approve');
   market.mergeWeb({ 'sf:1': [{ host: 'a.gr', url: 'https://a.gr/1', name: it.name, price: 70, how: 'words' }, { host: 'b.gr', url: 'https://b.gr/1', name: it.name, price: 71, avail: 'in', how: 'words', at: now }, { host: 'c.gr', url: 'https://c.gr/1', name: it.name, price: 69, avail: 'out', how: 'words', at: now }, { host: 'd.gr', url: 'https://d.gr/1', name: it.name, price: 72, avail: 'in', currency: 'USD', how: 'words', at: now }] });
   const mk = market.results()['sf:1'];
   const fl = Object.fromEntries(mk.competitors.map((c) => [c.shop, c.flag]));

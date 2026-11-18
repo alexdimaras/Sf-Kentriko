@@ -40,7 +40,17 @@ const DEFAULTS = {
   },
   seo: { sf: 'auto', st: 'auto' }, // auto | none | yoast | rankmath
   attributes: { sf: { brand: '', size: '', color: '' }, st: { brand: '', size: '', color: '' } },
-  localAI: { enabled: false, url: 'http://127.0.0.1:11434', model: '' },
+  localAI: { enabled: false, url: 'http://127.0.0.1:11434', model: '', research: true },
+  // The research on the internet (lib/codefind.js): how far it goes for one product. «auto» (by itself, for everything)
+  // stops when what is missing is confirmed by `minShops` shops after at least `minQueries` searches; «full» (the
+  // button «Πλήρης έρευνα Internet») runs the whole plan. Limits protect the engines, the shops, memory and processor.
+  webResearch: {
+    maxQueries: 12, pagesPerQuery: 8, perHost: 4, maxPages: 60, minQueries: 4, minShops: 4,
+    fullQueries: 20, fullPages: 120,
+    minImages: 3,            // fewer photos than this: photos are looked for
+    approveNewShops: true,   // a price from a shop that is not a competitor counts only after a yes for that shop
+    apis: { searxng: false, brave: false, google: false }, // optional search APIs (keys kept apart, encrypted)
+  },
   firstRunDone: false,
 };
 
@@ -71,6 +81,12 @@ function save(patch) {
   next.marketAuto = !!next.marketAuto;
   next.supplierFindAuto = next.supplierFindAuto !== false;
   next.variantSku = next.variantSku === 'suffix' ? 'suffix' : 'same';
+  const wr = next.webResearch;
+  wr.maxQueries = Math.round(clampNum(wr.maxQueries, 2, 30, 12)); wr.pagesPerQuery = Math.round(clampNum(wr.pagesPerQuery, 2, 20, 8));
+  wr.perHost = Math.round(clampNum(wr.perHost, 1, 10, 4)); wr.maxPages = Math.round(clampNum(wr.maxPages, 5, 200, 60));
+  wr.minQueries = Math.round(clampNum(wr.minQueries, 1, wr.maxQueries, 4)); wr.minShops = Math.round(clampNum(wr.minShops, 1, 10, 4));
+  wr.fullQueries = Math.round(clampNum(wr.fullQueries, wr.maxQueries, 40, 20)); wr.fullPages = Math.round(clampNum(wr.fullPages, wr.maxPages, 300, 120));
+  wr.minImages = Math.round(clampNum(wr.minImages, 1, 8, 3)); wr.approveNewShops = wr.approveNewShops !== false;
   if (!['90', '99', '00', 'none'].includes(String(next.rounding))) next.rounding = '90';
   if (!['median_minus', 'median', 'min', 'min_minus'].includes(next.strategy)) next.strategy = 'median_minus';
   store.write('settings', next);

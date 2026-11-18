@@ -83,7 +83,7 @@ function contentNeeds(p, s) {
     descWhy: !desc.length ? 'Δεν έχει περιγραφή' : onlyTitle ? 'Η περιγραφή επαναλαμβάνει μόνο τον τίτλο' : english ? 'Η περιγραφή είναι στα αγγλικά' : `Πολύ μικρή περιγραφή (${desc.length} χαρακτήρες)`,
     english, hasOwn: desc.length >= 40 && !onlyTitle && !english,
     short: !ti.short,
-    images: (p.images || []).length < 2,
+    images: (p.images || []).length < ((s.webResearch || {}).minImages || 3), // too few photos, not only none
     brand: !p.brand,
   };
 }
@@ -441,20 +441,26 @@ function proposalsFor(site, p, C) {
     if (need.images) {
       const twinMore = twin && (twin.images || []).length > (p.images || []).length;
       fromTwin = !!twinMore;
-      let cand = twinMore ? twin.images : found && found.data ? found.data.images || [] : [];
+      // (a page found by the older photo research: its photos only when its title shows OUR colour — it took a whole gallery)
+      const oldResearch = found && found.src && found.src.kind === 'research' && !(require('./market').coloursOf(p.name).size === 0 ? require('./market').coloursOf(found.data.name || '').size <= 1 : sameColours(p.name, found.data.name || '') && require('./market').coloursOf(found.data.name || '').size > 0);
+      let cand = twinMore ? twin.images : found && found.data && !oldResearch ? found.data.images || [] : [];
       if (fromTwin) { imgSource = { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }; imgLevel = 'high'; }
       else if (cand.length) { imgSource = found.src; imgLevel = found.src.level; }
-      else if ((p.images || []).length < 2) {
+      else if ((p.images || []).length < ((s.webResearch || {}).minImages || 3)) {
         // only the photo of a shop that has the SAME product (code / EAN, or brand + model + colour), never of a look-alike
         const byKey = new Map();
         for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
         // …and the shops of the internet with the same product (each photo of their page; the same file at two shops = the maker's)
         for (const hh of webHits(C, site, p)) {
-          const w = { shop: hh.host, url: hh.url, name: hh.name, exact: hh.how === 'code', proof: hh.how === 'code' ? 'ίδιος κωδικός, internet' : 'ίδιο προϊόν, internet' };
+          // only photos the research tied to OUR variant (its own photos, a one-colour page in our colour, or the file
+          // name says our colour): an older result without that knowledge gives none (it is researched again)
+          if (!hh.imgHow || hh.imgHow === 'none' || hh.match === 'code') continue;
+          const w = { shop: hh.host, url: hh.url, name: hh.name, web: true, exact: hh.how === 'code' || hh.how === 'ean', proof: hh.how === 'ean' ? 'ίδιο EAN, internet' : hh.how === 'code' ? 'ίδιος κωδικός, internet' : 'ίδιο προϊόν, internet' };
           const safe = safeWitness(p, w);
           if (!safe) continue;
-          for (const u0 of (hh.images && hh.images.length ? hh.images : [hh.img]).slice(0, 4)) {
-            const u = fullImage(u0); const k = imageKey(u);
+          for (const u0 of (hh.images || []).slice(0, 4)) {
+            // (a short file name has no «maker's file» key: the address itself is its key — never dropped silently)
+            const u = fullImage(u0); const k = imageKey(u) || String(u).split('?')[0].toLowerCase();
             if (!u || !k || (p.images || []).some((x) => sameImage(x, u))) continue;
             const e = byKey.get(k) || { u, shops: [] };
             if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w);
@@ -467,9 +473,9 @@ function proposalsFor(site, p, C) {
           // the best photo, and the other views of the same product (as surely sourced as the best one)
           cand = [best.u].concat([...byKey.values()].filter((e) => e !== best && e.shops.length >= Math.min(2, best.shops.length) && !(e.weak && !best.weak)).sort((a1, b1) => b1.shops.length - a1.shops.length).map((e) => e.u)).slice(0, 5);
           const w0 = best.shops[0];
-          imgSource = { kind: 'competitor', label: `Φωτογραφία του ίδιου προϊόντος στο ${w0.shop} (${w0.proof})`, url: w0.url };
+          imgSource = { kind: w0.web ? 'web' : 'competitor', label: `Φωτογραφία του ίδιου προϊόντος στο ${w0.shop} (${w0.proof})`, url: w0.url };
           imgLevel = best.shops.length >= 2 && !best.weak ? 'high' : 'medium';
-          for (const w of best.shops.slice(1)) imgAlso.push({ kind: 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url });
+          for (const w of best.shops.slice(1)) imgAlso.push({ kind: w.web ? 'web' : 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url });
           imgWhy = (best.shops.length >= 2 ? ` Η ίδια φωτογραφία (ίδιο αρχείο) σε ${best.shops.length} καταστήματα: είναι του κατασκευαστή.` : ' Είναι φωτογραφία άλλου καταστήματος: δες ότι είναι του κατασκευαστή (χωρίς λογότυπο καταστήματος) πριν την έγκριση.') + ((p.images || []).length ? ' Προστίθεται δίπλα στην υπάρχουσα: δες ότι δεν είναι η ίδια λήψη.' : '');
         }
       }
@@ -968,46 +974,24 @@ async function findSources(job, opts) {
     ec.products[key] = { at: U.nowIso(), src: { kind: 'supplier', label: `${best.c.sup.name} · ${best.c.how}`, url: url || '', supplierId: best.c.sup.id, level: best.level }, data: Object.assign(data, prev && prev.data && prev.data.descHtmlEl && prev.data.descHtml === data.descHtml ? { descHtmlEl: prev.data.descHtmlEl } : {}) };
     found++;
   }
-  // 4. photos: nothing from a supplier → a careful search for the product itself. Only a page that shows the SAME
-  // product (title and code check) is taken, and every photo proposal shows where it comes from.
+  // 4. photos: nothing (or too little) from a supplier → the research on the internet (lib/codefind): the same plan of
+  // searches as for codes, only pages of the SAME variant, only the photos of that variant (never a whole gallery of
+  // colours). With computers that help, it is theirs (the queue is fed with these products too); else done here.
   let researched = 0;
-  const maxResearch = process.env.SFK_NO_RESEARCH ? 0 : Math.max(0, Number(opts.maxResearch == null ? 10 : opts.maxResearch));
+  const minImg = (s.webResearch && s.webResearch.minImages) || 3;
+  const maxResearch = process.env.SFK_NO_RESEARCH ? 0 : Math.max(0, Number(opts.maxResearch == null ? 40 : opts.maxResearch));
   if (maxResearch) {
-    const sfind = require('./supplierfind');
-    const state = { blocked: new Set(), used: new Set() };
-    const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } };
-    const own = new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean));
-    ec.research = ec.research || {};
+    const cf = require('./codefind');
     const L = catalog.links();
-    const todo = needs.filter(({ site, p }) => (p.images || []).length === 0 && !ec.products[site + ':' + p.id] && !(site === 'st' && L.stToSf.has(p.id)) && !(ec.research[site + ':' + p.id] && now - new Date(ec.research[site + ':' + p.id].at).getTime() < PAGE_DAYS * 864e5));
-    job && job.log(`Φωτογραφίες χωρίς πηγή αντιπροσώπου: ${todo.length} προϊόντα· έρευνα για τα ${Math.min(todo.length, maxResearch)} σήμερα.`);
-    for (const { site, p } of todo) {
-      if (researched >= maxResearch || (job && job.cancelled())) break;
-      const key = site + ':' + p.id;
-      researched++;
-      let hit = null;
-      try {
-        const queries = [p.sku ? `${p.brand || ''} ${p.sku}`.trim() : '', p.name].filter(Boolean);
-        for (const q of queries) {
-          const hits = (await sfind.search(q, state)).filter((h) => /^https?:\/\//i.test(h.url) && hostOf(h.url) && !own.has(hostOf(h.url)) && !sfind.NEVER.test(hostOf(h.url))).slice(0, 4);
-          for (const h of hits) {
-            let pg;
-            try { pg = await extract.fromUrl(h.url, { gap }); pages++; } catch (_) { continue; }
-            const chk = market.score({ name: p.name, brand: p.brand, sku: p.sku, price: 0 }, { name: pg.name, sku: pg.code, brand: pg.brand, price: 0 });
-            const images = extract.cleanImages(pg.images || []);
-            const sameCode = p.sku && pg.code && U.foldKey(pg.code) === U.foldKey(p.sku);
-            if (images.length && (chk.match === 'exact' || sameCode)) { hit = { h, pg, images }; break; }
-          }
-          if (hit) break;
-        }
-      } catch (e) {
-        if (e instanceof sfind.Blocked) { job && job.log('Η μηχανή αναζήτησης μας περιόρισε· η έρευνα συνεχίζει αύριο.'); break; }
-        errors++;
-      }
-      if (hit) {
-        ec.products[key] = { at: U.nowIso(), src: { kind: 'research', label: 'Έρευνα στο internet: ' + hostOf(hit.h.url), url: hit.h.url, level: 'medium' }, data: { name: hit.pg.name || '', brand: hit.pg.brand || '', ean: hit.pg.ean || '', code: hit.pg.code || '', descHtml: '', images: hit.images, features: [], specs: [], supplier: '' } };
-        found++;
-      } else ec.research[key] = { at: U.nowIso() };
+    const web = (store.read(cf.KEY, null) || {}).products || {};
+    const todo = needs.filter(({ site, p }) => (p.images || []).length < minImg && !(site === 'st' && L.stToSf.has(p.id)) && !(ec.products[site + ':' + p.id] && (ec.products[site + ':' + p.id].data.images || []).length >= minImg) && cf.dueAt(web[site + ':' + p.id]) <= now);
+    todo.sort((a, b) => (a.p.images || []).length - (b.p.images || []).length || (b.p.inStock !== false) - (a.p.inStock !== false)); // none first
+    job && job.log(`Φωτογραφίες: ${todo.length} προϊόντα με λιγότερες από ${minImg} φωτογραφίες χωρίς πηγή αντιπροσώπου.`);
+    if (todo.length && !opts.viaQueue) {
+      const items = cf.itemsFor(todo.slice(0, maxResearch).map(({ site, p }) => site + ':' + p.id)).map((it) => Object.assign(it, { needs: [...new Set(['images'].concat(it.needs || []))] }));
+      const r = await cf.run(job, { items });
+      researched = r.looked;
+      found += r.withCode;
     }
   }
   // pages not needed any more are forgotten after 30 days

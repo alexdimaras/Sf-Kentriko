@@ -23,15 +23,16 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
   αναφορά φόρτου `/api/worker/load` → Ρυθμίσεις → Υπολογιστές (ζωντανά). Τρέχει και από το zip του GitHub (`vendor/node-html-parser.js`).
 - **Έρευνα τιμών** `lib/market.js` (αντιστοίχιση `compare/score`, `MATCH_VERSION`), `lib/research.js` (κατανεμημένη), `lib/compcat.js` + `lib/sitemapcat.js` (κατάλογοι ανταγωνιστών).
 - **Έρευνα internet** `lib/codefind.js`: 6–8 ερωτήματα (`queriesOf`) σε DDG+Bing+Yahoo → έως 3 σελίδες/κατάστημα (`extract.fromUrl`) → μόνο ίδιο (EAN/κωδικός/`exact`, ίδιο χρώμα & έκδοση) → SKU/EAN/φωτο/μάρκα/τιμή+διαθεσιμότητα (`market.mergeWeb`). Κατάσταση + καταγραφή ανά προϊόν (`web-trace`), επανάληψη ανά πεδίο (`openNeeds`/`dueAt`).
-- **Local AI** `lib/localai.js`: `resolveUrl`, `pickModel`, `test()` (πραγματικό generate), `guardFacts`· στο cloud μέσω `ai.call` στον υπολογιστή με το μοντέλο.
+- **Οικογένειες / παραλλαγές**: `market.compare` → exact | family | similar | none· `lib/families.js` (ξεχωριστά προϊόντα ενός μοντέλου → αρχεία μεταβλητού)· `lib/seoaudit.js` (σελίδα όπως τη βλέπει το Google).
+- **Local AI** `lib/localai.js` + `lib/airesearch.js` (JSON Schema, κρίση αμφίβολων σελίδων): `resolveUrl`, `pickModel`, `test()` (πραγματικό generate), `guardFacts`· στο cloud μέσω `ai.call` στον υπολογιστή με το μοντέλο.
 - **Διορθώσεις** `lib/fixes.js` (προτάσεις, `confidenceOf`, εξαγωγή CSV)· **Ροή εργασίας** `lib/flow.js` (βήματα 1 Κωδικός → 2 Στοιχεία → 3 Περιεχόμενο → 4 Τιμή).
 - **Έλεγχοι τίτλων/ειδών** `lib/checks.js`, `lib/kinds.js`· χαρακτήρες `lib/util.js` (`repairEntities`, `capsTitle`).
 - UI: `app/public/js/*.js` (`core.js` κοινά, `v-*.js` οθόνες), `app/public/app.css`.
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (89) · rules (90) · jobs (36) · integrity (19) · coord (32) · workers (25) · ai (34) · research (62) · db (8, με `COORD_PG`).
-Μέτρηση ακρίβειας έρευνας (παλιά vs νέα μηχανή, συνθετικός κόσμος με γνωστή απάντηση): `node test/bench/research-bench.js`.
+`cd app && npm test` → run (89) · rules (90) · jobs (36) · integrity (19) · coord (32) · workers (26) · ai (34) · research (66) · variants (45, πραγματικά δεδομένα στο `test/fixtures`) · db (8, με `COORD_PG`).
+Μετρήσεις: `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.
 

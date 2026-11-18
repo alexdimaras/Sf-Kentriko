@@ -69,6 +69,29 @@
           h('div', { class: 'grid3', style: { marginTop: '10px' } }, field('Πότε', hour, 'Τρέχει όσο είναι ανοιχτό το πρόγραμμα, μία φορά τη μέρα.')),
           h('p', { class: 'hint' }, 'Όταν οι τιμές των δύο sites διαφέρουν, σωστή θεωρείται η τιμή του ' + siteName('sf') + '.')));
         box.appendChild(saveBtn(() => ({ strategy: strategy.value, percent: pct.value, rounding: rounding.value, vat: vat.value, floorMargin: floor.value, marketGreekOnly: greek.checked, competitorGap: gap.value, marketAuto: auto.checked, marketHour: hour.value, minShops: minShops.value, suspectPct: suspect.value })));
+        // the research on the whole internet: how far it goes, the optional search APIs (keys never come back here)
+        const wr = s.webResearch || {};
+        const num = (v, min, max) => inp(v, { type: 'number', min, max });
+        const mq = num(wr.maxQueries, 2, 30), mp = num(wr.maxPages, 5, 200), ph = num(wr.perHost, 1, 10), ms = num(wr.minShops, 1, 10), fq = num(wr.fullQueries, 2, 40), fp = num(wr.fullPages, 5, 300), mi = num(wr.minImages, 1, 8);
+        const appr = h('input', { type: 'checkbox', checked: wr.approveNewShops !== false });
+        const apis = wr.apis || {};
+        const onX = h('input', { type: 'checkbox', checked: !!apis.searxng }), onB = h('input', { type: 'checkbox', checked: !!apis.brave }), onG = h('input', { type: 'checkbox', checked: !!apis.google });
+        const sx = inp('', { placeholder: 'π.χ. http://192.168.1.20:8080' }), bk = inp('', { placeholder: 'κλειδί (δεν εμφανίζεται ξανά)', type: 'password', autocomplete: 'off' }), gk = inp('', { placeholder: 'κλειδί (δεν εμφανίζεται ξανά)', type: 'password', autocomplete: 'off' }), gcx = inp('', { placeholder: 'cx' });
+        const keysNote = h('div', { class: 'faint' });
+        if (admin) GET('/api/search-keys').then((k) => { sx.value = k.searxng.url || ''; gcx.value = k.google.cx || ''; keysNote.textContent = `Brave: ${k.brave.set ? 'κλειδί αποθηκευμένο' : 'χωρίς κλειδί'} · Google: ${k.google.set ? 'κλειδί αποθηκευμένο' : 'χωρίς κλειδί'}`; }).catch(() => {});
+        box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Έρευνα σε όλο το internet'),
+          h('p', { class: 'muted' }, 'Για κάθε προϊόν: πλάνο αναζητήσεων σε όλα τα καταστήματα του internet (όχι μόνο στους ανταγωνιστές). Η αυτόματη σταματά όταν ό,τι λείπει επιβεβαιωθεί από αρκετά καταστήματα· η «Πλήρης έρευνα Internet» τρέχει όλο το πλάνο. Τα όρια προστατεύουν τις μηχανές αναζήτησης και τα καταστήματα.'),
+          h('div', { class: 'grid3' }, field('Αναζητήσεις ανά προϊόν', mq), field('Σελίδες ανά προϊόν (σύνολο)', mp), field('Σελίδες ανά site', ph), field('Καταστήματα για «αρκετά»', ms), field('Πλήρης: αναζητήσεις', fq), field('Πλήρης: σελίδες', fp), field('Λιγότερες φωτογραφίες από', mi, 'τότε ψάχνονται κι άλλες')),
+          h('label', { class: 'check', style: { marginTop: '10px' } }, appr, 'Τιμή από νέο κατάστημα του internet μετράει μόνο αφού εγκρίνω το κατάστημα'),
+          h('h3', { style: { marginTop: '14px' } }, 'Προαιρετικοί πάροχοι αναζήτησης'),
+          h('p', { class: 'hint' }, 'Χωρίς αυτούς η έρευνα δουλεύει με DuckDuckGo / Bing / Yahoo. Τα αποτελέσματα της Google δεν διαβάζονται απευθείας (το απαγορεύουν οι όροι της)· για κάθε αναζήτηση υπάρχει σύνδεσμος «Google ↗» για έλεγχο με το μάτι.'),
+          h('label', { class: 'check' }, onX, 'SearXNG (δωρεάν, δικός σας διακομιστής — και στο PC)'), field('Διεύθυνση SearXNG', sx),
+          h('label', { class: 'check' }, onB, 'Brave Search API (δωρεάν μηνιαίο όριο, θέλει κλειδί)'), field('Κλειδί Brave', bk),
+          h('label', { class: 'check' }, onG, 'Google Programmable Search (100 αναζητήσεις/μέρα δωρεάν, θέλει κλειδί + cx)'), h('div', { class: 'grid3' }, field('Κλειδί Google', gk), field('cx', gcx)), keysNote));
+        box.appendChild(saveBtn(() => {
+          if (admin && (sx.value || bk.value || gk.value || gcx.value)) POST('/api/search-keys', { searxng: { url: sx.value }, brave: { key: bk.value }, google: { key: gk.value, cx: gcx.value } }).then(() => { bk.value = ''; gk.value = ''; }).catch(fail);
+          return { webResearch: { maxQueries: mq.value, maxPages: mp.value, perHost: ph.value, minShops: ms.value, fullQueries: fq.value, fullPages: fp.value, minImages: mi.value, approveNewShops: appr.checked, apis: { searxng: onX.checked, brave: onB.checked, google: onG.checked } } };
+        }));
       }
 
       if (tab === 'ads') {
@@ -148,6 +171,9 @@
         const en = h('input', { type: 'checkbox', checked: s.localAI.enabled });
         const url = inp(s.localAI.url);
         const model = inp(s.localAI.model, { placeholder: 'π.χ. qwen2.5:7b' });
+        const inResearch = h('input', { type: 'checkbox', checked: s.localAI.research !== false });
+        const usage = h('div', { class: 'faint', style: { marginTop: '8px' } });
+        GET('/api/ai/log').then((l) => { const t = Object.entries(l.totals || {}); if (t.length) usage.textContent = 'Χρήση AI: ' + t.map(([k, v]) => `${{ text: 'κείμενα', suggest: 'προτάσεις', judge: 'κρίσεις σελίδων', queries: 'αναζητήσεις' }[k] || k}: ${v.calls} ερωτήσεις, ${Math.round(v.ms / 1000)}″, ${v.tokens} tokens`).join(' · '); }).catch(() => {});
         const res = h('div');
         box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Δωρεάν AI (προαιρετικό)'),
           h('p', { class: 'muted' }, 'Για περιγραφές όταν δεν υπάρχει επίσημο κείμενο, ή μετάφραση αγγλικών κειμένων. Χρειάζεται το δωρεάν πρόγραμμα Ollama σε υπολογιστή με τουλάχιστον 16 GB μνήμη. Χωρίς αυτό, όλα τα υπόλοιπα δουλεύουν κανονικά.'),
@@ -157,6 +183,7 @@
           h('ol', { class: 'steps' }, h('li', null, 'Κατέβασε και εγκατάστησε το Ollama από το ollama.com (στο PC που βοηθά).'), h('li', null, 'Άνοιξε τη γραμμή εντολών και γράψε: ollama pull qwen2.5:7b'), server ? h('li', null, 'Ξεκίνα τον worker από τον νέο φάκελο, περίμενε 1 λεπτό, ενεργοποίησε εδώ και πάτα «Δοκιμή».') : h('li', null, 'Ενεργοποίησε εδώ και πάτα «Δοκιμή».')),
           h('div', { class: 'grid3', style: { marginTop: '12px' } }, server ? null : field('Διεύθυνση', url), field('Μοντέλο', model, 'Κενό = το πρώτο εγκατεστημένο')),
           h('label', { class: 'check', style: { marginTop: '10px' } }, en, 'Ενεργό'),
+          h('label', { class: 'check' }, inResearch, 'Και στην έρευνα internet: προτείνει αναζητήσεις και κρίνει τις αμφίβολες σελίδες (ποτέ δεν κάνει μόνο του κάτι «ίδιο»)'), usage,
           h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Δοκιμή', { cls: 'sm' }, async () => {
             clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή…'));
             clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή: το Ollama, τα μοντέλα και μια πραγματική απάντηση (την πρώτη φορά το μοντέλο φορτώνει: έως 1–2 λεπτά)…'));
@@ -169,7 +196,7 @@
                 server && !r.ok ? h('div', { class: 'faint', style: { marginTop: '6px' } }, 'Στο PC με το Ollama, στον φάκελο του worker: «runtime\\node.exe app\\worker.js ai-test» δείχνει τα ίδια βήματα εκεί.') : null));
             } catch (e) { clear(res).appendChild(h('div', { class: 'note crit' }, e.message)); }
           })), res));
-        box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value } })));
+        box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value, research: inResearch.checked } })));
       }
 
       if (tab === 'phone') await phoneTab(box, server, admin);

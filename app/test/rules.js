@@ -260,7 +260,8 @@ function shop() {
     const g14 = pick(14, 'gtin');
     ok(g14 && g14.to === '4046872358951' && g14.level === 'high' && /2 πηγές/.test(g14.why), 'the same EAN at two shops with the same code → sure', JSON.stringify(g14 && [g14.to, g14.level]));
     const i14 = pick(14, 'images');
-    ok(!i14, 'a product that already has photos gets none from other shops');
+    // (2 photos are «too few» now — fewer than the setting's 3 — so more are proposed; the source must be a sure one)
+    ok(!i14 || (i14.to.length > 2 && i14.source && i14.source.url), 'a product with too few photos (2 of 3) gets more only from a named source', JSON.stringify(i14 && i14.source));
     const g15 = pick(15, 'gtin'), g16 = pick(16, 'gtin');
     ok(g15 && g15.to === '5205550001117' && !g16, 'only the base of the code in common: the EAN goes to the black bag (same colour), never to the olive one', JSON.stringify([g15 && g15.to, g16 && g16.to]));
     ok(!pick(5, 'gtin'), 'an offer matched by words only gives nothing (no EAN, no photo, no brand)');

@@ -136,6 +136,13 @@ function remoteIO(api, jobId) {
       if (r && r.buf.length) { fs.writeFileSync(f, r.buf); fs.writeFileSync(f + '.v', r.etag); }
       return research.readPack(fs.readFileSync(f));
     },
+    // the keys of the optional search APIs: asked on this computer's own line, kept in memory for 10 minutes
+    async searchKeys() {
+      if (remoteIO.keys && Date.now() - remoteIO.keys.at < 600000) return remoteIO.keys.v;
+      const r = await api.call('GET', '/api/worker/search-keys').catch(() => null);
+      remoteIO.keys = { at: Date.now(), v: (r && r.apis) || null };
+      return remoteIO.keys.v;
+    },
     async prev(compId) {
       const r = await api.call('GET', `/api/worker/comp?job=${encodeURIComponent(jobId)}&id=${encodeURIComponent(compId)}`, null, true).catch(() => null);
       if (!r || !r.buf.length) return null;
@@ -251,6 +258,10 @@ async function supervise() {
   let okSince = Date.now();
   const lastBy = {}, pausedUntil = {};
   let stopping = false, paused = false, dormant = false;
+  // one question to this computer's Ollama at a time, whichever runner asks (it is one program, one memory)
+  const aiQueue = [];
+  let aiBusy = false, aiOwner = null;
+  const nextAi = () => { while (!aiBusy && aiQueue.length) { const [p, id] = aiQueue.shift(); if (p.connected === false) continue; aiBusy = true; aiOwner = p; try { p.send({ t: 'ailock', id }); } catch (_) { aiBusy = false; aiOwner = null; } } };
   const start = (i, lane) => {
     const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i), SFK_RUNNER_LANE: lane || '' }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const r = { p, rss: 0, job: null };
@@ -261,6 +272,8 @@ async function supervise() {
       else if (m.t === 'job') r.job = m.job || null;
       else if (m.t === 'count') counts.push([Date.now(), String(m.k)]);
       else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
+      else if (m.t === 'ailock') { aiQueue.push([p, m.id]); nextAi(); }
+      else if (m.t === 'aiunlock') { if (aiOwner === p) { aiBusy = false; aiOwner = null; } nextAi(); }
       else if (m.t === 'permit') {
         // one search at a time per engine for the whole computer, at a steady pace
         if ((pausedUntil[m.eng] || 0) > Date.now()) { p.send({ t: 'permit', id: m.id, ok: false }); return; }
@@ -274,6 +287,7 @@ async function supervise() {
     });
     p.on('exit', (code) => {
       runners.delete(i);
+      if (aiOwner === p) { aiBusy = false; aiOwner = null; nextAi(); } // (a runner that ends while holding the AI gives it back)
       if (stopping || (dormant && !lane)) return; // stopped on purpose (the mode of this computer)
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
       setTimeout(() => start(i, lane), 5000);
