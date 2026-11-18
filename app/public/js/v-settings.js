@@ -232,9 +232,10 @@
           if (!(d.workers || []).length) root.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Κανένας υπολογιστής ακόμα'), h('p', null, 'Όλη η δουλειά γίνεται στο cloud, αργά. Πρόσθεσε το PC του μαγαζιού (πιο κάτω) για να δουλεύει στο τέρμα.')));
           root.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προσθήκη υπολογιστή'),
             h('ol', { class: 'steps' },
-              h('li', null, 'Στο PC (Windows 10/11, 64-bit): κατέβασε τον φάκελο του προγράμματος (DIAKOMISTIS-CLOUD.txt, ★★ βήμα 5) και διπλό κλικ στο «SF-Kentro-Worker.cmd».'),
+              h('li', null, 'Στο PC (Windows 10/11, 64-bit) κατέβασε τον φάκελο με το κουμπί από κάτω (είναι πάντα η τρέχουσα έκδοση). Δεξί κλικ στο zip → Ιδιότητες → «Κατάργηση αποκλεισμού» → OK → δεξί κλικ → «Εξαγωγή όλων…» σε ΝΕΟ φάκελο → διπλό κλικ στο «SF-Kentro-Worker.cmd». Για ενημέρωση: κλείσε πρώτα το παράθυρο του παλιού.'),
               h('li', null, 'Πάτα «Νέος κωδικός» εδώ και γράψε τη διεύθυνση και τον κωδικό στο παράθυρο που ανοίγει εκεί. Ο κωδικός ισχύει 15 λεπτά και μία φορά.'),
               h('li', null, 'Τέλος: ξεκινά μόνο του με τα Windows και δουλεύει σε όλους τους πυρήνες (αφήνει έναν για σένα, με χαμηλή προτεραιότητα: δεν σε καθυστερεί).')),
+            d.download ? h('div', { class: 'row', style: { marginBottom: '8px' } }, h('a', { class: 'btn primary', href: d.download, target: '_blank', rel: 'noopener' }, '⬇ Κατέβασε τον φάκελο του υπολογιστή (zip)'), h('span', { class: 'faint mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, d.download)) : null,
             h('div', { class: 'row' }, btn('Νέος κωδικός', { cls: 'primary', icon: 'new' }, () => POST('/api/workers/pair').then((r) => {
               clear(pairBox);
               pairBox.appendChild(h('div', { class: 'pair-code' }, h('div', { class: 'faint' }, 'Διεύθυνση'), h('b', { class: 'mono' }, location.origin), h('div', { class: 'faint' }, `Κωδικός (ισχύει ${nz(r && r.minutes)} λεπτά)`), h('b', { class: 'mono big' }, (r && r.code) || '—')));

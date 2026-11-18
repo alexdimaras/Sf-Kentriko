@@ -558,7 +558,7 @@ const routes = {
   'GET /api/workers': async () => {
     const ws = (await coord.workersView()).map((w) => { const l = workerLoad.get(w.id); return Object.assign({}, w, { active: workerActive(w), load: l && Date.now() - l.at < 20000 ? l : null }); });
     const lq = await coord.liveOf('codes.web');
-    return { workers: ws, stats: await coord.stats(), queue: { waiting: lq.filter((j) => j.status === 'queued').length, running: lq.filter((j) => j.status !== 'queued').length }, workerRev: WORKER_REV, research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
+    return { workers: ws, stats: await coord.stats(), queue: { waiting: lq.filter((j) => j.status === 'queued').length, running: lq.filter((j) => j.status !== 'queued').length }, workerRev: WORKER_REV, download: workerZip(), research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
   },
   'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
   'POST /api/workers/mode': async (b) => ({ ok: await coord.setMode(String(b.id || ''), String(b.mode || '')) }),
@@ -1066,6 +1066,12 @@ const STARTED_AT = Date.now();
 let lastUiAt = 0;
 // the newest worker (app/worker.js REV): an older one on a computer is said so in Ρυθμίσεις → Υπολογιστές
 const WORKER_REV = require('./lib/workerrev');
+// The worker's folder: the zip of exactly the code this server runs (Render says which repository and branch).
+function workerZip() {
+  const slug = /^[\w.-]+\/[\w.-]+$/.test(process.env.RENDER_GIT_REPO_SLUG || '') ? process.env.RENDER_GIT_REPO_SLUG : 'alexdimaras/Sf-Kentriko';
+  const branch = /^[\w./-]+$/.test(process.env.RENDER_GIT_BRANCH || '') ? process.env.RENDER_GIT_BRANCH : 'claude/friendly-sagan-bfjrkj';
+  return `https://github.com/${slug}/archive/refs/heads/${branch}.zip`;
+}
 /** Should this computer work now? 'off': never · 'app': while a screen of the program was open in the last 2 minutes · else always. */
 function workerActive(w) { const m = (w && w.mode) || 'always'; return m === 'off' ? false : m === 'app' ? Date.now() - lastUiAt < 120000 : true; }
 // which change of the code runs here: from the host (Render gives the commit), its title and date from GitHub (public)
