@@ -39,7 +39,7 @@ function fakeOllama(state) {
         const delay = state.delay || 0;
         setTimeout(() => {
           const answer = typeof state.answer === 'function' ? state.answer(j) : state.answer;
-          send(200, { model: j.model, created_at: new Date().toISOString(), response: answer, done: true, done_reason: 'stop', eval_count: 42 });
+          send(200, { model: j.model, created_at: new Date().toISOString(), response: answer, done: true, done_reason: 'stop', eval_count: 42, prompt_eval_count: 17, load_duration: 2.5e9, prompt_eval_duration: 3e8, eval_duration: 2.1e9, total_duration: 5e9 });
         }, delay);
       });
     }
@@ -79,20 +79,26 @@ function fakeOllama(state) {
   let t = await localai.test();
   ok(t.ok && t.steps.map((s) => s.id).join(',') === 'reach,models,model,generate,greek', 'every step passes, in order', JSON.stringify(t.steps));
   ok(state.calls.length === 1 && state.calls[0].model === 'qwen2.5:7b' && t.answer === 'Μπλε.', 'the test really asked the model and shows its answer', JSON.stringify(state.calls[0]));
+  ok(t.state === 'ok' && t.metrics && t.metrics.loadMs === 2500 && t.metrics.promptTokens === 17 && t.metrics.tokens === 42 && t.metrics.tokPerSec === 20, 'the test measures: load of the model, tokens in / out, tokens per second (Ollama\'s own times)', JSON.stringify(t.metrics));
   settings.save({ localAI: { enabled: true, url: ol.url, model: 'llama3:8b' } });
   t = await localai.test();
-  ok(!t.ok && t.steps.find((s) => s.id === 'model' && !s.ok) && !t.steps.some((s) => s.id === 'generate'), 'chosen model missing → the test stops at «model», with the reason');
+  ok(!t.ok && t.state === 'model_missing' && t.steps.find((s) => s.id === 'model' && !s.ok) && !t.steps.some((s) => s.id === 'generate'), 'chosen model missing → the test stops at «model», with the reason (state model_missing)');
   settings.save({ localAI: { enabled: true, url: 'http://127.0.0.1:1', model: '' } });
   t = await localai.test();
-  ok(!t.ok && t.steps[0].id === 'reach' && /Δεν απαντά το Ollama/.test(t.steps[0].text), 'Ollama closed → «does not answer at …», nothing else', JSON.stringify(t.steps));
+  ok(!t.ok && t.state === 'unreachable' && t.steps[0].id === 'reach' && /Δεν απαντά το Ollama/.test(t.steps[0].text), 'Ollama closed → «does not answer at …», nothing else (state unreachable)', JSON.stringify(t.steps));
   settings.save({ localAI: { enabled: true, url: ol.url, model: '' } });
   state.memory = true;
   t = await localai.test();
-  ok(!t.ok && /μνήμη/.test((t.steps.find((s) => s.id === 'generate') || {}).text || ''), 'not enough memory for the model → said in plain words', JSON.stringify(t.steps));
+  ok(!t.ok && t.state === 'generation_failed' && /μνήμη/.test((t.steps.find((s) => s.id === 'generate') || {}).text || ''), 'not enough memory for the model → said in plain words (state generation_failed — not «not installed»)', JSON.stringify(t.steps));
   state.memory = false;
+  const keep = state.models;
+  state.models = ['nomic-embed-text:latest'];
+  t = await localai.test();
+  ok(!t.ok && t.state === 'no_model', 'Ollama up, only a search (embedding) model → state no_model', t.state);
+  state.models = keep;
   settings.save({ localAI: { enabled: false, url: ol.url, model: '' } });
   t = await localai.test();
-  ok(!t.ok && t.steps.some((s) => s.id === 'enabled' && !s.ok) && t.steps.some((s) => s.id === 'generate' && s.ok), 'switched off: the test still checks everything and says «tick Ενεργό»');
+  ok(!t.ok && t.state === 'disabled' && t.steps.some((s) => s.id === 'enabled' && !s.ok) && t.steps.some((s) => s.id === 'generate' && s.ok), 'switched off: the test still checks everything and says «tick Ενεργό» (state disabled)');
   let off = null; try { await localai.generate('x'); } catch (e) { off = e; }
   ok(off && off.code === 'disabled', 'switched off: no question is sent by the program');
 
@@ -155,9 +161,14 @@ function fakeOllama(state) {
 
   section('Στο cloud: ο υπολογιστής που βοηθά (χωρίς δίκτυο προς το cloud)');
   // the cloud's side without a worker: a plain reason
-  localai.setRemote({ call: async () => { throw new Error('never'); }, models: async () => [], why: async () => ({ ok: false, text: 'Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (PC-B).' }) });
+  localai.setRemote({ call: async () => { throw new Error('never'); }, models: async () => [], why: async () => ({ ok: false, state: 'offline', text: 'Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (PC-B).' }) });
   t = await localai.test();
-  ok(!t.ok && t.where === 'computer' && t.steps[0].id === 'computer' && /PC-B/.test(t.steps[0].text), 'all computers off → the test says which, nothing is queued');
+  ok(!t.ok && t.state === 'offline' && t.where === 'computer' && t.steps[0].id === 'computer' && /PC-B/.test(t.steps[0].text), 'all computers off → the test says which, nothing is queued (state offline)');
+  for (const st of ['no_worker', 'stale_worker', 'unreachable', 'no_model']) {
+    localai.setRemote({ call: async () => { throw new Error('never'); }, models: async () => [], why: async () => ({ ok: false, state: st, text: st }) });
+    t = await localai.test();
+    ok(!t.ok && t.state === st, `the computer's state is kept apart: ${st}`, t.state);
+  }
   localai.setRemote({ call: async (p, b) => (p === '/api/tags' ? { models: [{ name: 'qwen2.5:7b' }] } : { response: 'Μπλε', model: b.model, eval_count: 3 }), models: async () => [{ id: 'w', name: 'PC-B', models: ['qwen2.5:7b'] }], why: async () => ({ ok: true, text: 'PC-B' }) });
   settings.save({ localAI: { enabled: true, url: '', model: 'qwen2.5' } });
   t = await localai.test();

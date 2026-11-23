@@ -602,6 +602,7 @@ const routes = {
   },
   'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
   'POST /api/workers/mode': async (b) => ({ ok: await coord.setMode(String(b.id || ''), String(b.mode || '')) }),
+  'POST /api/workers/perf': async (b) => ({ ok: await coord.setPerf(String(b.id || ''), String(b.profile || '')) }),
   'POST /api/workers/revoke': async (b) => ({ ok: await coord.revoke(String(b.id || '')) }),
   'GET /api/audit': (q) => audit.list(Math.min(1000, Number(q.n) || 200)),
   'POST /api/shutdown': () => { if (SERVER) throw new Error('Ο διακομιστής δεν κλείνει από εδώ.'); setTimeout(() => process.exit(0), 300); return { ok: true }; },
@@ -793,6 +794,7 @@ function cleanLoad(l) {
     jobs: (Array.isArray(l.jobs) ? l.jobs : []).slice(0, 16).map((x) => String(x || '').slice(0, 80)),
     perHour: { products: lnum(ph.products, 1e6), pages: lnum(ph.pages, 1e6), searches: lnum(ph.searches, 1e6), jobs: lnum(ph.jobs, 1e6) },
     engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok', yahoo: eng.yahoo === 'paused' ? 'paused' : 'ok' }, dormant: !!l.dormant,
+    ...(l.perf && typeof l.perf === 'object' ? { perf: { profile: ['gentle', 'normal', 'boost'].includes(l.perf.profile) ? l.perf.profile : 'normal', used: ['gentle', 'normal', 'boost'].includes(l.perf.used) ? l.perf.used : 'normal', label: String(l.perf.label || '').slice(0, 20), slots: lnum(l.perf.slots, 64), max: lnum(l.perf.max, 64), pages: lnum(l.perf.pages, 10), domainGap: lnum(l.perf.domainGap, 60000), down: !!l.perf.down, reason: String(l.perf.reason || '').slice(0, 160) } } : {}),
   };
 }
 function storeName() { return (() => { const c = cloudsave.status(); return !c.enabled ? 'στον φάκελο του διακομιστή' : c.where === 'βάση δεδομένων' ? 'στη βάση δεδομένων (και αντίγραφο στο GitHub κάθε μέρα)' : 'στο ιδιωτικό αποθετήριο GitHub'; })(); }
@@ -834,7 +836,7 @@ async function handleWorker(req, res, url, q, key0) {
       return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
     }
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : key0 === 'POST /api/worker/heartbeat' ? 2 * 1024 * 1024 : 256 * 1024) : {};
-    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'always', active: workerActive(w) }); }
+    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'always', perf: w.perf || 'normal', active: workerActive(w) }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     // a question to its AI is answered whatever the mode; other work only when it is on
     if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'always' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
@@ -887,15 +889,19 @@ async function aiWorkers() {
 }
 /** Why the AI of the computers can / cannot answer now → { ok, text } */
 async function aiWhy() {
-  if (!coordReady) return { ok: false, text: 'Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.' };
+  if (!coordReady) return { ok: false, state: 'starting', text: 'Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.' };
   const all = (await coord.workersView());
   const online = all.filter((w) => w.online);
   const ai = await aiWorkers();
-  if (ai.length) return { ok: true, text: `Υπολογιστής με Ollama: ${ai.map((w) => w.name + (w.models.length ? ' (' + w.models.slice(0, 3).join(', ') + ')' : '')).join(' · ')}.` };
-  if (!all.length) return { ok: false, text: 'Δεν υπάρχει υπολογιστής που βοηθά. Το Ollama είναι στο PC σου, όχι στο cloud: Ρυθμίσεις → Υπολογιστές → σύζευξη του PC με το Ollama (SF-Kentro-Worker).' };
-  if (!online.length) return { ok: false, text: `Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (${all.map((w) => w.name).join(', ')}). Άνοιξε το PC με το Ollama και τον SF-Kentro-Worker.` };
+  if (ai.length) return { ok: true, state: 'ok', text: `Υπολογιστής με Ollama: ${ai.map((w) => w.name + (w.models.length ? ' (' + w.models.slice(0, 3).join(', ') + ')' : '')).join(' · ')}.` };
+  // a computer is on but its worker is older than this program: it is the folder, not Ollama
+  const stale = online.filter((w) => !w.caps.ollamaInfo || (w.caps.rev && w.caps.rev < WORKER_REV));
+  if (online.length && stale.length === online.length) return { ok: false, state: 'stale_worker', text: `Ο υπολογιστής ${stale.map((w) => w.name).join(', ')} τρέχει παλιά έκδοση του worker (${stale.map((w) => w.caps.rev || 'πολύ παλιά').join(', ')}· τρέχουσα ${WORKER_REV}): κατέβασε ξανά τον φάκελο και ξεκίνα τον SF-Kentro-Worker από εκεί. Το Ollama μάλλον είναι εντάξει.` };
+  if (!all.length) return { ok: false, state: 'no_worker', text: 'Δεν υπάρχει υπολογιστής που βοηθά. Το Ollama είναι στο PC σου, όχι στο cloud: Ρυθμίσεις → Υπολογιστές → σύζευξη του PC με το Ollama (SF-Kentro-Worker).' };
+  if (!online.length) return { ok: false, state: 'offline', text: `Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (${all.map((w) => w.name).join(', ')}). Άνοιξε το PC με το Ollama και τον SF-Kentro-Worker.` };
   const info = online.map((w) => { const i = w.caps.ollamaInfo; return `${w.name}: ${i ? (i.ok ? i.error || 'χωρίς μοντέλο' : i.error || 'δεν βρέθηκε το Ollama') : 'παλιά έκδοση του worker (δεν ελέγχει το Ollama)'}`; });
-  return { ok: false, text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
+  const noModel = online.some((w) => w.caps.ollamaInfo && w.caps.ollamaInfo.ok);
+  return { ok: false, state: noModel ? 'no_model' : 'unreachable', text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
 }
 async function askComputerAI(pathName, body, timeout, meta) {
   if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');

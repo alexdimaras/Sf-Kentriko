@@ -108,12 +108,15 @@ function registerAI() {
         throw Object.assign(new Error(e.message), { fatal: true, cancelled: !!e.cancelled });
       }
       if (path === '/api/tags') return { models: (j.models || []).map((x) => ({ name: x.name, size: x.size || 0, details: x.details ? { family: x.details.family || '', families: x.details.families || [], parameter_size: x.details.parameter_size || '' } : {} })) };
-      return { response: String(j.response || ''), model: String(j.model || body.model), eval_count: Number(j.eval_count) || 0, prompt_eval_count: Number(j.prompt_eval_count) || 0, done_reason: String(j.done_reason || ''), ms: Date.now() - t0 };
+      return { response: String(j.response || ''), model: String(j.model || body.model), eval_count: Number(j.eval_count) || 0, prompt_eval_count: Number(j.prompt_eval_count) || 0, done_reason: String(j.done_reason || ''), ms: Date.now() - t0,
+        // Ollama's own times (nanoseconds): loading the model, reading the question, writing the answer, in all
+        load_duration: Number(j.load_duration) || 0, prompt_eval_duration: Number(j.prompt_eval_duration) || 0, eval_duration: Number(j.eval_duration) || 0, total_duration: Number(j.total_duration) || 0 };
     },
     async apply(job, result) {
       const r = result || {};
       if (r.models) return { models: r.models.slice(0, 50).map((x) => ({ name: String(x.name || '').slice(0, 100), size: Number(x.size) || 0, details: { family: String((x.details || {}).family || '').slice(0, 40), families: ((x.details || {}).families || []).slice(0, 6).map((f) => String(f).slice(0, 40)), parameter_size: String((x.details || {}).parameter_size || '').slice(0, 20) } })) };
-      return { response: String(r.response || '').slice(0, 40000), model: String(r.model || '').slice(0, 100), eval_count: Number(r.eval_count) || 0, prompt_eval_count: Number(r.prompt_eval_count) || 0, done_reason: String(r.done_reason || '').slice(0, 20), ms: Number(r.ms) || 0 };
+      return { response: String(r.response || '').slice(0, 40000), model: String(r.model || '').slice(0, 100), eval_count: Number(r.eval_count) || 0, prompt_eval_count: Number(r.prompt_eval_count) || 0, done_reason: String(r.done_reason || '').slice(0, 20), ms: Number(r.ms) || 0,
+        load_duration: Number(r.load_duration) || 0, prompt_eval_duration: Number(r.prompt_eval_duration) || 0, eval_duration: Number(r.eval_duration) || 0, total_duration: Number(r.total_duration) || 0 };
     },
   });
 }
@@ -194,7 +197,10 @@ function registerCodes() {
       // the optional search APIs: their keys come on the computer's own line, never inside the job (io.searchKeys)
       try { state.apis = api.cloud ? require('./searchkeys').config() : (io0 && io0.searchKeys ? await io0.searchKeys() : null); } catch (_) { state.apis = null; }
       const io = { own: new Set(payload.own || []), compHosts: new Set(payload.compHosts || []), supplierHosts: new Set(payload.supplierHosts || []), limits: payload.limits || null,
-        search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500, signal: state.signal }), cancelled: api.cancelled, parallel: api.cloud ? 2 : 6 };
+        search: (q) => sfind.searchWide(q, state),
+        // on a computer: one page of a shop at a time for all its runners, at the pace of its profile (Ρυθμίσεις → Υπολογιστές)
+        page: async (url) => { if (process.env.SFK_RUNNER && process.send) await sfind.askPermit('site:' + U.siteOf(U.hostOf(url))); return extract.fromUrl(url, { gap: 1500, signal: state.signal }); },
+        cancelled: api.cancelled, parallel: api.cloud ? 2 : Math.max(1, Math.min(6, Number(process.env.SFK_PAGES_PARALLEL) || 2)) };
       // the AI of this computer, when it has one: a few more searches, and a second look at doubtful pages (never more)
       const aiTools = payload.ai && !api.cloud ? require('./airesearch').forWorker(api, payload.aiModel || '') : null;
       if (aiTools) io.judge = aiTools.judge;

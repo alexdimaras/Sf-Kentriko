@@ -149,6 +149,25 @@ async function makeBackend() {
     ok(given.length === new Set(given).size && [...owners.values()].every((n) => n === 1), `6 computers asking at once: ${given.length} jobs given, each to one computer only`, JSON.stringify(given.length));
   }
 
+  // ---- the profiles of a computer (Ήπια / Κανονική / Ενίσχυση): pure rules, then kept per computer ----
+  {
+    const perf = require(APP + '/lib/perf');
+    const P = (x) => perf.policy(Object.assign({ cpus: 8, ramTotalMB: 16384, ramUsedPct: 40, cpuPct: 20, ollama: false }, x));
+    const g = P({ profile: 'gentle' }), n = P({ profile: 'normal' }), b = P({ profile: 'boost' });
+    ok(g.slots === 2 && g.pages === 1 && n.slots === 4 && n.pages === 2 && b.slots === 8 && b.pages === 3, '8 cores / 16 GB: gentle 2 jobs (1 page) · normal 4 (2) · boost 8 (3)', JSON.stringify([g.slots, n.slots, b.slots]));
+    ok(g.domainGap > n.domainGap && n.domainGap > b.domainGap && !('engineGap' in b), 'the gentler, the more polite to each shop; the pace of the search engines is not the profile\'s to change');
+    ok(P({ profile: 'boost', ramTotalMB: 8192, ollama: true }).slots === 1, '8 GB with the AI model: the room of Ollama is kept → 1 job');
+    const down = P({ profile: 'normal', ramUsedPct: 85 });
+    ok(down.used === 'gentle' && down.down && /μνήμη/.test(down.reason) && down.slots === 2, 'memory over the line → one profile down by itself, and says why', JSON.stringify(down));
+    ok(P({ profile: 'boost', ramUsedPct: 96 }).slots === 1, 'memory almost full → one job only');
+    ok(P({ profile: 'boost', cpuPct: 95 }).used === 'normal', 'the processor busy with the person\'s work → one step down');
+    ok(P({ profile: 'boost' }).used === 'boost' && P({ profile: 'x' }).profile === 'normal', 'free computer: the chosen profile · unknown → normal');
+    const prp = await coord.newPairing('t');
+    const wp = await coord.pair(prp.code, 'PC-perf', { cpus: 8, ramMB: 16000 });
+    await coord.setPerf(wp.id, 'gentle');
+    ok((await coord.workersView()).find((x) => x.id === wp.id).perf === 'gentle', 'the profile is kept per computer (and given to it with its «hello»)');
+  }
+
   console.log(`\n${passes} ok, ${fails} failed`);
   if (backend.close) await backend.close();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }

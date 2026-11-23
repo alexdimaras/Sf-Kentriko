@@ -496,4 +496,4 @@ function dismiss(key, undo) {
   return { ok: true };
 }
 
-module.exports = { apiEngines, MARKETPLACE, parseYahoo, count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };
+module.exports = { askPermit, apiEngines, MARKETPLACE, parseYahoo, count, targets, run, view, approve, reject, dismiss, weeklyDue, parseDdg, parseBing, score, queriesFor, search, searchWide, NEVER, Blocked };

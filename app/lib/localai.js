@@ -138,7 +138,10 @@ async function ask(prompt, opts) {
   const r = await call('/api/generate', body, o.timeout || GEN_TIMEOUT, { model });
   const text = cleanAnswer(r.response);
   if (!text) throw aiError('empty', `Το μοντέλο ${model} δεν έδωσε απάντηση. Δοκίμασε ξανά ή άλλο μοντέλο.`);
-  const out = { text, model, ms: Date.now() - t0, tokens: Number(r.eval_count) || 0, promptTokens: Number(r.prompt_eval_count) || 0, cut: r.done_reason === 'length' };
+  const ns = (v) => Math.round((Number(v) || 0) / 1e6);
+  const out = { text, model, ms: Date.now() - t0, tokens: Number(r.eval_count) || 0, promptTokens: Number(r.prompt_eval_count) || 0, cut: r.done_reason === 'length',
+    // Ollama's own measures (ms): the model's loading (0 when it was already in memory), reading, writing
+    loadMs: ns(r.load_duration), promptMs: ns(r.prompt_eval_duration), evalMs: ns(r.eval_duration), totalMs: ns(r.total_duration) };
   logUse(o.task || 'text', out);
   return out;
 }
@@ -185,35 +188,44 @@ async function generate(prompt, opts) { return (await ask(prompt, opts)).text; }
  */
 async function test() {
   const steps = [];
-  const out = { ok: false, where: where(), url: '', steps, models: [], model: '', answer: '', ms: 0, enabled: !!cfg().enabled };
+  // state: one word for what is wrong (never «not installed» when the computer is only off or its worker old):
+  //   no_worker · offline · stale_worker · unreachable · no_model · model_missing · generation_failed · disabled · ok
+  const out = { ok: false, state: '', where: where(), url: '', steps, models: [], model: '', answer: '', ms: 0, metrics: null, enabled: !!cfg().enabled };
   const step = (id, ok, text) => { steps.push({ id, ok, text }); return ok; };
   try {
     if (remote && remote.why) {
       const w = await remote.why();
-      if (!step('computer', w.ok, w.text)) return out;
+      if (!step('computer', w.ok, w.text)) { out.state = w.state || 'no_worker'; return out; }
     } else if (!remote) {
       out.url = resolveUrl(cfg().url);
     }
     let tags;
-    try { tags = await call('/api/tags', null, 15000); } catch (e) { step('reach', false, e.message); return out; }
+    try { tags = await call('/api/tags', null, 15000); } catch (e) { step('reach', false, e.message); out.state = e.code === 'no_worker' ? 'no_worker' : 'unreachable'; return out; }
     const models = modelsOf(tags);
     out.models = models.map((m) => m.name);
     step('reach', true, remote ? 'Ο υπολογιστής που βοηθά βλέπει το Ollama.' : `Το Ollama απαντά (${out.url}).`);
     const p = pickModel(models, cfg().model);
+    if (!models.some((m) => !m.embedding)) out.state = 'no_model';
     if (!step('models', models.some((m) => !m.embedding), models.length ? 'Εγκατεστημένα μοντέλα: ' + models.map((m) => m.name + (m.params ? ` (${m.params})` : '') + (m.embedding ? ' [μόνο αναζήτηση]' : '')).join(', ') : 'Κανένα μοντέλο. Στο PC τρέξε: ollama pull qwen2.5:7b')) return out;
+    if (p.error) out.state = 'model_missing';
     if (!step('model', !p.error, p.error ? p.error.message : p.how === 'auto' ? `Κανένα μοντέλο δεν επιλέχθηκε: χρησιμοποιείται το ${p.model}.` : p.how === 'alias' ? `Το «${cfg().model}» είναι το εγκατεστημένο ${p.model}.` : `Το μοντέλο ${p.model} είναι εγκατεστημένο.`)) return out;
     out.model = p.model;
     // a real answer, short: the model is loaded and writes (the first time it loads, it may take a minute)
     let a;
-    try { a = await ask('Απάντησε στα ελληνικά με μία μόνο λέξη: ποιο είναι το χρώμα του ουρανού μια καθαρή μέρα;', { model: p.model, maxTokens: 24, temperature: 0, force: true, timeout: 180000 }); } catch (e) { step('generate', false, 'Το μοντέλο δεν απάντησε: ' + e.message); return out; }
+    try { a = await ask('Απάντησε στα ελληνικά με μία μόνο λέξη: ποιο είναι το χρώμα του ουρανού μια καθαρή μέρα;', { model: p.model, maxTokens: 24, temperature: 0, force: true, timeout: 180000 }); } catch (e) { step('generate', false, 'Το μοντέλο δεν απάντησε: ' + e.message); out.state = 'generation_failed'; return out; }
     out.answer = a.text.slice(0, 200); out.ms = a.ms;
-    step('generate', true, `Πραγματική απάντηση σε ${(a.ms / 1000).toFixed(1)}″: «${out.answer}»`);
+    out.metrics = { ms: a.ms, loadMs: a.loadMs || 0, promptMs: a.promptMs || 0, evalMs: a.evalMs || 0, totalMs: a.totalMs || 0, promptTokens: a.promptTokens || 0, tokens: a.tokens || 0,
+      tokPerSec: a.evalMs ? Math.round((a.tokens / a.evalMs) * 10000) / 10 : 0 };
+    if (!a.text.trim()) { step('generate', false, 'Το μοντέλο απάντησε κενό κείμενο.'); out.state = 'generation_failed'; return out; }
+    step('generate', true, `Πραγματική απάντηση σε ${(a.ms / 1000).toFixed(1)}″: «${out.answer}»` + (a.totalMs ? ` · φόρτωση μοντέλου ${(a.loadMs / 1000).toFixed(1)}″ · ${a.promptTokens} λέξεις(tokens) ερώτησης, ${a.tokens} απάντησης${out.metrics.tokPerSec ? ' · ' + out.metrics.tokPerSec + ' tokens/″' : ''}` : ''));
     step('greek', /[Ͱ-Ͽ]/.test(a.text), /[Ͱ-Ͽ]/.test(a.text) ? 'Γράφει ελληνικά.' : 'Η απάντηση δεν ήταν στα ελληνικά: για ελληνικά κείμενα προτίμησε qwen2.5:7b ή aya-expanse.');
     if (!out.enabled) step('enabled', false, 'Όλα δουλεύουν, αλλά το AI είναι κλειστό: τσέκαρε «Ενεργό» και Αποθήκευση.');
     out.ok = steps.every((s) => s.ok || s.id === 'greek');
+    out.state = out.ok ? 'ok' : !out.enabled ? 'disabled' : 'generation_failed';
     return out;
   } catch (e) {
     step('error', false, e.message);
+    out.state = out.state || 'generation_failed';
     return out;
   }
 }

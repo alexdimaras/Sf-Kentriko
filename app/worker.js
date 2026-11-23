@@ -215,7 +215,11 @@ async function runnerLoop() {
   jobtypes.register();
   const api = client(conf);
   let paused = false, running = 0, wait = 1000;
-  process.on('message', (m) => { if (m && m.t === 'pause') paused = !!m.on; });
+  process.on('message', (m) => {
+    if (m && m.t === 'pause') paused = !!m.on;
+    // the profile of the computer (Ήπια / Κανονική / Ενίσχυση): how many pages of a product are read at once
+    if (m && m.t === 'perf' && Number(m.pages) > 0) process.env.SFK_PAGES_PARALLEL = String(Math.min(6, Math.floor(m.pages)));
+  });
   process.on('disconnect', () => process.exit(0)); // the supervisor stopped: so does its runner
   setInterval(() => toParent({ t: 'mem', rss: process.memoryUsage().rss }), 3000).unref();
   for (;;) {
@@ -245,8 +249,12 @@ async function supervise() {
   if (!conf || !conf.token) { console.error('Δεν έχει γίνει σύζευξη. Τρέξε: node worker.js pair <διεύθυνση> <κωδικός>'); process.exit(2); }
   try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch (_) { /* not allowed: fine */ }
   const api = client(conf);
+  // K: the most this computer can do (its cores and memory); the profile (lib/perf.js) says how many of them work now
   const K = slotsOf();
-  log(`SF Κέντρο worker ${VERSION} — ${conf.name} → ${conf.server} · ${K} εργασίες μαζί (${(os.cpus() || []).length} πυρήνες, ${Math.round(os.totalmem() / 1073741824)} GB)`);
+  const perf = require('./lib/perf');
+  let perfName = 'normal', P = perf.policy({ profile: perfName, cpus: (os.cpus() || []).length, ramTotalMB: Math.round(os.totalmem() / 1048576), ollama: false });
+  let lastCpu = 0;
+  log(`SF Κέντρο worker ${VERSION} — ${conf.name} → ${conf.server} · έως ${K} εργασίες μαζί (${(os.cpus() || []).length} πυρήνες, ${Math.round(os.totalmem() / 1073741824)} GB) · προφίλ ${P.label}: ${Math.min(K, P.slots)}`);
   const { fork } = require('child_process');
   const runners = new Map(); // index → { p, rss, job }
   const counts = []; // [time, kind]
@@ -274,6 +282,12 @@ async function supervise() {
       else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
       else if (m.t === 'ailock') { aiQueue.push([p, m.id]); nextAi(); }
       else if (m.t === 'aiunlock') { if (aiOwner === p) { aiBusy = false; aiOwner = null; } nextAi(); }
+      else if (m.t === 'permit' && String(m.eng).startsWith('site:')) {
+        // one page of the same shop at a time for the whole computer, at the profile's pace (polite to the shops)
+        const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + P.domainGap);
+        lastBy[m.eng] = at;
+        setTimeout(() => { try { p.send({ t: 'permit', id: m.id, ok: true }); } catch (_) { /* gone */ } }, at - Date.now());
+      }
       else if (m.t === 'permit') {
         // one search at a time per engine for the whole computer, at a steady pace
         if ((pausedUntil[m.eng] || 0) > Date.now()) { p.send({ t: 'permit', id: m.id, ok: false }); return; }
@@ -292,8 +306,10 @@ async function supervise() {
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
       setTimeout(() => start(i, lane), 5000);
     });
-    if (paused && !lane) p.send({ t: 'pause', on: true });
+    if (!lane) { if (paused || i >= Math.min(K, P.slots)) p.send({ t: 'pause', on: true }); p.send({ t: 'perf', pages: P.pages }); }
   };
+  // a runner beyond the profile's number takes no new work (it ends what it does: nothing is lost)
+  const applyPerf = () => { for (const [i, r] of runners) if (i < K) { try { r.p.send({ t: 'pause', on: paused || i >= Math.min(K, P.slots) }); r.p.send({ t: 'perf', pages: P.pages }); } catch (_) { /* gone */ } } };
   for (let i = 0; i < K; i++) start(i);
   // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
   start(K, 'ai.call');
@@ -305,6 +321,7 @@ async function supervise() {
     const now = cpuTimes();
     const cpu = now.total > prev.total ? Math.round(100 * (1 - (now.idle - prev.idle) / (now.total - prev.total))) : 0;
     prev = now;
+    lastCpu = Math.round(lastCpu * 0.7 + cpu * 0.3); // smoothed: a moment's peak is no reason to step down
     const cut = Date.now() - 10 * 60000;
     while (counts.length && counts[0][0] < cut) counts.shift();
     const per = (k) => Math.round(counts.filter((c) => c[1] === k).length * 6); // in 10 minutes → per hour
@@ -317,6 +334,7 @@ async function supervise() {
       engines: Object.fromEntries(['ddg', 'bing', 'yahoo'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
       gaps: Object.assign({}, gapBy),
       battery: paused, dormant,
+      perf: { profile: P.profile, used: P.used, label: P.label, slots: Math.min(K, P.slots), max: K, pages: P.pages, domainGap: P.domainGap, down: P.down, reason: P.reason },
     };
     try { await api.call('POST', '/api/worker/load', { load }); } catch (e) { if (e.fatal) { stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(3); } }
   };
@@ -330,8 +348,16 @@ async function supervise() {
       if (n++ % 4 === 0) await probeOllama();
       const c = caps();
       // (the lane of the AI questions goes on: a person is waiting for that answer, and it takes seconds)
-      if (c.battery !== paused) { paused = c.battery; for (const [i, r] of runners) if (i < K) r.p.send({ t: 'pause', on: paused }); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
+      if (c.battery !== paused) { paused = c.battery; applyPerf(); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
       const h = await api.call('POST', '/api/worker/hello', { caps: c });
+      // the profile chosen for this computer + what it measures now → how many jobs, pages, how polite
+      if (h && h.perf) perfName = h.perf;
+      const ramUsed = Math.round(100 * (1 - os.freemem() / os.totalmem()));
+      const next = perf.policy({ profile: perfName, cpus: (os.cpus() || []).length, ramTotalMB: Math.round(os.totalmem() / 1048576), ramUsedPct: ramUsed, cpuPct: lastCpu, ollama: !!(c.ollama && c.ollama.length) });
+      if (next.slots !== P.slots || next.pages !== P.pages || next.used !== P.used) {
+        log(`προφίλ ${next.label}${next.down ? ' (κατέβηκε από ' + perf.PROFILES[next.profile].label + ': ' + next.reason + ')' : ''}: ${Math.min(K, next.slots)} εργασίες μαζί, ${next.pages} σελίδες ανά προϊόν`);
+        P = next; applyPerf();
+      } else P = next;
       const should = !h || h.active !== false;
       if (!should && !dormant) {
         dormant = true;
@@ -389,7 +415,15 @@ async function aiTest() {
     const r = await localai.ollamaFetch(base, '/api/generate', { model: p.model, prompt: 'Απάντησε στα ελληνικά με μία πρόταση: τι είναι ένα σακίδιο;', stream: false, options: { num_predict: 60, temperature: 0, num_ctx: 2048 } }, { timeout: 240000 });
     const text = localai.cleanAnswer(r.response);
     say(!!text, `Απάντηση σε ${((Date.now() - t0) / 1000).toFixed(1)}″: «${text.slice(0, 200)}»`);
+    const ms = (v) => ((Number(v) || 0) / 1e9).toFixed(1) + '″';
+    console.log(`  · φόρτωση μοντέλου ${ms(r.load_duration)} · ανάγνωση ερώτησης ${ms(r.prompt_eval_duration)} (${Number(r.prompt_eval_count) || 0} tokens) · γράψιμο ${ms(r.eval_duration)} (${Number(r.eval_count) || 0} tokens${r.eval_duration ? ', ' + ((Number(r.eval_count) || 0) / (r.eval_duration / 1e9)).toFixed(1) + ' tokens/″' : ''}) · σύνολο ${ms(r.total_duration)}`);
     if (!text) return 1;
+    // the structured answer (JSON Schema in «format») the research uses: really kept by this Ollama?
+    try {
+      const j = await localai.ollamaFetch(base, '/api/generate', { model: p.model, prompt: 'Είναι ίδιο προϊόν το «ΣΑΚΙΔΙΟ MIL-TEC ASSAULT OLIVE» με το «Mil-Tec Assault Pack Black»;', system: 'Απαντάς μόνο JSON.', format: { type: 'object', properties: { verdict: { type: 'string', enum: ['exact', 'family', 'similar', 'different'] } }, required: ['verdict'] }, stream: false, options: { num_predict: 40, temperature: 0, num_ctx: 2048 } }, { timeout: 120000 });
+      let v = null; try { v = JSON.parse(j.response).verdict; } catch (_) { v = null; }
+      say(!!v, v ? `Δομημένη απάντηση (JSON Schema): «${v}»` : 'Το Ollama δεν τήρησε το JSON Schema (παλιά έκδοση Ollama; αναβάθμισε από ollama.com)');
+    } catch (e) { say(false, 'Δομημένη απάντηση: ' + e.message); }
   } catch (e) { say(false, e.message); return 1; }
   const c = readConf();
   say(!!c, c ? `Σύζευξη με ${c.server}: το cloud μπορεί να στέλνει ερωτήσεις σε αυτόν τον υπολογιστή.` : 'Δεν έχει γίνει σύζευξη με το cloud (Ρυθμίσεις → Υπολογιστές).');

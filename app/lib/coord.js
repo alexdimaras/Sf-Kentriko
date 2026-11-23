@@ -286,6 +286,15 @@ async function setMode(id, mode) {
   changed();
   return true;
 }
+/** How much of a computer the work may use: 'gentle' (Ήπια) · 'normal' (Κανονική) · 'boost' (Ενίσχυση) — lib/perf.js. */
+async function setPerf(id, profile) {
+  const w = await backend.worker(id);
+  if (!w || w.revoked) return false;
+  w.perf = ['gentle', 'normal', 'boost'].includes(profile) ? profile : 'normal';
+  await backend.saveWorker(w);
+  changed();
+  return true;
+}
 async function hello(workerId, caps) { const w = await backend.worker(workerId); if (!w) return null; await touchWorker(w, caps || {}); changed(); return w; }
 async function revoke(id) {
   const w = await backend.worker(id);
@@ -384,7 +393,7 @@ async function workersView() {
   const t = now();
   const jobsBy = new Map();
   for (const j of await backend.live()) if (j.workerId) { const a = jobsBy.get(j.workerId) || []; a.push(view(j)); jobsBy.set(j.workerId, a); }
-  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'always', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
+  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'always', perf: w.perf || 'normal', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
 }
 async function stats() {
   const l = await backend.live();
@@ -392,4 +401,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { recoverCloud, takePartial, setMode, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
