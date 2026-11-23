@@ -746,11 +746,30 @@ function go(view, params) {
 // phone: the four screens used most, at the bottom; everything else in the menu sheet (the sidebar)
 const TABS = ['today', 'flow', 'fixes', 'market'];
 const SHORT = { today: 'Σήμερα', flow: 'Ροή', fixes: 'Διορθώσεις', market: 'Τιμές', products: 'Προϊόντα' };
+// the menu in four parts, by the kind of work (audit 23/11, phase 4) — every screen is still there
+const GROUPS = [
+  ['Σήμερα', ['today']],
+  ['Εργασίες & Προϊόντα', ['flow', 'fixes', 'products', 'checks', 'new']],
+  ['Αγορά', ['market', 'suppliers']],
+  ['Σύστημα', ['system', 'settings']],
+];
 function renderNav(active) {
   const nav = clear($('#nav'));
-  for (const [id, label, ic] of NAV) {
-    const b = App.badges[id];
-    nav.appendChild(h('a', { class: 'nav-item', href: '#/' + id, 'aria-current': id === active ? 'page' : null }, icon(ic), h('span', null, label), b ? h('span', { class: 'badge ' + (b.cls || '') }, b.n) : null));
+  const { params } = parseHash();
+  // «Σύστημα» is the computers / AI / health / events page of the settings (server, administrator)
+  const sysOn = MODE === 'server' && App.me && App.me.role === 'admin';
+  const here = active === 'settings' && params.tab === 'workers' ? 'system' : active;
+  for (const [title, ids] of GROUPS) {
+    const items = ids.filter((id) => id !== 'system' || sysOn);
+    if (!items.length) continue;
+    if (title !== 'Σήμερα') nav.appendChild(h('div', { class: 'nav-group' }, title));
+    for (const id of items) {
+      if (id === 'system') { nav.appendChild(h('a', { class: 'nav-item', href: '#/settings?tab=workers', 'aria-current': here === 'system' ? 'page' : null }, icon('shield'), h('span', null, 'Υπολογιστές, AI, υγεία'))); continue; }
+      const it = NAV.find((x) => x[0] === id);
+      if (!it) continue;
+      const b = App.badges[id];
+      nav.appendChild(h('a', { class: 'nav-item', href: '#/' + id, 'aria-current': id === here ? 'page' : null }, icon(it[2]), h('span', null, it[1]), b ? h('span', { class: 'badge ' + (b.cls || '') }, b.n) : null));
+    }
   }
   const tb = $('#tabbar');
   if (tb) {
