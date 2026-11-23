@@ -854,6 +854,7 @@ function researchView(loads) {
   return { looked: st.looked || 0, found: st.withCode || 0, waiting: st.waiting || 0, perHour, hoursLeft: perHour > 0 ? Math.round((st.waiting / perHour) * 10) / 10 : null };
 }
 let updatePack = null;
+const staleSince = new Map(); // worker id → since when it reports an older revision
 async function handleWorker(req, res, url, q, key0) {
   if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
   try {
@@ -876,7 +877,15 @@ async function handleWorker(req, res, url, q, key0) {
       return send(res, 200, pk.gz, 'application/gzip', { ETag: pk.v });
     }
     // the worker's own files, for its update by itself (only for a paired computer; built once per start of the program)
-    if (key0 === 'GET /api/worker/update') { if (!updatePack) updatePack = require('./lib/selfupdate').build(__dirname); return send(res, 200, updatePack.buf, 'application/gzip', { 'X-Worker-Rev': updatePack.rev }); }
+    // (a worker of an older revision gets a pack it can take: without the files it does not know yet)
+    if (key0 === 'GET /api/worker/update') {
+      const su = require('./lib/selfupdate');
+      const old = String((w.caps && w.caps.rev) || '') < su.ROOT_FROM;
+      updatePack = updatePack || {};
+      const k = old ? 'old' : 'new';
+      if (!updatePack[k]) updatePack[k] = su.build(__dirname, { forRev: (w.caps && w.caps.rev) || '' });
+      return send(res, 200, updatePack[k].buf, 'application/gzip', { 'X-Worker-Rev': updatePack[k].rev });
+    }
     // the optional search APIs of the research (keys opened only here, for a paired computer; never in a job)
     if (key0 === 'GET /api/worker/search-keys') return send(res, 200, { apis: require('./lib/searchkeys').config() });
     if (key0 === 'GET /api/worker/comp') {
@@ -887,7 +896,11 @@ async function handleWorker(req, res, url, q, key0) {
     }
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : key0 === 'POST /api/worker/heartbeat' ? 2 * 1024 * 1024 : 256 * 1024) : {};
     // (rev: the worker's revision here — an older worker fetches /api/worker/update and starts again by itself)
-    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
+    if (key0 === 'POST /api/worker/hello') {
+      // a computer that stays on an older worker (its update failed by itself): said in the log after 20 minutes
+      const rv = String((b.caps && b.caps.rev) || '');
+      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000) events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — η αυτόματη ενημέρωση δεν πέρασε· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
+      await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
     // what went wrong on a computer, into the program's log (said with the computer's name; never trusted as more than text)
     if (key0 === 'POST /api/worker/event') {
       const sv = ['worker', 'search', 'ai'].includes(b.service) ? b.service : 'worker';

@@ -197,6 +197,12 @@ async function makeBackend() {
     const rev = require(APP + '/lib/workerrev');
     ok(su.shouldUpdate('2026-11-18c', rev).ok && !su.shouldUpdate(rev, rev).ok && !su.shouldUpdate('2026-12-01a', rev).ok, 'update: newer → yes · same → no · never back to an older one');
     ok(!su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 3600e3 }).ok && su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 7 * 3600e3 }).ok, 'a revision that failed is tried again after 6 hours, not before');
+    // (seen 23/11: a worker of 2026-11-23b refused a pack with the computer's menu file — an older one gets only what it knows)
+    const OLD_NAMES = /^(worker\.js|package\.json|lib\/[\w.-]+\.js|vendor\/[\w.-]+\.js)$/;
+    const pOld = JSON.parse(require('zlib').gunzipSync(su.build(APP, { forRev: '2026-11-23b' }).buf));
+    ok(Object.keys(pOld.files).every((n) => OLD_NAMES.test(n)), 'an older worker gets a pack it can take (no file it does not know)', Object.keys(pOld.files).filter((n) => !OLD_NAMES.test(n)).join());
+    const pNew = JSON.parse(require('zlib').gunzipSync(su.build(APP, { forRev: rev }).buf));
+    ok(Object.keys(pNew.files).every((n) => su.NAME_OK.test(n)), 'a current worker gets the whole pack (also the computer\'s menu)');
     const pk = su.build(APP);
     ok(pk.rev === rev && pk.buf.length < 2e6, `the pack of the worker: its revision, ${Math.round(pk.buf.length / 1024)} KB (not the 40 MB zip)`);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sfk-upd-'));

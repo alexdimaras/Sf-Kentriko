@@ -31,10 +31,14 @@ function filesOf(appDir) {
 function target(appDir, n) { return n.startsWith('root/') ? path.join(appDir, '..', n.slice(5)) : path.join(appDir, n); }
 
 /** The pack of the worker's files → Buffer (gzip of JSON { rev, files: { name: { b64, sha } } }). */
-function build(appDir) {
+// a worker older than this does not know «root/…» names (it refuses the whole pack): it gets a pack without them
+const ROOT_FROM = '2026-11-23c';
+/** opts: { forRev } — the revision of the worker that asks (an older one gets only what it can take) */
+function build(appDir, opts) {
   const rev = String(require(path.join(appDir, 'lib', 'workerrev.js')));
+  const withRoot = !(opts && opts.forRev != null) || String(opts.forRev) >= ROOT_FROM;
   const files = {};
-  for (const n of filesOf(appDir)) { const b = fs.readFileSync(target(appDir, n)); files[n] = { b64: b.toString('base64'), sha: sha(b) }; }
+  for (const n of filesOf(appDir).filter((x) => withRoot || !x.startsWith('root/'))) { const b = fs.readFileSync(target(appDir, n)); files[n] = { b64: b.toString('base64'), sha: sha(b) }; }
   return { rev, buf: zlib.gzipSync(Buffer.from(JSON.stringify({ rev, files }))) };
 }
 
@@ -94,4 +98,4 @@ function apply(buf, appDir, opts) {
   return { rev: pack.rev, files: names.length };
 }
 
-module.exports = { build, apply, shouldUpdate, filesOf, NAME_OK };
+module.exports = { build, apply, shouldUpdate, filesOf, NAME_OK, ROOT_FROM };
