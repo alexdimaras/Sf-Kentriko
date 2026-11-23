@@ -12,7 +12,8 @@ const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 
-const NAME_OK = /^(worker\.js|package\.json|lib\/[\w.-]+\.js|vendor\/[\w.-]+\.js)$/;
+// (root/SF-Kentro-Worker.cmd: the menu of the computer, one folder up — new choices come with the update too)
+const NAME_OK = /^(worker\.js|package\.json|lib\/[\w.-]+\.js|vendor\/[\w.-]+\.js|root\/SF-Kentro-Worker\.cmd)$/;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
 /** The files the worker needs, from the app folder → [relative names] (the dictionary and the tests are not). */
@@ -23,14 +24,17 @@ function filesOf(appDir) {
     try { list = fs.readdirSync(path.join(appDir, d)); } catch (_) { list = []; }
     for (const f of list) if (/\.js$/.test(f) && fs.statSync(path.join(appDir, d, f)).isFile()) out.push(d + '/' + f);
   }
+  try { if (fs.statSync(path.join(appDir, '..', 'SF-Kentro-Worker.cmd')).isFile()) out.push('root/SF-Kentro-Worker.cmd'); } catch (_) { /* not in this copy */ }
   return out.filter((n) => NAME_OK.test(n));
 }
+/** Where a name of the pack goes (root/… is one folder up from the app). */
+function target(appDir, n) { return n.startsWith('root/') ? path.join(appDir, '..', n.slice(5)) : path.join(appDir, n); }
 
 /** The pack of the worker's files → Buffer (gzip of JSON { rev, files: { name: { b64, sha } } }). */
 function build(appDir) {
   const rev = String(require(path.join(appDir, 'lib', 'workerrev.js')));
   const files = {};
-  for (const n of filesOf(appDir)) { const b = fs.readFileSync(path.join(appDir, n)); files[n] = { b64: b.toString('base64'), sha: sha(b) }; }
+  for (const n of filesOf(appDir)) { const b = fs.readFileSync(target(appDir, n)); files[n] = { b64: b.toString('base64'), sha: sha(b) }; }
   return { rev, buf: zlib.gzipSync(Buffer.from(JSON.stringify({ rev, files }))) };
 }
 
@@ -78,8 +82,11 @@ function apply(buf, appDir, opts) {
     }
     // 3. in place, file by file (a .js read by Node is not locked, also on Windows)
     for (const n of names) {
-      fs.mkdirSync(path.join(appDir, path.dirname(n)), { recursive: true });
-      fs.copyFileSync(path.join(stage, n), path.join(appDir, n));
+      const to = target(appDir, n);
+      // (the computer's menu only where it already is: never a new file outside the worker's folders)
+      if (n.startsWith('root/') && !fs.existsSync(to)) continue;
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(path.join(stage, n), to);
     }
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });

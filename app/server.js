@@ -627,6 +627,14 @@ const routes = {
   'GET /api/system/status': () => systemStatus(),
   // the safe self-repairs: which exist, and one run at once by a person (the same limits, checked again after)
   'GET /api/system/repairs': () => require('./lib/repair').list(),
+  // the internet research measured for real on a computer of the shop (its result comes back: Σύστημα, Συμβάντα)
+  'POST /api/system/measure': async (b) => {
+    if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');
+    const ws = (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('research.measure') && (w.caps.rev || '') >= '2026-11-23c');
+    if (!ws.length) throw new Error('Κανένας υπολογιστής με την τρέχουσα έκδοση δεν είναι ανοιχτός τώρα (ενημερώνεται μόνος του σε λίγα λεπτά μετά από νέα έκδοση).');
+    const j = await coord.enqueue('research.measure', { n: Math.max(5, Math.min(100, Number(b.n) || 30)) }, { dedupKey: 'research.measure', priority: 25, by: 'person', label: 'Μέτρηση της έρευνας internet (' + (Number(b.n) || 30) + ' προϊόντα)' });
+    return coord.job(j.id);
+  },
   'POST /api/system/repair': (b, _q, ctx) => require('./lib/repair').run(String(b.id || ''), repairDeps(), { force: true, by: ctx.user ? 'διαχειριστή' : '' }),
   // the program's log of what went wrong (lib/events.js) and the «πακέτο διάγνωσης για AI» (lib/diagnostics.js)
   'GET /api/diagnostics': (q) => ({ events: events.query({ severity: q.severity, service: q.service, code: q.code, limit: q.limit }), summary: events.summary() }),
@@ -668,7 +676,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/system/repairs', 'POST /api/system/repair', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/system/repairs', 'POST /api/system/repair', 'POST /api/system/measure', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -983,6 +991,8 @@ async function systemStatus() {
   const loads = [...workerLoad.values()].filter((l) => Date.now() - l.at < 60000);
   const paused = loads.flatMap((l) => Object.entries(l.engines || {}).filter(([, v]) => v === 'paused').map(([k]) => k));
   const rv = researchView(loads);
+  const meas = store.read('research-measure', null);
+  if (meas && meas.at) add('measure', 'Μέτρηση έρευνας', meas.stats && meas.stats.wrongColour === 0, meas.stats && meas.stats.wrongColour === 0 ? 'ok' : 'warn', `${new Date(meas.at).toLocaleDateString('el-GR', { timeZone: 'Europe/Athens' })}${meas.worker ? ' · ' + meas.worker : ''}: ${meas.summary}`);
   add('research', 'Έρευνα internet', !paused.length, paused.length ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
   const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
@@ -1361,7 +1371,7 @@ function afterStart() {
   events.setRev(build.sha ? build.sha.slice(0, 7) : VERSION);
   setInterval(() => { try { events.flush(); } catch (e) { console.error('events:', e.message); } }, 60 * 1000).unref();
   // the real checks of the data every 15 minutes (so «Σύστημα» is never green only because nothing was checked)
-  if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 90 * 1000).unref(); setInterval(() => { healthProbe().then(() => require('./lib/repair').auto(repairDeps())).catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
+  if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 20 * 1000).unref(); setInterval(() => { healthProbe().then(() => require('./lib/repair').auto(repairDeps())).catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
   setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();
   engine.ready().then(async () => {

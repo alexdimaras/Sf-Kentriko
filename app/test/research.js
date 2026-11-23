@@ -340,6 +340,20 @@ function page(o) {
   await back.save(raw);
   const rec = await coord.recoverCloud();
   ok(rec === 1 && (await coord.rawJob(rj.id)).status === 'queued', 'after a restart the cloud\'s unfinished job is back in the queue at once (not after an hour)');
+  // (seen 23/11: two new versions in a row made a research «failed» — a restart is not the job's fault)
+  for (let k = 0; k < 2; k++) { const r2 = await coord.rawJob(rj.id); Object.assign(r2, { status: 'running', workerId: 'cloud', workerName: 'cloud', attempts: (r2.attempts || 0) + 1, leaseUntil: Date.now() + 3600e3 }); await back.save(r2); await coord.recoverCloud(); }
+  const after3 = await coord.rawJob(rj.id);
+  ok(after3.status === 'queued' && after3.restarts === 3 && after3.attempts <= 1, 'three restarts of the cloud in a row: the job is still in the queue (a restart does not use up its tries)', JSON.stringify([after3.status, after3.restarts, after3.attempts]));
+  { const r4 = await coord.rawJob(rj.id); Object.assign(r4, { status: 'running', workerId: 'cloud', workerName: 'cloud', attempts: 1, leaseUntil: Date.now() + 3600e3 }); await back.save(r4); await coord.recoverCloud(); }
+  ok((await coord.rawJob(rj.id)).status === 'failed', 'a fourth restart in the middle of the same job: it ends (a job that brings the machine down never loops)');
+  // the measurement of the research (phase 5): only a computer of the current version, never the cloud; its result kept
+  {
+    const hm = coord.handler('research.measure');
+    ok(hm && !hm.cloudOk && !hm.canTake({ caps: { rev: '2026-11-23b' } }) && hm.canTake({ caps: { rev: '2026-11-23c' } }), 'the measurement runs only on a computer with the current worker (never in the cloud)');
+    hm.apply({ workerName: 'PC-T' }, { summary: 'Μέτρηση έρευνας (30 προϊόντα): βρέθηκε το ίδιο 40%', stats: { products: 30, found: 12, wrongColour: 0, statuses: { complete: 5 }, engines: { ddg: { ok: 50, failed: 1, blocked: 0 } }, rows: [{ name: 'x', status: 'complete', found: ['a.gr'] }] } });
+    const ms = store.read('research-measure');
+    ok(ms && ms.worker === 'PC-T' && ms.stats.found === 12 && /40%/.test(ms.summary) && require(APP + '/lib/events').query({ severity: 'info', code: 'SEARCH_QUALITY' }).length >= 1, 'its result is kept (Σύστημα) and written in the log (Συμβάντα)');
+  }
   // work queued by the program that nobody took for days ends (it is queued anew when still needed)
   const ex = await coord.enqueue('codes.web', { items: [{ k: 'sf:1', name: 'x' }], own: [] }, { auto: true });
   const exr = await coord.rawJob(ex.id); exr.createdAt = new Date(Date.now() - 4 * 864e5).toISOString(); await back.save(exr);

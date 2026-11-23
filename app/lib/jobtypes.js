@@ -78,6 +78,32 @@ function register() {
 
 function registerAI() {
   // ---- the free AI (Ollama) of a shop's computer, for the program in the cloud: one question, one answer ----
+  // ---- the internet research measured for real on a computer (Σύστημα → «Μέτρηση έρευνας»): its result comes back ----
+  coord.register('research.measure', {
+    label: 'Μέτρηση της έρευνας internet',
+    needs: { ramMB: 500 },
+    cloudOk: false,          // the cloud's network has no search engines worth measuring: a computer of the shop does it
+    maxAttempts: 1,
+    canTake(w) { return String((w.caps && w.caps.rev) || '') >= '2026-11-23c'; },
+    async run(payload, api) {
+      const r = await require('./measure').run(payload && payload.n, { progress: (d, t, msg) => api.progress(d, t, msg), cancelled: api.cancelled, log: (t) => api.log && api.log(t) });
+      return { summary: r.summary, stats: Object.assign({}, r.stats, { rows: r.stats.rows.slice(0, 100) }) };
+    },
+    apply(job, result) {
+      const r = result || {};
+      const st = r.stats && typeof r.stats === 'object' ? r.stats : {};
+      const num = (v) => Math.max(0, Math.round(Number(v) || 0));
+      const out = { at: new Date().toISOString(), worker: String(job.workerName || '').slice(0, 60), summary: String(r.summary || '').slice(0, 600),
+        stats: { products: num(st.products), found: num(st.found), sku: num(st.sku), ean: num(st.ean), price: num(st.price), images: num(st.images), family: num(st.family), wrongColour: num(st.wrongColour), ms: num(st.ms),
+          statuses: Object.fromEntries(Object.entries(st.statuses || {}).slice(0, 20).map(([k, v]) => [String(k).slice(0, 20), num(v)])),
+          engines: Object.fromEntries(Object.entries(st.engines || {}).slice(0, 10).map(([k, v]) => [String(k).slice(0, 20), { ok: num(v && v.ok), failed: num(v && v.failed), blocked: num(v && v.blocked) }])),
+          rows: (Array.isArray(st.rows) ? st.rows : []).slice(0, 100).map((x) => ({ name: String(x.name || '').slice(0, 100), status: String(x.status || '').slice(0, 20), queries: num(x.queries), found: (Array.isArray(x.found) ? x.found : []).slice(0, 8).map((h) => String(h).slice(0, 80)), family: num(x.family) })) } };
+      store.write('research-measure', out);
+      try { require('./events').record({ severity: 'info', service: 'search', code: 'SEARCH_QUALITY', message: (out.worker ? out.worker + ': ' : '') + out.summary }); } catch (_) { /* fine */ }
+      return { summary: out.summary };
+    },
+  });
+
   coord.register('ai.call', {
     label: 'Τοπικό AI (Ollama)',
     needs: { ramMB: 4000 },

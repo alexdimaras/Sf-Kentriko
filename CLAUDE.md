@@ -33,10 +33,13 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (89) · rules (103) · jobs (36) · integrity (43) · coord (54) · workers (38) · ai (40) · research (78) · variants (62, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
+`cd app && npm test` → run (89) · rules (103) · jobs (36) · integrity (43) · coord (54) · workers (38) · ai (40) · research (82) · variants (62, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
 Μετρήσεις: `node test/bench/recall-bench.js` (υποψήφιοι έρευνας τιμών, πραγματικοί κατάλογοι) · `node app/worker.js measure 30` (πραγματική έρευνα internet, στο PC) · `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.
+
+## Προσοχή
+Κάθε αλλαγή σε κώδικα που τρέχει στον υπολογιστή (`worker.js`, `lib/*` των εργασιών, `SF-Kentro-Worker.cmd`) → **νέο `lib/workerrev.js`**, αλλιώς οι υπολογιστές δεν την παίρνουν (αυτο-ενημέρωση μόνο σε νέο rev).
 
 ## Έγγραφα
 **AGENTS.md** (χάρτης για κάθε AI) · **docs/STATE.md** (τι τρέχει, τι δεν έχει αποδειχθεί) · **docs/DECISIONS.md** (αποφάσεις — μην τις αναιρείς) · **docs/BUGS.md** · **docs/RUNBOOKS.md** · **docs/TEST-MATRIX.md**.

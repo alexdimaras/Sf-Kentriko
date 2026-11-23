@@ -226,7 +226,8 @@
               clear(sysOut).appendChild(h('span', { class: 'muted' }, 'Έλεγχος… (το AI την πρώτη φορά φορτώνει: έως 1–2 λεπτά)'));
               POST('/api/system/check').then((r) => { drawSys(r); const good = r.steps.every((x) => x.ok || x.state === 'disabled'); clear(sysOut).appendChild(h('div', { class: 'note ' + (good ? 'ok' : r.steps.some((x) => x.state === 'crit' || x.state === 'generation_failed' || x.state === 'unreachable') ? 'crit' : 'warn') }, h('b', null, good ? 'Όλα δουλεύουν (ελέγχθηκαν τώρα).' : 'Κάτι θέλει προσοχή:'), h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))))); }).catch((e) => clear(sysOut).appendChild(h('div', { class: 'note crit' }, e.message)));
             }),
-            btn('Αρχείο εγκατάστασης υπολογιστή', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο για το PC: διπλό κλικ → κατεβάζει, συνδέεται, ξεκινά με τα Windows (σταματημένο)' }, installer))),
+            btn('Αρχείο εγκατάστασης υπολογιστή', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο για το PC: διπλό κλικ → κατεβάζει, συνδέεται, ξεκινά με τα Windows (σταματημένο)' }, installer),
+            btn('Μέτρηση έρευνας', { cls: 'sm', icon: 'search', title: 'Ο υπολογιστής ψάχνει 30 πραγματικά προϊόντα με τις πραγματικές μηχανές αναζήτησης και λέει τι βρήκε (10–30 λεπτά)' }, () => POST('/api/system/measure', { n: 30 }).then((job) => { toast('Η μέτρηση ξεκίνησε στον υπολογιστή (10–30 λεπτά). Το αποτέλεσμα θα φανεί εδώ και στα Συμβάντα.'); if (App.watchJob) App.watchJob(job, { done: () => GET('/api/system/status').then(drawSys) }); }).catch(fail)))),
           );
         sys.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ο υπολογιστής συνδέεται και ενημερώνεται μόνος του. Ξεκινά σταματημένος (δεν τρώει πόρους): τον ανοίγεις πιο κάτω με «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα».'));
         sys.appendChild(sysList);

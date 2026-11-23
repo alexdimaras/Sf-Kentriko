@@ -51,3 +51,4 @@ node app/test/bench/live-research.js    # live, on real shops (where the network
 - Before a push: `npm test` green (and with `COORD_PG` for the database parts) and a phone-size screen check (Playwright).
 - Update `docs/BACKLOG.md` / `docs/STATE.md` / `docs/BUGS.md` when something closes or is found.
 - Never claim a thing works without a test or an observation; say plainly what was not checked.
+- Any change to code the computers run (`app/worker.js`, `app/lib/*` used by jobs, `SF-Kentro-Worker.cmd`) → raise `app/lib/workerrev.js`, or the computers never take it.

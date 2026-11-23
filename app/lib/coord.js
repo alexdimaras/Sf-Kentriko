@@ -323,9 +323,12 @@ async function recoverCloud() {
   let n = 0;
   for (const j of await backend.live()) {
     if (j.workerId !== 'cloud' || j.status === 'queued') continue;
+    // a restart of the cloud (a new version, the free plan's sleep) is not the job's fault: it does not use up one of
+    // its tries — up to 3 restarts (a job that brings the machine down every time still ends, said why)
+    j.restarts = (j.restarts || 0) + 1;
     j.error = 'Το πρόγραμμα στο cloud ξεκίνησε ξανά στη μέση της εργασίας.';
     if (j.cancel) await finish(j, 'cancelled');
-    else if (j.attempts < j.maxAttempts) await requeue(j, 0);
+    else if (j.restarts <= 3) { j.attempts = Math.max(0, (j.attempts || 1) - 1); await requeue(j, 0); }
     else await finish(j, 'failed');
     n++;
   }
