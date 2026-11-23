@@ -107,7 +107,7 @@
         const vs = ours ? (c.price - ours) / ours : 0;
         tb.appendChild(h('tr', { class: c.used ? '' : 'unused' },
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', minWidth: 0 } }, c.img ? thumb(c.img, 'sm') : null,
-            h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill', style: { marginLeft: '6px' } }, 'χειροκίνητα') : null,
+            h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill' + (c.flag === 'stale' ? ' warn' : ''), style: { marginLeft: '6px' }, title: c.expires === null ? 'Χωρίς λήξη' : 'Μετράει έως ' + new Date(c.expires || (new Date(c.at || 0).getTime() + 14 * 864e5)).toLocaleDateString('el-GR') }, c.flag === 'stale' ? 'χειροκίνητα · έληξε' : c.expires === null ? 'χειροκίνητα · χωρίς λήξη' : 'χειροκίνητα · ως ' + new Date(c.expires || (new Date(c.at || 0).getTime() + 14 * 864e5)).toLocaleDateString('el-GR')) : null,
               h('div', { class: 'faint ell', title: c.name }, c.name), c.why && (f === 'similar' || f === 'family') ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
               // why the program says it is the same product (code, EAN, brand, model words, photo)
               c.confirmed ? h('div', { class: 'ev' }, 'ίδιο: το επιβεβαίωσες εσύ') : (c.ev && c.ev.length && f !== 'similar' ? h('div', { class: 'ev', title: 'Με τι αναγνωρίστηκε ως το ίδιο προϊόν' }, c.ev.join(' · ')) : null)))),
@@ -130,9 +130,11 @@
     const shop = h('input', { type: 'text', placeholder: 'π.χ. Skroutz — κατάστημα Χ', autofocus: true });
     const price = h('input', { type: 'text', placeholder: '0,00' });
     const url = h('input', { type: 'url', placeholder: 'https://… (προαιρετικά)' });
+    const forever = h('input', { type: 'checkbox' });
     modal.open(h('div', null, dlgHead('Τιμή ανταγωνιστή με το χέρι', 'Για καταστήματα που δεν διαβάζονται αυτόματα (π.χ. από Skroutz ή τηλεφωνικά).'),
       h('div', { class: 'grid3' }, h('label', { class: 'field' }, 'Κατάστημα', shop), h('label', { class: 'field' }, 'Τιμή με ΦΠΑ', price), h('label', { class: 'field' }, 'Σύνδεσμος', url)),
-      h('div', { class: 'dlg-foot' }, btn('Άκυρο', () => modal.close()), btn('Προσθήκη', { cls: 'primary' }, () => POST('/api/market/manual', { site, id, shop: shop.value, price: price.value, url: url.value }).then(() => { modal.close(); toast('Προστέθηκε.'); if (after) after(); }).catch(fail)))));
+      h('label', { class: 'check', style: { marginTop: '8px' } }, forever, 'Χωρίς λήξη (αλλιώς μετράει 14 μέρες και μετά ζητά επιβεβαίωση)'),
+      h('div', { class: 'dlg-foot' }, btn('Άκυρο', () => modal.close()), btn('Προσθήκη', { cls: 'primary' }, () => POST('/api/market/manual', { site, id, shop: shop.value, price: price.value, url: url.value, noExpiry: forever.checked }).then(() => { modal.close(); toast('Προστέθηκε.'); if (after) after(); }).catch(fail)))));
   };
 
   function startRun(targets) {
@@ -160,6 +162,11 @@
         btn('Έρευνα τώρα', { cls: 'primary', icon: 'market' }, () => startRun()),
       ]));
       if (half) main.appendChild(half);
+      // the comparison may be finished while a catalog was read only in part: said apart (never «the whole market»)
+      const cov = pr && pr.catalogs;
+      if (cov && (cov.partial || []).length) main.appendChild(h('div', { class: 'note', style: { marginBottom: '12px' } },
+        h('b', null, `Κατάλογοι ανταγωνιστών: ${cov.whole} από ${cov.of} διαβάστηκαν ολόκληροι. `),
+        'Μερικώς: ' + cov.partial.map((x) => x.name + (x.limit ? ' (πάνω από το όριο των 50.000 προϊόντων)' : x.left ? ` (μένουν ${fmt.num(x.left)} από ${fmt.num(x.wanted)} σελίδες — συνεχίζει στις επόμενες έρευνες)` : ' (διαβάζεται σταδιακά)')).join(' · ') + '. Η σύγκριση έγινε με όσα έχουν διαβαστεί ως τώρα.'));
       if (meta.errors && meta.errors.length) main.appendChild(h('div', { class: 'note warn', style: { marginBottom: '12px' } }, h('b', null, 'Δεν ενημερώθηκαν: '), meta.errors.map((e) => e.name + ' (' + e.error + ')').join(' · '), h('div', { class: 'hint' }, 'Για αυτά χρησιμοποιήθηκαν οι τιμές της προηγούμενης έρευνας.')));
       main.appendChild(h('div', { class: 'tabs' },
         h('button', { 'aria-selected': String(tab === 'results'), onclick: () => App.go('market', { site }) }, 'Αποτελέσματα'),

@@ -108,6 +108,17 @@ function tokensOf(name) {
   return U.greekUpper(U.untexturize(U.decodeEntities(name))).replace(/["'«»()[\],;:!?+*&|]/g, ' ').split(/\s+/).filter(Boolean).map((t) => U.fixMixedScript(t).text);
 }
 const GENERIC_BRAND = new Set(['TACTICAL', 'GEAR', 'OUTDOOR', 'OUTDOORS', 'ARMS', 'INC', 'CO', 'GMBH', 'LTD', 'USA', 'INTERNATIONAL', 'GROUP', 'THE', 'EQUIPMENT', 'APPAREL', 'TEX', 'DEFENSE', 'DEFENCE', 'INDUSTRIES', 'KNIVES', 'OPTICS']);
+// one brand, written in several ways by the shops (letters and digits only; the maker and its trade names)
+const BRAND_SAME = { STURM: 'MILTEC', STURMMILTEC: 'MILTEC', MORA: 'MORAKNIV', '511TACTICAL': '511', HELIKONTEX: 'HELIKON', MECHANIXWEAR: 'MECHANIX', NITECOREUSA: 'NITECORE', CONDOROUTDOOR: 'CONDOR' };
+function brandCore(k) { const c = U.foldKey(k || '').replace(/[^A-Z0-9Α-Ω]/g, ''); return BRAND_SAME[c] || c; }
+/** MIL-TEC = Mil Tec = Miltec = Sturm Mil-Tec · MORAKNIV = Mora · 5.11 = 5.11 Tactical */
+function sameBrand(a, b) {
+  const x = brandCore(a), y = brandCore(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // one written inside the other (STURMMILTEC / MILTEC), long enough not to be a chance
+  return Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x));
+}
 function brandTokens(brand) { return tokensOf(brand || '').map(ntok).filter((t) => t && !GENERIC_BRAND.has(t)); }
 
 /** Latin/number words that identify the model (brand, colours, sizes, type words left out). */
@@ -363,8 +374,19 @@ function compare(f, cand, cf) {
     const g = withTheirBrand(f, cand.b);
     if (g) { const r = compare(g, cand, cf); if (r && r.ev && r.match !== 'none') r.ev = r.ev.concat(['μάρκα στον τίτλο μας: ' + g.brandFromTitle]); return r; }
   }
-  const brandOk = f.bt.length ? (f.bt.some((b) => cf.set.has(b)) || (f.brandKey && (cf.brandKey === f.brandKey || cf.nameKey.includes(' ' + f.brandKey + ' ')))) : false;
-  if (f.bt.length && cf.brandKey && !brandOk) return { match: 'none', score: 0 }; // another brand
+  const brandOk = f.bt.length ? (f.bt.some((b) => cf.set.has(b)) || (f.brandKey && (cf.brandKey === f.brandKey || cf.nameKey.includes(' ' + f.brandKey + ' '))) || sameBrand(f.brandKey, cf.brandKey)) : false;
+  const sameGtin = !!(f.gtin && ((cf.gtin && f.gtin === cf.gtin) || (cf.gtins && cf.gtins.has(f.gtin))));
+  if (f.bt.length && cf.brandKey && !brandOk) {
+    // another brand written on their page — but the same valid EAN: the EAN is checked first. With a model word of ours
+    // in their title it is the same product (the shop wrote the brand its own way: «Sturm» for MIL-TEC); without one,
+    // only «similar»: a shop may have copied a wrong EAN — the person decides
+    if (sameGtin) {
+      const shared = f.keys.filter((k) => cf.set.has(k) && /[A-Z]{3}/.test(k) && !MODIFIERS.has(k) && !WEAK.has(k));
+      if (shared.length) return { match: 'exact', score: 1, why: '', how: 'ean', ev: ['ίδιο EAN ' + f.gtin, `η μάρκα γράφεται αλλιώς εκεί («${cf.b || cf.brandKey}»)`, 'λέξεις μοντέλου: ' + shared.join(' ')] };
+      return { match: 'similar', score: 0.6, why: `Ίδιο EAN (${f.gtin}) αλλά άλλη μάρκα («${cf.b || cf.brandKey}») και καμία κοινή λέξη μοντέλου: έλεγξέ το`, how: 'ean', ev: ['ίδιο EAN ' + f.gtin, 'άλλη μάρκα'] };
+    }
+    return { match: 'none', score: 0 }; // another brand
+  }
   // the same EAN is the same product, whatever the titles say
   if (f.gtin && cf.gtin && f.gtin === cf.gtin) return { match: 'exact', score: 1, why: '', how: 'ean', ev: ['ίδιο EAN ' + f.gtin] };
   // … also the EAN of one of their sizes / colours (a product of theirs with an EAN per variant)
@@ -608,6 +630,7 @@ function costInfo(site, p) {
   };
 }
 
+const MANUAL_DAYS = 14; // a competitor's price written by hand counts this long, unless «no end» was chosen
 function stats(list, ctx) {
   ctx = ctx || {};
   const s = settings.all();
@@ -624,6 +647,11 @@ function stats(list, ctx) {
     if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
     // not known whether it is in stock (a page that does not say; an internet price found before this was kept): it
     // is shown, but never counts for a change of price (only prices a buyer can pay today do)
+    // a price written by hand: it counts until its end date (an old one without a date: 14 days from when it was written)
+    if (c.manual) {
+      const end = c.expires === null ? Infinity : c.expires ? new Date(c.expires).getTime() : new Date(c.at || 0).getTime() + MANUAL_DAYS * 864e5;
+      if (end < Date.now()) { c.flag = 'stale'; c.note = 'χειροκίνητη τιμή που έληξε: επιβεβαίωσέ τη ξανά'; continue; }
+    }
     if (!c.manual && (c.inStock == null || (c.web && !c.avail))) { c.flag = 'unknown'; c.note = 'άγνωστη διαθεσιμότητα: δεν μετράει'; continue; }
     if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < (c.web ? Date.now() - WEB_DAYS * 864e5 : weekAgo)) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
     c.used = true; c.flag = 'used';
@@ -706,7 +734,7 @@ const ACTIONS = { lower: 'Μείωσε', raise: 'Μπορείς να ανεβά�
  */
 function decision(ours, st, list, floor, costVat) {
   const s = settings.all();
-  const minShops = Math.max(1, Math.round(Number(s.minShops) || 2));
+  const minShops = Math.max(2, Math.round(Number(s.minShops) || 2)); // one shop alone: only shown, never an action (decision 23/11)
   const used = list.filter((c) => c.used);
   const sus = list.filter((c) => c.flag === 'suspect').sort((a, b) => a.price - b.price);
   const susText = sus.length ? ` ${sus[0].shop} (${money(sus[0].price)}) δεν μετράει: ${sus[0].note.split(':')[0]}.` : '';
@@ -840,6 +868,22 @@ function targetsAll() {
   return t;
 }
 
+/**
+ * How whole the competitors' catalogs are (apart from how far the comparison came): a site map still being read, or
+ * a shop over the page limit, is compared with what was read so far — «the comparison ended» is then not «the whole
+ * market was seen». → { whole, partial: [{ id, name, left, wanted, limit }] }
+ */
+function catalogCoverage(list) {
+  const compcat = require('./compcat');
+  const partial = [];
+  let whole = 0;
+  for (const c of list) {
+    const i = compcat.info(c.id);
+    if (i.complete) whole++;
+    else partial.push({ id: c.id, name: c.name, left: i.left || 0, wanted: i.wanted || 0, limit: !!i.limitReached });
+  }
+  return { whole, of: list.length, partial };
+}
 function readable() { return competitors().filter((c) => c.enabled !== false && (c.kind === 'woo' || c.kind === 'shopify' || c.kind === 'sitemap')); }
 
 /**
@@ -1010,11 +1054,12 @@ async function run(targets, job, opts) {
   let done = 0, withData = 0, similar = 0;
   for (const w of work) { done++; const e = all[w.key]; if (!e) continue; if (e.stats && e.stats.count) withData++; if (e.stats && e.stats.similar) similar++; }
   const complete = !stopped && (!whole || withCatalog.every((c) => prog.done[c.id]));
+  const coverage = catalogCoverage(withCatalog);
   const meta = Object.assign(store.read('market-meta', {}), {
     seconds: Math.round((Date.now() - t0) / 1000), compared: done, withData, similar, competitors: withCatalog.length,
     errors: dl.errors.map((e) => ({ name: e.name, error: e.error })),
     // where a whole run stands: how many shops are done, whether it is finished
-    progress: whole ? { at: U.nowIso(), done: withCatalog.filter((c) => prog.done[c.id]).length, of: withCatalog.length, complete, stopped } : store.read('market-meta', {}).progress || null,
+    progress: whole ? { at: U.nowIso(), done: withCatalog.filter((c) => prog.done[c.id]).length, of: withCatalog.length, complete, stopped, catalogs: coverage } : store.read('market-meta', {}).progress || null,
   });
   if (whole && complete) Object.assign(meta, { lastRun: at, lastRunDay: localDay(new Date(at)), auto: !!opts.auto, changes: prog.changes, pausedUntil: null });
   // stopped by a person: the automatic run does not start again at once (it goes on later, from where it was)
@@ -1030,7 +1075,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 6; // 6: another colour = the same family, another variant (not counted) // 5: 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
+const MATCH_VERSION = 7; // 7: the same valid EAN is checked before «another brand» (MIL-TEC / Sturm / Mil Tec) // 6: another colour = the same family, another variant (not counted) // 5: 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -1137,14 +1182,26 @@ function addManual(site, id, input) {
   const e = all[key] || { at: U.nowIso(), name: p.name, competitors: [] };
   const shop = U.collapse(input.shop || 'Κατάστημα');
   e.competitors = e.competitors.filter((c) => !(c.manual && c.shop === shop));
-  e.competitors.push({ shop, url: String(input.url || ''), name: p.name, price, inStock: input.inStock !== false, match: 'exact', score: 1, manual: true, country: 'GR', at: U.nowIso() });
+  // a price written by hand counts for 14 days (then it must be confirmed again), or with no end when asked for
+  const days = input.noExpiry ? 0 : Math.max(1, Math.min(365, Number(input.days) || MANUAL_DAYS));
+  e.competitors.push({ shop, url: String(input.url || ''), name: p.name, price, inStock: input.inStock !== false, match: 'exact', score: 1, manual: true, country: 'GR', at: U.nowIso(), expires: days ? new Date(Date.now() + days * 864e5).toISOString() : null });
   all[key] = compute(site, p, e);
   store.write('market', all);
   return all[key];
 }
 
 /** Recalculate suggestions after settings or our prices change. */
-const LOGIC_VERSION = 5; // 5: a new shop of the internet counts after a yes for it // // bump when the rules of stats()/suggest()/decision() change // 4: unknown stock never counts
+const LOGIC_VERSION = 6; // 6: a competitor's price written by hand counts 14 days (or with no end) // 5: a new shop of the internet counts after a yes for it // // bump when the rules of stats()/suggest()/decision() change // 4: unknown stock never counts
+/** A price written by hand whose time has come (it still counts in the saved results) → those results are worked out again. */
+function manualExpired() {
+  const now = Date.now();
+  for (const e of Object.values(results())) for (const c of e.competitors || []) {
+    if (!c.manual || c.expires === null || c.flag === 'stale' || c.ignored) continue;
+    const end = c.expires ? new Date(c.expires).getTime() : new Date(c.at || 0).getTime() + MANUAL_DAYS * 864e5;
+    if (end < now) return true;
+  }
+  return false;
+}
 function recompute() {
   const catalog = require('./catalog');
   const all = results();
@@ -1276,7 +1333,7 @@ function setCost(site, id, cost, source, rrp) {
   });
 }
 
-module.exports = { MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
+module.exports = { catalogCoverage, manualExpired, MANUAL_DAYS, sameBrand, MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,

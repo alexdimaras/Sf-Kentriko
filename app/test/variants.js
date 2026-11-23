@@ -61,6 +61,20 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
   ok(st.count === 1 && st.family === 2, 'the price of another colour does not count…', JSON.stringify(st));
   const st2 = market.stats([{ shop: 'c', price: 31, match: 'exact', confirmed: true, inStock: true, seenAt: now, country: 'GR' }], {});
   ok(st2.count === 1, '…until a person says «the same» (then it is that price for ours too)');
+  {
+    // a competitor's price written by hand counts 14 days, or with no end when asked (audit 23/11, P1)
+    const day = 864e5, iso = (ms) => new Date(Date.now() + ms).toISOString();
+    const M = (o) => Object.assign({ price: 30, match: 'exact', inStock: true, manual: true, country: 'GR' }, o);
+    const list = [M({ shop: 'fresh', at: iso(-day), expires: iso(13 * day) }), M({ shop: 'ended', at: iso(-20 * day), expires: iso(-6 * day) }),
+      M({ shop: 'old-no-date', at: iso(-20 * day) }), M({ shop: 'no-end', at: iso(-200 * day), expires: null })];
+    const sm = market.stats(list, {});
+    const f = Object.fromEntries(list.map((c) => [c.shop, c.flag]));
+    require(APP + '/lib/settings').save({ minShops: 1 });
+    ok(require(APP + '/lib/settings').all().minShops === 2, 'one shop alone never moves a price: «at least 1 shop» is not accepted (stays 2)');
+    const cc = market.catalogCoverage([]);
+    ok(cc.whole === 0 && cc.of === 0 && Array.isArray(cc.partial), 'the coverage of the catalogs is told apart from the comparison');
+    ok(sm.count === 2 && f.fresh === 'used' && f['no-end'] === 'used' && f.ended === 'stale' && f['old-no-date'] === 'stale' && /έληξε/.test(list[1].note), 'a hand-written price counts until its end (14 days; an older one without a date too), «no end» counts on', JSON.stringify(f));
+  }
 
   section('Φωτογραφίες: μόνο της δικής μας παραλλαγής');
   const OL = market.coloursOf(olive.name);

@@ -49,7 +49,7 @@
         const vat = inp(s.vat, { type: 'number', min: 0 });
         const floor = inp(s.floorMargin, { type: 'number', min: 0 });
         const greek = h('input', { type: 'checkbox', checked: s.marketGreekOnly });
-        const minShops = select([['1', '1 κατάστημα (όχι συνιστάται)'], ['2', '2 καταστήματα'], ['3', '3 καταστήματα'], ['4', '4 καταστήματα']], String(s.minShops || 2), null);
+        const minShops = select([['2', '2 καταστήματα'], ['3', '3 καταστήματα'], ['4', '4 καταστήματα']], String(s.minShops || 2), null);
         const suspect = inp(s.suspectPct, { type: 'number', min: 10, max: 60, step: 5 });
         const gap = inp(s.competitorGap, { type: 'number', min: 200, step: 100 });
         const auto = h('input', { type: 'checkbox', checked: s.marketAuto });

@@ -82,7 +82,7 @@ function save(patch) {
   next.vat = clampNum(next.vat, 0, 40, 24);
   next.percent = clampNum(next.percent, 0, 50, 3);
   next.floorMargin = clampNum(next.floorMargin, 0, 300, 25);
-  next.minShops = Math.round(clampNum(next.minShops, 1, 5, 2));
+  next.minShops = Math.round(clampNum(next.minShops, 2, 5, 2)); // one shop alone never moves a price (only shown)
   next.suspectPct = clampNum(next.suspectPct, 10, 60, 30);
   next.competitorGap = clampNum(next.competitorGap, 200, 10000, 900);
   next.sitemapPages = clampNum(next.sitemapPages, 20, 3000, 300);

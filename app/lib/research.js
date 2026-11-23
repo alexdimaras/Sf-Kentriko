@@ -178,7 +178,7 @@ async function finishDayNow() {
   await store.writeAsync('market', all, bg.breathe);
   const meta = Object.assign(store.read('market-meta', {}), {
     lastRun: prog.startedAt, lastRunDay: m.localDay(new Date(prog.startedAt)), compared: n, withData, similar, competitors: readable.length, changes: prog.changes,
-    progress: { at: U.nowIso(), done: readable.length, of: readable.length, complete: true, stopped: false }, pausedUntil: null, distributed: true,
+    progress: { at: U.nowIso(), done: readable.length, of: readable.length, complete: true, stopped: false, catalogs: m.catalogCoverage(readable) }, pausedUntil: null, distributed: true,
   });
   store.write('market-meta', meta);
   return { complete: true, compared: n, withData, similar };

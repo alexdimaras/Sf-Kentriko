@@ -153,8 +153,9 @@ async function syncWoo(c, prev, opts) {
 async function syncShopify(c, prev, opts) {
   const started = Date.now();
   const items = [];
-  let total = 0;
-  for (let page = 1; page <= 200; page++) {
+  let total = 0, limitReached = false;
+  const MAX_PAGES = 200; // 50.000 products: a shop bigger than this is read in part — and said so, never «whole»
+  for (let page = 1; page <= MAX_PAGES; page++) {
     if (opts.cancelled && opts.cancelled()) break;
     const r = await http.getJson(`${c.url}/products.json?limit=250&page=${page}`, { gap: opts.gap, timeout: 60000, retries: 2, headers: opts.headers, signal: opts.signal });
     const list = (r.json && r.json.products) || [];
@@ -164,9 +165,10 @@ async function syncShopify(c, prev, opts) {
     opts.prog.add(list.length);
     for (const p of list) items.push(fresh(fromShopify(p, c.url)));
     if (list.length < 250) break;
+    if (page === MAX_PAGES) limitReached = true;
   }
   void total;
-  return { items, mode: 'full', full: true, started };
+  return { items, mode: 'full', full: !limitReached, limitReached, started };
 }
 
 /**
@@ -209,6 +211,7 @@ async function syncOne(c, opts) {
     kind: c.kind, url: c.url, at: U.nowIso(), syncStartedAt: new Date(r.started).toISOString(),
     lastFullAt: r.full ? new Date(r.started).toISOString() : prev.lastFullAt, mode: r.mode,
     seconds: Math.round((Date.now() - t0) / 1000), count: items.length, products: items,
+    ...(r.limitReached ? { limitReached: true } : {}),
   };
   store.write(file(c.id), out);
   return { id: c.id, name: c.name, count: items.length, mode: r.mode, seconds: out.seconds };
@@ -238,7 +241,9 @@ async function syncAll(comps, job, progress, extra) {
 
 function info(id) {
   const c = load(id);
-  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt, left: c.left, wanted: c.wanted, mapUrls: c.mapUrls, mapWhole: c.mapWhole !== false, complete: c.kind === 'sitemap' ? !!c.complete : true };
+  return { at: c.at, count: c.count || (c.products || []).length, mode: c.mode, seconds: c.seconds, lastFullAt: c.lastFullAt, left: c.left, wanted: c.wanted, mapUrls: c.mapUrls, mapWhole: c.mapWhole !== false, limitReached: !!c.limitReached,
+    // the catalog of the shop read whole? (a site map still being read, or a shop over the page limit: in part)
+    complete: c.kind === 'sitemap' ? !!c.complete : !c.limitReached };
 }
 
 module.exports = { load, remove, syncOne, syncAll, info, fromWoo, fromShopify };

@@ -1285,6 +1285,8 @@ function afterStart() {
   engine.ready().then(dailyCopy);
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
   setInterval(dailyCopy, 3600 * 1000).unref();
+  // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
+  setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();
   engine.ready().then(async () => {
     // after an update with new market rules (e.g. out-of-stock offers no longer count): recalculate the saved results once
     try {

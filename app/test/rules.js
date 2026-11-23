@@ -176,6 +176,17 @@ function shop() {
   ok(r.match === 'similar' && /άλλο όνομα/.test(r.why), 'the same code under two model names: shown for a decision, never counted by itself', JSON.stringify(r));
   r = same(O('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068', 'PENTAGON', 'K05001-99', 48.9), O('BDU 2.0 K05001-2.0', 'PENTAGON', 'K05001-2.0', 37.28));
   ok(r.match !== 'exact', 'a title that names another code than its own code field (K05068 filed under K05001) is not matched by that code', JSON.stringify(r));
+  {
+    // the same valid EAN comes before «another brand» (audit 23/11, P1): the shop wrote the brand its own way
+    const mk = require(APP + '/lib/market');
+    const ean = '4046872183461';
+    const ours = { name: 'ΣΑΚΙΔΙΟ MIL-TEC ASSAULT MOLLE OLIVE SMALL', brand: 'MIL-TEC', sku: '14002001', ean };
+    ok(mk.score(ours, { name: 'Assault Pack Small Olive', brand: 'Sturm', ean }).match === 'exact' && mk.score(ours, { name: 'Assault Pack Small Olive', brand: 'Mil Tec', ean }).match === 'exact', 'the same EAN with the brand written another way (Sturm / Mil Tec for MIL-TEC) → the same product');
+    const other = mk.score(ours, { name: 'Other Bag Black', brand: 'Helikon', ean });
+    ok(other.match === 'similar' && /άλλη μάρκα/.test(other.why), 'the same EAN, another brand and no model word in common → «similar», for a person (a shop may copy a wrong EAN)', JSON.stringify(other));
+    ok(mk.score(ours, { name: 'Assault Pack Small Olive', brand: 'Helikon' }).match === 'none', 'another brand without the EAN → not the same');
+    ok(mk.sameBrand('MIL-TEC', 'Sturm Mil-Tec') && mk.sameBrand('MORAKNIV', 'Mora') && mk.sameBrand('5.11', '5.11 Tactical') && !mk.sameBrand('PENTAGON', 'HELIKON') && !mk.sameBrand('RIO', 'RIOT'), 'one brand in its several spellings; different brands stay apart');
+  }
   r = same(O('ΔΙΠΛΗ ΓΕΜΙΣΤΗΡΟΘΗΚΗ PENTAGON DOUBLE MULTI POUCH RAL', 'PENTAGON', 'K17090-1', 16.9), O('PENTAGON DOUBLE MULTI POUCH', 'PENTAGON', 'K17090', 6.9));
   ok(r.match === 'similar' && /τιμή/.test(r.why), 'a price less than half of ours with only the base code in common → check first', JSON.stringify(r));
   r = same(O('ΓΥΑΛΙΑ SWISS EYE APACHE ΚΑΦΕ', 'SWISS EYE', 'SE - 40232', 49.8), O('Swiss Eye Apache', 'SWISS EYE', 'SE – 40231', 64.9));
