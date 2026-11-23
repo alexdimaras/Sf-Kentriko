@@ -247,17 +247,20 @@
       try {
         const f = await GET('/api/families/of', { site, id });
         if (!f || f.none) return;
-        const st = { pending: ['Πρόταση', 'warn'], approved: ['Εγκρίθηκε', 'ok'], rejected: ['Απορρίφθηκε', ''] }[f.status] || ['', ''];
+        const sure = f.proof === 'confirmed';
+        const st = !sure && f.status !== 'rejected' ? ['Πιθανή οικογένεια', ''] : ({ pending: ['Πρόταση', 'warn'], approved: ['Εγκρίθηκε', 'ok'], rejected: ['Απορρίφθηκε', ''] }[f.status] || ['', '']);
         const decide = (answer) => POST('/api/families/decide', { site, key: f.key, answer }).then(() => { toast(answer === 'approved' ? 'Εγκρίθηκε η οικογένεια.' : answer === 'rejected' ? 'Απορρίφθηκε.' : 'Επαναφορά.'); clear(box); box.appendChild(familyPanel(site, id)); }).catch(fail);
         box.appendChild(h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'Οικογένεια προϊόντος'), h('span', { class: 'pill ' + st[1] }, st[0] + ' · σιγουριά ' + f.confidence + '%')),
           h('p', null, h('b', null, f.title), ` — το ίδιο μοντέλο σε ${f.members.length} χρώματα, σήμερα ως ξεχωριστά προϊόντα.`),
           h('ul', { class: 'todo-list' }, f.members.map((m) => h('li', null, h('span', { class: 'pill' }, m.colour), ' ', link(m.url, m.name), h('div', { class: 'faint' }, [m.sku && 'κωδ. ' + m.sku, m.ean && 'EAN ' + m.ean, fmt.money(m.price), m.inStock ? 'διαθέσιμο' : 'εξαντλημένο', `${m.images.length} φωτο`].filter(Boolean).join(' · '))))),
           h('div', { class: 'faint' }, 'Απόδειξη: ' + f.evidence.join(' · ') + (f.webColours.length ? ` · στο internet υπάρχει και σε: ${f.webColours.join(', ')}` : '')),
+          (f.proofSources || []).length ? h('div', { class: 'faint' }, 'Καταστήματα που το δείχνουν σε χρώματα: ', (f.proofSources || []).map((x, i) => h('span', null, i ? ' · ' : '', x.urls[0] ? link(x.urls[0], x.site) : x.site, ' (' + x.colours.join(', ') + ')'))) : null,
+          !sure ? h('p', { class: 'faint' }, 'Μοιάζει με ένα μοντέλο σε χρώματα, αλλά δεν το επιβεβαιώνουν ακόμα 2 ανεξάρτητα καταστήματα — γι\'αυτό δεν προτείνεται μετατροπή. Τρέξε «Έρευνα internet» στα μέλη της.') : null,
           h('div', { class: 'row tight', style: { marginTop: '8px', flexWrap: 'wrap' } },
-            f.status !== 'approved' ? btn('Έγκριση: είναι το ίδιο μοντέλο', { cls: 'sm primary', icon: 'check' }, () => decide('approved')) : null,
+            sure && f.status !== 'approved' ? btn('Έγκριση: είναι το ίδιο μοντέλο', { cls: 'sm primary', icon: 'check' }, () => decide('approved')) : null,
             f.status !== 'rejected' ? btn('Όχι, άλλα προϊόντα', { cls: 'sm ghost' }, () => decide('rejected')) : null,
             f.status !== 'pending' ? btn('Επαναφορά', { cls: 'sm ghost' }, () => decide('')) : null,
-            f.status === 'approved' ? btn('Αρχεία μετατροπής σε ένα προϊόν με χρώματα', { cls: 'sm', icon: 'download' }, () => familyExport(site, f)) : null)));
+            sure && f.status === 'approved' ? btn('Αρχεία μετατροπής σε ένα προϊόν με χρώματα', { cls: 'sm', icon: 'download' }, () => familyExport(site, f)) : null)));
       } catch (_) { /* nothing to show */ }
     })();
     return box;
@@ -268,8 +271,8 @@
     try {
       const list = await GET('/api/families', { site });
       body.lastChild.remove();
-      body.appendChild(h('p', { class: 'muted' }, `${list.length} προτάσεις: ίδιο είδος, ίδια μάρκα, ίδιες λέξεις μοντέλου, ένα διαφορετικό χρώμα σε κάθε προϊόν. Τίποτα δεν ενώνεται μόνο του: έγκριση → αρχεία για το WooCommerce.`));
-      for (const f of list) body.appendChild(h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('b', null, f.title), h('span', { class: 'pill ' + (f.status === 'approved' ? 'ok' : f.status === 'rejected' ? '' : 'warn') }, ({ pending: 'πρόταση', approved: 'εγκρίθηκε', rejected: 'απορρίφθηκε' })[f.status] + ' · ' + f.confidence + '%')),
+      body.appendChild(h('p', { class: 'muted' }, `${list.filter((f) => f.proof === 'confirmed').length} επιβεβαιωμένες (το δείχνουν ≥2 ανεξάρτητα καταστήματα σε χρώματα) · ${list.filter((f) => f.proof !== 'confirmed').length} πιθανές (μόνο μοιάζουν: ίδιο είδος, μάρκα, λέξεις μοντέλου, άλλο χρώμα — χωρίς πρόταση μετατροπής). Τίποτα δεν ενώνεται μόνο του: έγκριση → αρχεία για το WooCommerce.`));
+      for (const f of list) body.appendChild(h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('b', null, f.title), h('span', { class: 'pill ' + (f.proof !== 'confirmed' && f.status !== 'rejected' ? '' : f.status === 'approved' ? 'ok' : f.status === 'rejected' ? '' : 'warn') }, (f.proof !== 'confirmed' && f.status !== 'rejected' ? 'πιθανή οικογένεια' : ({ pending: 'πρόταση', approved: 'εγκρίθηκε', rejected: 'απορρίφθηκε' })[f.status]) + ' · ' + f.confidence + '%')),
         h('div', { class: 'row tight', style: { flexWrap: 'wrap', marginTop: '6px' } }, f.members.map((m) => h('button', { class: 'btn sm ghost', onclick: () => openProduct(site, m.id) }, m.colour + (m.sku ? ' · ' + m.sku : '') + ' · ' + fmt.money(m.price))))));
       if (!list.length) body.appendChild(h('p', { class: 'faint' }, 'Καμία.'));
     } catch (e) { fail(e); }

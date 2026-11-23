@@ -113,6 +113,23 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
   ok(!list.some((f) => f.members.some((x) => x.sku === '14002088')), '«…TACTICAL US SMALL» is NOT put in it (another model word, no colour)');
   ok(list.every((f) => new Set(f.members.map((x) => x.colour)).size === f.members.length), 'every family: one colour per member');
   ok(assault.confidence >= 90 && assault.evidence.some((e) => /κοινή αρχή/.test(e)), 'its codes share their beginning (14002…): more sure', JSON.stringify(assault.evidence));
+  ok(assault.proof === 'confirmed' && assault.proofSources.length >= 2 && assault.proofSources.every((x) => x.colours.length >= 2), 'confirmed family: ≥2 independent shops show the model in two colours (from the research above)', JSON.stringify(assault.proofSources));
+  {
+    // the 19/11 rule: with less than 2 independent shops it is only «πιθανή οικογένεια» — no approval, no files
+    const st = require(APP + '/lib/store');
+    const saved = st.read('web-codes', null);
+    const k = 'sf:' + olive.id;
+    st.write('web-codes', { products: { [k]: { hits: [{ host: 'shop1.gr', url: 'https://shop1.gr/olive' }], family: [{ host: 'www.shop1.gr', url: 'https://shop1.gr/black', colour: 'black' }, { host: 'eshop.shop1.gr', url: 'https://eshop.shop1.gr/black', colour: 'black' }] } } });
+    const pf = fam.list('sf').find((f) => f.key === assault.key);
+    ok(pf.proof === 'possible' && pf.proofWord === 'πιθανή οικογένεια' && pf.proofSources.length === 1, 'one shop only (three addresses of shop1.gr = one source) → «πιθανή οικογένεια»', JSON.stringify(pf.proofSources));
+    let no1 = null; try { fam.decide('sf', assault.key, 'approved', 'test'); } catch (e) { no1 = e; }
+    ok(no1 && /Πιθανή οικογένεια/.test(no1.message), 'a possible family cannot be approved');
+    let no2 = null; try { fam.exportFiles('sf', assault.key, {}); } catch (e) { no2 = e; }
+    ok(no2 && /Πιθανή οικογένεια/.test(no2.message), 'no conversion files for a possible family');
+    st.write('web-codes', { products: { [k]: { hits: [{ host: 'specialforces.gr', url: 'https://specialforces.gr/a' }], family: [{ host: 'stratiotikaeidi.gr', url: 'https://stratiotikaeidi.gr/b', colour: 'black', variants: [{ colour: 'olive' }, { colour: 'black' }] }] } } });
+    ok(fam.list('sf').find((f) => f.key === assault.key).proof === 'possible', 'our own two sites never count as proof');
+    st.write('web-codes', saved);
+  }
   let refused = null; try { fam.exportFiles('sf', assault.key, {}); } catch (e) { refused = e; }
   ok(refused && /έγκρινε/.test(refused.message), 'no files before a person approves the family');
   fam.decide('sf', assault.key, 'approved', 'test');

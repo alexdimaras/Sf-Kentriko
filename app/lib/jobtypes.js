@@ -134,6 +134,7 @@ function cleanResearch(r) {
     img: url(h.img), images: (Array.isArray(h.images) ? h.images : []).map(url).filter(Boolean).slice(0, 4), imgHow: ['variant', 'page', 'filename', 'none'].includes(h.imgHow) ? h.imgHow : '',
     how: ['code', 'ean'].includes(h.how) ? h.how : 'words', match: h.match === 'code' ? 'code' : 'exact', cls: cls(h.cls), at: at(h.at), proof: str(h.proof, 200),
     variants: (Array.isArray(h.variants) ? h.variants : []).slice(0, 30).map((v) => ({ colour: str(v.colour, 40), size: str(v.size, 20), sku: str(v.sku, 60), ean: String(v.ean || '').replace(/\D/g, '').slice(0, 14) })),
+    colours: (Array.isArray(h.colours) ? h.colours : []).slice(0, 12).map((c) => str(c, 40)).filter(Boolean),
     ...(h.ai && typeof h.ai === 'object' ? { ai: { verdict: str(h.ai.verdict, 12), reason: str(h.ai.reason, 160) } } : {}),
   })).filter((h) => h.host) };
   // what happened (a result from an older worker has none: it is kept as before)

@@ -504,6 +504,8 @@ async function lookUp(it, io) {
         ean: view.ean, price: euro ? Number(view.price) || 0 : 0, regular: euro && Number(pg.regular) > view.price ? Number(pg.regular) : 0, currency: cur, avail: view.avail, priceKind: view.priceKind,
         img: im.images[0] || '', images: im.images.slice(0, 4), imgHow: im.how, how, match, cls: domains.get(pg0.host), at: U.nowIso(),
         // the sizes / colours of their page, each with ITS code / EAN (the evidence for our variations' codes)
+        // the colours their page offers (the model as options of colour: evidence for a family of ours)
+        colours: [...new Set((pg.variants || []).map((v) => String((v && v.color) || '').trim()).filter(Boolean))].slice(0, 12).map((c) => c.slice(0, 40)),
         variants: (pg.variants || []).slice(0, 30).filter((v) => v && (v.sku || v.ean)).map((v) => ({ colour: String(v.color || '').slice(0, 40), size: String(v.size || '').slice(0, 20), sku: String(v.sku || '').slice(0, 60), ean: gtin(v.ean) || '' })),
         proof: how === 'ean' ? 'ίδιο EAN' : how === 'code' ? 'ίδιος κωδικός' + (match === 'code' ? ' (οι τίτλοι διαφέρουν: ' + (chk.why || 'έλεγξέ το') + ')' : '') : (chk.ev || []).join(' · ') || 'ίδιο προϊόν',
         ...(ai ? { ai: { verdict: ai.verdict, reason: String(ai.reason || '').slice(0, 160) } } : {}) });

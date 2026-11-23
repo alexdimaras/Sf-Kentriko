@@ -412,6 +412,14 @@ function decodeText(buf) {
 // ---- misc ----
 function uid(prefix) { return (prefix || '') + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } }
+/** One «source»: the registrable domain of a host (shop.x.gr and www.x.gr = x.gr; x.com.gr / x.co.uk keep three parts). */
+function siteOf(h) {
+  const x = String(h || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/:\d+$/, '').replace(/^www\./, '');
+  if (!x || /^[\d.]+$/.test(x) || !x.includes('.')) return x;
+  const parts = x.split('.');
+  const two = parts.slice(-2).join('.');
+  return parts.length > 2 && /^(com|co|org|net|gov|edu|ac)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join('.') : two;
+}
 function normUrl(u) {
   u = String(u || '').trim();
   if (!u) return '';
@@ -425,5 +433,5 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 module.exports = {
   greekShare, stripTonos, collapse, greekUpper, foldKey, capsTitle, hasLowercase, spellSuggest, titleCase, learnAccents, accentMapFrom, greeklish, slugify, fixMixedScript, toGreekLetters,
   decodeEntities, repairEntities, untexturize, escapeHtml, stripTags, parseNumber, r2, money, roundPrice, roundDown, median,
-  toCSV, parseCSV, decodeText, uid, hostOf, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
+  toCSV, parseCSV, decodeText, uid, hostOf, siteOf, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
 };

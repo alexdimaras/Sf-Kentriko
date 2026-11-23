@@ -88,15 +88,59 @@ function list(site, opts) {
     const seen = new Set();
     for (const p of ms) for (const f of (web[site + ':' + p.id] || {}).family || []) for (const c of market.coloursOf(f.colour || f.name)) seen.add(c);
     const more = [...seen].filter((c) => !colours.includes(c));
+    const proof = proofOf(site, ms, g.members.map((m) => m.colour), web);
+    if (proof.sources.length >= 2) ev.push(`ίδιο μοντέλο σε επιλογές χρώματος σε ${proof.sources.length} ανεξάρτητα καταστήματα: ` + proof.sources.map((x) => x.site).join(', '));
+    else ev.push(proof.sources.length ? `μόνο ${proof.sources[0].site} δείχνει το μοντέλο σε άλλα χρώματα — χρειάζονται 2 ανεξάρτητα καταστήματα` : 'κανένα άλλο κατάστημα δεν το δείχνει ακόμα σε επιλογές χρώματος (τρέξε «Έρευνα internet» στα μέλη)');
     const d = dec[site + '|' + g.key];
     out.push({
       key: g.key, site, title: familyTitle(ms[0]), confidence: Math.min(97, conf), evidence: ev, attribute: 'colour', colours,
       members: ms.map((p, i) => ({ id: p.id, name: p.name, sku: p.sku || '', ean: p.ean || '', colour: g.members[i].colour, price: p.price, regular: p.regular, sale: p.sale, inStock: p.inStock !== false, images: (p.images || []).slice(0, 6), url: p.url, slug: p.slug, cats: p.catNames || [] })),
       webColours: more, status: d ? d.answer : 'pending', decidedAt: d ? d.at : null,
+      // «confirmed» = ≥2 independent shops show the model as options of colour → a proposal of conversion;
+      // «possible» = it only looks like one here: shown, never proposed, never exported
+      proof: proof.sources.length >= 2 ? 'confirmed' : 'possible', proofSources: proof.sources, proofWord: proof.sources.length >= 2 ? 'επιβεβαιωμένη οικογένεια' : 'πιθανή οικογένεια',
     });
   }
-  out.sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || b.members.length - a.members.length || b.confidence - a.confidence);
+  out.sort((a, b) => (a.proof === 'confirmed' ? 0 : 1) - (b.proof === 'confirmed' ? 0 : 1) || (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || b.members.length - a.members.length || b.confidence - a.confidence);
   return o.key ? out.filter((f) => f.key === o.key) : out;
+}
+
+/**
+ * The external evidence that the members are one model in colours: a shop (one per registrable domain — two addresses
+ * of one site are one source) counts when its pages show the model in two colours at least: one page with colour options
+ * (a variable product), or pages of two of the colours (the same for one member + another colour of the model).
+ * Our own sites never count.
+ */
+function proofOf(site, ms, memberColours, web) {
+  const market = require('./market');
+  const own = new Set(['specialforces.gr', 'stratiotikaeidi.gr']);
+  try { const s = settings.all(); for (const x of Object.values(s.sites || {})) if (x && x.url) own.add(U.siteOf(U.hostOf(x.url))); } catch (_) { /* ignore */ }
+  const per = new Map(); // site → { colours:Set, urls:Set }
+  const add = (host, url, cs) => {
+    const k = U.siteOf(host);
+    if (!k || own.has(k)) return;
+    const e = per.get(k) || { site: k, colours: new Set(), urls: new Set() };
+    for (const c of cs) e.colours.add(c);
+    if (url && e.urls.size < 4) e.urls.add(url);
+    per.set(k, e);
+  };
+  const cOf = (x) => [...market.coloursOf(String(x || ''))];
+  ms.forEach((p, i) => {
+    const e = web[site + ':' + p.id] || {};
+    for (const h of e.hits || []) {
+      add(h.host, h.url, [memberColours[i]]);
+      for (const c of h.colours || []) add(h.host, '', cOf(c));
+      for (const v of h.variants || []) add(h.host, '', cOf(v.colour));
+    }
+    for (const f of e.family || []) {
+      add(f.host, f.url, cOf(f.colour || f.name));
+      for (const v of f.variants || []) add(f.host, '', cOf(v.colour));
+    }
+  });
+  const sources = [...per.values()].filter((e) => e.colours.size >= 2)
+    .map((e) => ({ site: e.site, colours: [...e.colours], urls: [...e.urls] }))
+    .sort((a, b) => b.colours.length - a.colours.length);
+  return { sources };
 }
 
 /** The family a product belongs to (for its card), or null. */
@@ -106,7 +150,9 @@ function ofProduct(site, id) {
 
 function decide(site, key, answer, by) {
   if (!['approved', 'rejected', ''].includes(answer)) throw new Error('Λάθος απάντηση.');
-  if (!list(site, { key }).length) throw new Error('Δεν βρέθηκε η οικογένεια.');
+  const f = list(site, { key })[0];
+  if (!f) throw new Error('Δεν βρέθηκε η οικογένεια.');
+  if (answer === 'approved' && f.proof !== 'confirmed') throw new Error('Πιθανή οικογένεια μόνο: χρειάζονται 2 ανεξάρτητα καταστήματα που να δείχνουν το μοντέλο σε επιλογές χρώματος (τρέξε «Έρευνα internet» στα μέλη της).');
   store.update(KEY, {}, (d) => { if (answer) d[site + '|' + key] = { answer, at: U.nowIso(), by: by || '' }; else delete d[site + '|' + key]; return d; });
   return list(site, { key })[0];
 }
@@ -133,6 +179,7 @@ function exportFiles(site, key, opts) {
   const o = opts || {};
   const f = list(site, { key })[0];
   if (!f) throw new Error('Δεν βρέθηκε η οικογένεια.');
+  if (f.proof !== 'confirmed') throw new Error('Πιθανή οικογένεια μόνο (δεν το επιβεβαιώνουν 2 ανεξάρτητα καταστήματα): δεν φτιάχνεται πακέτο μετατροπής.');
   if (f.status !== 'approved') throw new Error('Πρώτα έγκρινε την οικογένεια (είναι ίδιο μοντέλο σε άλλα χρώματα).');
   const s = settings.all();
   const mode = o.variantSkus === 'own' ? 'own' : o.variantSkus === 'same' ? 'same' : s.variantSku === 'suffix' ? 'own' : 'same';
@@ -201,4 +248,4 @@ function exportFiles(site, key, opts) {
   };
 }
 
-module.exports = { list, ofProduct, decide, exportFiles, keyOf, familyTitle, colourAttribute, KEY };
+module.exports = { list, ofProduct, decide, exportFiles, proofOf, keyOf, familyTitle, colourAttribute, KEY };

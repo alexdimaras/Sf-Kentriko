@@ -97,7 +97,8 @@ function auditHtml(html, url, ctx) {
   if (!/BreadcrumbList/.test(h)) add('warn', 'πλοήγηση', 'Χωρίς breadcrumb στα δομημένα δεδομένα.');
   if (!/property=["']og:type["'][^>]*content=["']product/i.test(h)) add('warn', 'κοινωνικά', 'Το og:type δεν είναι «product».');
   // the family: separate products of one model (the family kit makes one page with the colours)
-  if (c.family) add('warn', 'οικογένεια', `Το προϊόν είναι ένα από ${c.family.members.length} ξεχωριστά προϊόντα του ίδιου μοντέλου (${c.family.colours.join(', ')}).`, 'Μία σελίδα με επιλογή χρώματος (ProductGroup + hasVariant) — Προϊόντα → Οικογένειες: έγκριση και αρχεία μετατροπής με ανακατευθύνσεις 301.');
+  if (c.family && c.family.proof === 'possible') add('info', 'οικογένεια', `Πιθανή οικογένεια: μοιάζει με ${c.family.members.length} ξεχωριστά προϊόντα ενός μοντέλου (${c.family.colours.join(', ')}), αλλά δεν το επιβεβαιώνουν ακόμα 2 ανεξάρτητα καταστήματα.`, 'Καμία μετατροπή ακόμα — πρώτα «Έρευνα internet» στα μέλη της.');
+  else if (c.family) add('warn', 'οικογένεια', `Το προϊόν είναι ένα από ${c.family.members.length} ξεχωριστά προϊόντα του ίδιου μοντέλου (${c.family.colours.join(', ')}).`, 'Μία σελίδα με επιλογή χρώματος (ProductGroup + hasVariant) — Προϊόντα → Οικογένειες: έγκριση και αρχεία μετατροπής με ανακατευθύνσεις 301.');
   return { url, findings: f, summary: { productNodes: mains.length, groups: groups.length, variants: variants.length, plugin: [...sources].join(', '), title } };
 }
 

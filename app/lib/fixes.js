@@ -268,7 +268,7 @@ function variationCodes(C, site, p, code, hits) {
         if (want.colours.size && ![...m.coloursOf(x.colour || '')].some((c) => want.colours.has(c))) continue;
         const k = U.normSku(sku);
         const e = votes.get(k) || { sku, hosts: new Map() };
-        if (!e.hosts.has(h.host)) e.hosts.set(h.host, h.url);
+        if (!e.hosts.has(U.siteOf(h.host))) e.hosts.set(U.siteOf(h.host), h.url);
         votes.set(k, e);
       }
     }
