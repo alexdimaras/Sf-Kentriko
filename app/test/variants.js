@@ -155,6 +155,26 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
   const dup = fs.readFileSync(path.join(FX, 'sf-simple-olive.html'), 'utf8').replace('</head>', '<script type="application/ld+json">{"@type":"Product","name":"X","offers":{"price":"1"}}</script></head>');
   ok(has(seo.auditHtml(dup, 'https://specialforces.gr/product/x/'), /Δύο ή περισσότερα/, 'crit'), 'a second structured-data block of a product is caught (never add one)');
 
+  section('Αναφορά ποιότητας του προϊόντος (μία, με τρεις χωριστές καταστάσεις)');
+  {
+    const quality = require(APP + '/lib/quality');
+    const q0 = quality.report('sf', olive.id);
+    ok(q0.statuses.flow && /^Βήμα [1-5]/.test(q0.statuses.flow.label) && q0.statuses.research && q0.statuses.seo.state === 'never', 'three states apart: the work flow («Βήμα …»), the internet research, the SEO check (never done yet)', JSON.stringify(q0.statuses));
+    ok(q0.statuses.research.state !== 'never' && q0.statuses.research.hits >= 1, 'the last saved research is read (the one above), not started again', JSON.stringify(q0.statuses.research));
+    ok(q0.areas.some((a) => a.area === 'Μάρκα / κατηγορία' && /μάρκα/i.test(a.text)), 'the olive bag without its brand filed → said (brand)', JSON.stringify(q0.areas.map((a) => a.text)));
+    ok(q0.areas.some((a) => a.area === 'Παραλλαγές' && /επιβεβαιώνουν/.test(a.text)), 'its family is in the report, with how sure', JSON.stringify(q0.areas.filter((a) => a.area === 'Παραλλαγές')));
+    quality.saveSeo('sf', olive.id, a1);
+    const q1 = quality.report('sf', olive.id);
+    ok(q1.statuses.seo.state === 'warn' && q1.statuses.seo.counts.warn >= 1 && q1.areas.some((a) => a.area === 'SEO' && /GTIN/.test(a.text)), 'after an SEO check: its state and its findings are in the report (kept, not checked again on open)', JSON.stringify(q1.statuses.seo));
+    // a product with a copy's code: «crit», and no «cleaned» code proposed
+    const junk = Object.assign({}, olive, { id: 999001, sku: 'Mora-1755379572', name: 'ΜΑΧΑΙΡΙ MORAKNIV RISBERG HUNTING (S)', brand: 'Morakniv', images: [] });
+    store.write('catalog-sf', { syncedAt: now, source: 'api', products: real.concat([junk]), categories: [] });
+    const qj = quality.report('sf', 999001);
+    ok(qj.areas.some((a) => a.level === 'crit' && /κωδικός αντιγράφου/.test(a.text)) && qj.areas.some((a) => a.level === 'crit' && a.area === 'Φωτογραφίες') && qj.needsResearch, 'a copy\'s code and no photo → «Πρέπει», and the full research is offered (not started)', JSON.stringify(qj.areas.filter((a) => a.level === 'crit').map((a) => a.text)));
+    ok(!qj.proposals.some((c) => c.field === 'sku' && /^Mora$/i.test(c.to)), 'no «Mora» made of the copy\'s code');
+    store.write('catalog-sf', { syncedAt: now, source: 'api', products: real, categories: [] });
+  }
+
   section('Προαιρετικοί πάροχοι αναζήτησης (SearXNG / Brave / Google): δικό τους κλειδί, ποτέ στην οθόνη');
   const sfind = require(APP + '/lib/supplierfind');
   const hits = { searxng: 0, brave: 0, google: 0 };

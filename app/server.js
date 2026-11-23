@@ -431,7 +431,9 @@ const routes = {
     return require('./lib/airesearch').suggestFor(p, facts);
   },
   // the live page of a product as Google reads it: what the site already produces, what is missing, how to fix it
-  'GET /api/seo/audit': (q) => require('./lib/seoaudit').audit(q.site === 'st' ? 'st' : 'sf', q.id),
+  'GET /api/seo/audit': async (q) => { const site = q.site === 'st' ? 'st' : 'sf'; const r = await require('./lib/seoaudit').audit(site, q.id); try { require('./lib/quality').saveSeo(site, Number(q.id), r); } catch (_) { /* kept next time */ } return r; },
+  // the quality report of a product: what is here + the last saved research / SEO check (nothing is searched from here)
+  'GET /api/quality': (q) => require('./lib/quality').report(q.site === 'st' ? 'st' : 'sf', q.id),
   'GET /api/ai/log': () => { const d = store.read('ai-log', null) || {}; return { totals: d.totals || {}, items: (d.items || []).slice(-30).reverse() }; },
   // a site of the internet: approved (its prices count) / rejected / nothing; the list of sites by kind
   'POST /api/codes/shop': (b) => require('./lib/codefind').decideShop(b.host, b.answer),

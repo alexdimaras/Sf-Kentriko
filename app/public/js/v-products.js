@@ -138,6 +138,8 @@
       } else if (t.stage < 5) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0 0' } }, 'Καμία έτοιμη αλλαγή ακόμα: η έρευνα στο internet και στους αντιπροσώπους συνεχίζει μόνη της. «Βρες κωδικό» / «Νέα έρευνα» πιο κάτω για τώρα.'));
       body.appendChild(box);
     }
+    // the quality report: the flow, the internet research and the SEO check side by side (three states, never mixed)
+    body.appendChild(qualityPanel(site, p.id, () => openProduct(site, id)));
     body.appendChild(h('div', { class: 'p-hero' },
       imgs[0] ? h('img', { class: 'img', src: imgs[0], alt: '', referrerpolicy: 'no-referrer' }) : h('div', { class: 'img thumb none', style: { width: '200px', height: '200px' } }, 'Χωρίς φωτογραφία'),
       h('div', { class: 'stack s' },
@@ -295,6 +297,35 @@
   }
 
   /** The live page as Google reads it. */
+  /** One report of the product's quality: what is here now + the last saved research and SEO check (nothing is searched on open). */
+  function qualityPanel(site, id, refresh) {
+    const box = h('div', { class: 'panel' }, h('h2', null, 'Αναφορά ποιότητας'), h('span', { class: 'muted' }, 'Έλεγχος…'));
+    const LV = { crit: ['Πρέπει', 'crit'], warn: ['Καλό να γίνει', 'warn'], info: ['Για ενημέρωση', ''], ok: ['Εντάξει', 'ok'] };
+    const RW = { complete: 'ok', partial: 'warn', family_only: 'warn', coverage_limited: 'warn', not_found: '', no_results: '', never: '', stale: 'warn', due: 'warn', search_failed: 'crit', pages_failed: 'crit', blocked: 'warn', error: 'crit', cancelled: 'warn', running: 'warn', queued: 'warn' };
+    const SW = { never: ['SEO: δεν έχει ελεγχθεί', ''], stale: ['SEO: παλιός έλεγχος', 'warn'], crit: ['SEO: σοβαρά θέματα', 'crit'], warn: ['SEO: θέλει βελτίωση', 'warn'], ok: ['SEO: εντάξει', 'ok'] };
+    (async () => {
+      let r;
+      try { r = await GET('/api/quality', { site, id }); } catch (e) { box.lastChild.replaceWith(h('div', { class: 'faint' }, e.message)); return; }
+      box.lastChild.remove();
+      const st = r.statuses, rs = st.research, ss = SW[st.seo.state] || SW.never;
+      box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } },
+        h('span', { class: 'pill' + (st.flow.stage >= 5 ? ' ok' : ''), title: 'Η ροή εργασίας του καταστήματος (Ροή εργασίας)' }, 'Ροή: ' + st.flow.label),
+        h('span', { class: 'pill ' + (RW[rs.state] || ''), title: rs.at ? 'Τελευταία έρευνα: ' + fmt.ago(rs.at) : 'Δεν έχει γίνει' }, 'Internet: ' + rs.label + (rs.at ? ' · ' + fmt.ago(rs.okAt || rs.at) : '')),
+        h('span', { class: 'pill ' + ss[1], title: st.seo.at ? 'Τελευταίος έλεγχος: ' + fmt.ago(st.seo.at) : '' }, ss[0] + (st.seo.at ? ' · ' + fmt.ago(st.seo.at) : ''))));
+      box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, `${r.counts.crit} πρέπει · ${r.counts.warn} καλό να γίνουν · ${r.counts.info} για ενημέρωση · ${r.proposals.length} έτοιμες προτάσεις στις Διορθώσεις (τίποτα δεν αλλάζει χωρίς έγκριση)`));
+      if (r.needsResearch) box.appendChild(h('div', { class: 'note', style: { margin: '6px 0' } }, rs.state === 'never' ? 'Δεν έχει γίνει έρευνα στο internet για αυτό το προϊόν. ' : rs.stale ? 'Η έρευνα στο internet είναι παλιά. ' : 'Λείπουν σημαντικά στοιχεία (κωδικός, φωτογραφία ή μάρκα). ',
+        btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις για έγκριση.'); refresh(); } })).catch(fail))));
+      const groups = ['crit', 'warn', 'info', 'ok'].map((lv) => [lv, r.areas.filter((a) => a.level === lv)]).filter(([, l]) => l.length);
+      for (const [lv, list] of groups) {
+        const ul = h('ul', { class: 'todo-list' }, list.map((a) => h('li', { class: lv === 'crit' ? 'crit' : lv === 'warn' ? 'warn' : '' }, h('b', null, a.area + ': '), a.text,
+          a.fix ? h('div', { class: 'faint' }, a.fix) : null,
+          a.fixes.length ? h('div', { class: 'faint' }, `→ ${a.fixes.length} έτοιμη πρόταση στις Διορθώσεις (Πριν / Μετά, πηγή, σιγουριά) — δες το πάνω κουτί`) : null)));
+        box.appendChild(lv === 'crit' || lv === 'warn' ? h('div', null, h('div', { class: 'faint', style: { marginTop: '6px' } }, LV[lv][0] + ` (${list.length})`), ul) : h('details', null, h('summary', null, LV[lv][0] + ` (${list.length})`), ul));
+      }
+      if (!r.areas.length) box.appendChild(h('p', { class: 'faint' }, 'Κανένα εύρημα.'));
+    })();
+    return box;
+  }
   function seoPanel(site, id) {
     const out = h('div');
     return h('div', { class: 'panel' }, h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', null, 'SEO της σελίδας'),
