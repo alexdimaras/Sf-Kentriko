@@ -625,6 +625,9 @@ const routes = {
   },
   // the whole system in one look (and one check): the program, its data, the computers, the AI, the research
   'GET /api/system/status': () => systemStatus(),
+  // the safe self-repairs: which exist, and one run at once by a person (the same limits, checked again after)
+  'GET /api/system/repairs': () => require('./lib/repair').list(),
+  'POST /api/system/repair': (b, _q, ctx) => require('./lib/repair').run(String(b.id || ''), repairDeps(), { force: true, by: ctx.user ? 'διαχειριστή' : '' }),
   // the program's log of what went wrong (lib/events.js) and the «πακέτο διάγνωσης για AI» (lib/diagnostics.js)
   'GET /api/diagnostics': (q) => ({ events: events.query({ severity: q.severity, service: q.service, code: q.code, limit: q.limit }), summary: events.summary() }),
   'GET /api/diagnostics/bundle': async () => {
@@ -665,7 +668,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/system/repairs', 'POST /api/system/repair', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -984,6 +987,8 @@ async function systemStatus() {
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
   const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
   for (const x of items) x.level = LEVEL[x.state] || (x.ok ? 'ok' : 'warn');
+  // a line a safe self-repair can help: its button (the same action runs by itself every 15 minutes)
+  try { const R = require('./lib/repair').ACTIONS; const d = repairDeps(); for (const x of items) for (const [id, a] of Object.entries(R)) if (a.check === x.id && a.when(H, d)) x.repair = { id, label: a.label }; } catch (_) { /* fine */ }
   const level = require('./lib/health').worst(items.map((x) => x.level));
   return { at: new Date().toISOString(), level, ok: level === 'ok', items };
 }
@@ -1000,6 +1005,20 @@ async function healthProbe() {
   // GitHub alone (no database): every save is the copy
   if (!pgOn && gh.enabled) health.set('backup', gh.savedAt ? 'ok' : 'unknown', gh.savedAt ? 'Τα δεδομένα σώζονται στο GitHub (τελευταία ' + new Date(gh.savedAt).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ').' : 'Δεν έχει γίνει ακόμα αποθήκευση στο GitHub.');
   return health.view();
+}
+/** What the safe self-repairs may use (lib/repair.js): only the program's own running parts. */
+function repairDeps() {
+  const health = require('./lib/health');
+  return {
+    probe: () => healthProbe(), view: () => health.view(),
+    // the database again, three times, waiting longer each time (a paused / restarting database comes back by itself)
+    dbReconnect: async () => { for (const wait of [5000, 15000, 30000]) { const p = cloudsave.poolNow ? await cloudsave.poolNow().catch(() => null) : null; if (p) { try { await p.query('SELECT 1'); return; } catch (_) { /* again */ } } await new Promise((r) => setTimeout(r, wait)); } throw new Error('η βάση δεν απάντησε σε 3 προσπάθειες'); },
+    saveNow: async () => { const r = await cloudsave.save('αυτοεπισκευή'); if (r && r.error) throw new Error(r.error); },
+    sweepQueue: async () => { if (coordReady) await coord.sweep(); },
+    backupNow: async () => { const r = cloudsave.backupNow ? await cloudsave.backupNow() : await cloudsave.save('αντίγραφο (αυτοεπισκευή)'); if (r && (r.error || r.ok === false)) throw new Error(r.error || 'δεν έγινε'); },
+    rebuild: async () => { engine.mark('checks'); },
+    engineError: () => engine.status().error || '',
+  };
 }
 async function systemCheck() {
   const st = {};
@@ -1342,7 +1361,7 @@ function afterStart() {
   events.setRev(build.sha ? build.sha.slice(0, 7) : VERSION);
   setInterval(() => { try { events.flush(); } catch (e) { console.error('events:', e.message); } }, 60 * 1000).unref();
   // the real checks of the data every 15 minutes (so «Σύστημα» is never green only because nothing was checked)
-  if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 90 * 1000).unref(); setInterval(() => { healthProbe().catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
+  if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 90 * 1000).unref(); setInterval(() => { healthProbe().then(() => require('./lib/repair').auto(repairDeps())).catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
   setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();
   engine.ready().then(async () => {

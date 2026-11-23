@@ -138,6 +138,12 @@ function web() {
     ok(evNo.status === 401, 'only a paired computer writes into the log');
     const bad = await fetch(base + '/api/diagnostics/nothing-here', { headers: H });
     void bad;
+    const rl = await get('/api/system/repairs');
+    ok(Array.isArray(rl) && rl.some((x) => x.id === 'queue-sweep'), 'the safe self-repairs are listed (Σύστημα)');
+    const rr = await post('/api/system/repair', { id: 'queue-sweep' });
+    ok(rr.ran && ['ok', 'warn', 'crit', 'unknown'].includes(rr.after), 'a person runs one at once: done and checked again', JSON.stringify(rr));
+    const rbad = await post('/api/system/repair', { id: 'rm -rf' });
+    ok(/Άγνωστη ενέργεια/.test(rbad.error || ''), 'an action that is not on the list is refused');
     const dg = await get('/api/diagnostics?severity=info');
     ok(Array.isArray(dg.events) && dg.summary && typeof dg.summary.by === 'object', 'the log of events is read in one place (Ρυθμίσεις → Σύστημα → Συμβάντα)');
     const upNo = await fetch(base + '/api/worker/update', { headers: { Authorization: 'Bearer sfkw_fake' } });

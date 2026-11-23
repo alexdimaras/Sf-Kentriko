@@ -181,6 +181,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     events.reset();
   }
 
+  // safe self-repair (phase 3): only allowed actions, proof first, checked again after, limits, logged
+  {
+    const repair = require(APP + '/lib/repair');
+    const events = require(APP + '/lib/events');
+    events.reset(); repair.resetLimits();
+    let H = { queue: { level: 'crit', text: '0 σε αναμονή · 1 τρέχουν · 1 κολλημένες (έληξε ο χρόνος τους).' }, db: { level: 'ok', text: '' }, save: { level: 'ok', text: '' }, backup: { level: 'warn', text: 'δεν έχει ρυθμιστεί' } };
+    let swept = 0, saved = 0, backups = 0, engErr = '';
+    const d = { view: () => H, probe: async () => { if (swept) H = Object.assign({}, H, { queue: { level: 'ok', text: '0 σε αναμονή' } }); return H; },
+      sweepQueue: async () => { swept++; }, saveNow: async () => { saved++; }, backupNow: async () => { backups++; }, dbReconnect: async () => {}, rebuild: async () => { engErr = ''; }, engineError: () => engErr };
+    const out = await repair.auto(d);
+    ok(out.length === 1 && out[0].id === 'queue-sweep' && out[0].fixed && out[0].before === 'crit' && out[0].after === 'ok' && swept === 1 && !saved && !backups, 'a stuck job → only «back to the queue» runs; checked again after: fixed (ΚΡΙΣΙΜΟ → ΟΚ)', JSON.stringify(out));
+    ok(events.query({ severity: 'info', code: 'REPAIR_QUEUE_SWEEP' }).some((e) => /διορθώθηκε/.test(e.message) && /αυτόματα/.test(e.message)), 'every repair is written in the log with before / after');
+    H.queue = { level: 'crit', text: '1 κολλημένες' }; swept = 0;
+    const again = await repair.auto(d);
+    ok(again[0] && again[0].ran === false && /30 λεπτά/.test(again[0].why) && swept === 0, 'the same action rests 30 minutes (never a loop)');
+    ok(!(await repair.auto(Object.assign({}, d, { view: () => ({ backup: { level: 'warn', text: 'Δεν υπάρχει ημερήσιο αντίγραφο στο GitHub (δεν έχει ρυθμιστεί).' } }) }))).length, 'nothing that a repair cannot fix is «repaired» (no backup set up → only said)');
+    let bad = null; try { await repair.run('delete-everything', d); } catch (e) { bad = e; }
+    ok(bad && /Άγνωστη ενέργεια/.test(bad.message), 'only the allowed actions can run (an unknown one is refused)');
+    engErr = 'boom'; repair.resetLimits();
+    const eng = await repair.run('engine-rebuild', d, { force: true, by: 'test' });
+    ok(eng.fixed && eng.before === 'crit' && eng.after === 'ok', 'the screens\' data built again after an error, and checked');
+    ok(Object.keys(repair.ACTIONS).every((k) => ['db-reconnect', 'save-retry', 'queue-sweep', 'backup-now', 'engine-rebuild'].includes(k)), 'the list of actions holds nothing that changes the shops\' data, settings or code');
+    events.reset(); repair.resetLimits();
+  }
+
   // the background work and a request that only waits (for that very work, the internet, the AI): it must not stop
   // the work (a screen open during the preparation made it 100 times slower: «Ετοιμάζονται τα στοιχεία» for minutes)
   {

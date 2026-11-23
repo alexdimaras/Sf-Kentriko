@@ -211,7 +211,9 @@
           clear(sysList);
           const all = LVL[r.level] || LVL.unknown;
           sysList.appendChild(h('li', { class: all[2] }, h('span', { class: 'pill ' + all[1] }, all[0]), ' ', h('b', null, 'Συνολικά: '), r.level === 'ok' ? 'όλα ελεγμένα και εντάξει.' : r.level === 'unknown' ? 'κάποια δεν έχουν ελεγχθεί πρόσφατα — πάτα «Έλεγχος όλων».' : 'δες τις γραμμές με ΠΡΟΣΟΧΗ / ΚΡΙΣΙΜΟ.'));
-          for (const x of r.items) { const l = LVL[x.level] || LVL.unknown; sysList.appendChild(h('li', { class: l[2] }, h('span', { class: 'pill ' + l[1] }, x.state === 'stopped' ? 'ΣΤΑΜΑΤΗΜΕΝΟΣ' : x.state === 'disabled' ? 'ΚΛΕΙΣΤΟ' : l[0]), ' ', h('b', null, x.label + ': '), x.text)); }
+          for (const x of r.items) { const l = LVL[x.level] || LVL.unknown; sysList.appendChild(h('li', { class: l[2] }, h('span', { class: 'pill ' + l[1] }, x.state === 'stopped' ? 'ΣΤΑΜΑΤΗΜΕΝΟΣ' : x.state === 'disabled' ? 'ΚΛΕΙΣΤΟ' : l[0]), ' ', h('b', null, x.label + ': '), x.text,
+            // a safe self-repair for this line (it also runs by itself every 15 minutes): checked again after
+            x.repair ? h('div', { style: { marginTop: '6px' } }, btn('Επισκευή: ' + x.repair.label, { cls: 'sm', icon: 'check' }, (ev) => { const b0 = ev.currentTarget; b0.disabled = true; POST('/api/system/repair', { id: x.repair.id }).then((rr) => { toast(rr.ran ? `${rr.label}: ${rr.fixed ? 'διορθώθηκε ✓' : 'δεν διορθώθηκε — δες τα Συμβάντα'} (${rr.before.toUpperCase()} → ${rr.after.toUpperCase()})` : 'Δεν έτρεξε: ' + rr.why, rr.fixed ? null : { err: !rr.fixed }); return GET('/api/system/status').then(drawSys); }).catch(fail).finally(() => { b0.disabled = false; }); })) : null)); }
         };
         const installer = () => POST('/api/workers/installer').then((r) => {
           const a = h('a', { href: URL.createObjectURL(new Blob([r.text], { type: 'application/octet-stream' })), download: r.name });

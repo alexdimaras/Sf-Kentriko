@@ -126,6 +126,17 @@ function save(reason) {
 }
 
 /** After the start: save after changes (every 30 s at most), and a daily copy to GitHub when it is set. */
+let daily = null;
+/** The daily copy to GitHub now (a safe self-repair when the last one is old): → { ok, error } */
+async function backupNow() {
+  const gh = require('./cloudsave');
+  if (!gh.status().enabled) return { ok: false, error: 'Δεν έχει ρυθμιστεί αντίγραφο στο GitHub.' };
+  if (!restored) return { ok: false, error: 'Τα δεδομένα δεν έχουν διαβαστεί ακόμα.' };
+  gh.backupOnly();
+  const r = await gh.save('ημερήσιο αντίγραφο (αυτοεπισκευή)');
+  if (r && !r.error) { state.backupAt = new Date().toISOString(); require('./health').backupDone(state.backupAt); return { ok: true }; }
+  return { ok: false, error: (r && r.error) || 'άγνωστο' };
+}
 function start() {
   if (!state.enabled) return;
   store.onWrite((name) => { if (name !== 'sessions') { changes++; state.pending = true; } });
@@ -133,7 +144,7 @@ function start() {
   setInterval(() => save('συνδέσεις'), 60 * 60000).unref();
   const gh = require('./cloudsave');
   if (gh.status().enabled) {
-    const daily = async () => {
+    daily = async () => {
       // (the time of the last good copy is kept in the data: a restart does not make one more, nor forget it)
       if (!state.backupAt) { const m = store.read('backup-meta', null); if (m && m.at) state.backupAt = m.at; }
       const last = state.backupAt ? new Date(state.backupAt).getTime() : 0;
@@ -151,4 +162,4 @@ function status() { return Object.assign({}, state, { tls: require('./db').tlsMo
 /** The shared database's pool (the coordinator and the audit log use the same one). */
 function poolNow() { return state.enabled ? getPool() : Promise.resolve(null); }
 
-module.exports = { restore, save, start, status, poolNow, KEEP };
+module.exports = { restore, save, start, status, poolNow, backupNow, KEEP };
