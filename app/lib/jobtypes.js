@@ -82,8 +82,11 @@ function registerAI() {
   coord.register('research.measure', {
     label: 'Μέτρηση της έρευνας internet',
     needs: { ramMB: 500 },
-    cloudOk: false,          // the cloud's network has no search engines worth measuring: a computer of the shop does it
-    maxAttempts: 1,
+    // a computer of the shop does it (its own network, its own engines); with none of the current version on, the cloud
+    // does it (its network reaches the engines too — slower, and it says so in the result)
+    cloudOk: true,
+    cloudRamMB: 250,
+    maxAttempts: 2,
     canTake(w) { return String((w.caps && w.caps.rev) || '') >= '2026-11-23c'; },
     async run(payload, api) {
       const r = await require('./measure').run(payload && payload.n, { progress: (d, t, msg) => api.progress(d, t, msg), cancelled: api.cancelled, log: (t) => api.log && api.log(t) });
@@ -93,7 +96,7 @@ function registerAI() {
       const r = result || {};
       const st = r.stats && typeof r.stats === 'object' ? r.stats : {};
       const num = (v) => Math.max(0, Math.round(Number(v) || 0));
-      const out = { at: new Date().toISOString(), worker: String(job.workerName || '').slice(0, 60), summary: String(r.summary || '').slice(0, 600),
+      const out = { at: new Date().toISOString(), worker: job.workerId === 'cloud' ? 'cloud' : String(job.workerName || '').slice(0, 60), summary: String(r.summary || '').slice(0, 600),
         stats: { products: num(st.products), found: num(st.found), sku: num(st.sku), ean: num(st.ean), price: num(st.price), images: num(st.images), family: num(st.family), wrongColour: num(st.wrongColour), ms: num(st.ms),
           statuses: Object.fromEntries(Object.entries(st.statuses || {}).slice(0, 20).map(([k, v]) => [String(k).slice(0, 20), num(v)])),
           engines: Object.fromEntries(Object.entries(st.engines || {}).slice(0, 10).map(([k, v]) => [String(k).slice(0, 20), { ok: num(v && v.ok), failed: num(v && v.failed), blocked: num(v && v.blocked) }])),

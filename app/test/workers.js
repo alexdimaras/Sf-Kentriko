@@ -144,6 +144,23 @@ function web() {
     ok(rr.ran && ['ok', 'warn', 'crit', 'unknown'].includes(rr.after), 'a person runs one at once: done and checked again', JSON.stringify(rr));
     const rbad = await post('/api/system/repair', { id: 'rm -rf' });
     ok(/Άγνωστη ενέργεια/.test(rbad.error || ''), 'an action that is not on the list is refused');
+    // (seen 23/11: a computer that did not update) — what it fetched is in the log; the measurement still runs
+    {
+      const pc = await post('/api/workers/pair');
+      const pr2 = await (await fetch(base + '/api/worker/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: pc.code, name: 'PC-OLD', caps: { rev: '2026-11-23b', types: ['codes.web'], ramMB: 8000 } }) })).json();
+      const WH = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + pr2.token };
+      const hi = await (await fetch(base + '/api/worker/hello', { method: 'POST', headers: WH, body: JSON.stringify({ caps: { rev: '2026-11-23b', types: ['codes.web'], ramMB: 8000 } }) })).json();
+      const up = await fetch(base + '/api/worker/update', { headers: WH });
+      const pack = JSON.parse(require('zlib').gunzipSync(Buffer.from(await up.arrayBuffer())));
+      ok(hi.rev === require(APP + '/lib/workerrev') && up.status === 200 && Object.keys(pack.files).every((n) => !n.startsWith('root/')), 'an old computer is told the new version and gets a pack it can take');
+      const evs = await get('/api/diagnostics?severity=info&code=WORKER_UPDATE_SENT');
+      ok(evs.events.some((e) => /PC-OLD/.test(e.message) && /2026-11-23b/.test(e.message)), 'the log says which computer fetched which version (so a failed update is seen)');
+      // (PC-OLD stays «off»: the measurement is queued and said who does it; cancelled at once — no live search here)
+      const me = await post('/api/system/measure', { n: 5 });
+      ok(me.id && /(ο υπολογιστής|το cloud)/i.test(me.who || ''), 'the measurement starts anyway and says who does it and why (with no current computer on: the cloud, with the reason)', me.who);
+      await post('/api/jobs/cancel', { id: me.id });
+      await post('/api/workers/revoke', { id: pr2.id });
+    }
     const dg = await get('/api/diagnostics?severity=info');
     ok(Array.isArray(dg.events) && dg.summary && typeof dg.summary.by === 'object', 'the log of events is read in one place (Ρυθμίσεις → Σύστημα → Συμβάντα)');
     const upNo = await fetch(base + '/api/worker/update', { headers: { Authorization: 'Bearer sfkw_fake' } });

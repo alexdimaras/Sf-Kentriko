@@ -630,10 +630,13 @@ const routes = {
   // the internet research measured for real on a computer of the shop (its result comes back: Σύστημα, Συμβάντα)
   'POST /api/system/measure': async (b) => {
     if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');
-    const ws = (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('research.measure') && (w.caps.rev || '') >= '2026-11-23c');
-    if (!ws.length) throw new Error('Κανένας υπολογιστής με την τρέχουσα έκδοση δεν είναι ανοιχτός τώρα (ενημερώνεται μόνος του σε λίγα λεπτά μετά από νέα έκδοση).');
+    const all = await coord.workersView();
+    const ws = all.filter((w) => w.online && workerActive(w) && (w.caps.types || []).includes('research.measure') && (w.caps.rev || '') >= '2026-11-23c');
+    // who will do it, said plainly: a computer of the current version, else the cloud (and why not the computer)
+    const why = ws.length ? `Τη μέτρηση κάνει ο υπολογιστής ${ws[0].name}.`
+      : 'Τη μέτρηση κάνει το cloud (πιο αργά): ' + (all.length ? all.map((w) => `${w.name}: ${!w.online ? 'κλειστός' : (w.caps.rev || '') < '2026-11-23c' ? 'παλιά έκδοση ' + (w.caps.rev || '—') + ' (τρέχουσα ' + WORKER_REV + ')' : !workerActive(w) ? (w.mode === 'off' ? 'σταματημένος' : 'δουλεύει μόνο με ανοιχτό πρόγραμμα') : 'δεν μπορεί'}`).join(' · ') : 'κανένας υπολογιστής συνδεδεμένος') + '.';
     const j = await coord.enqueue('research.measure', { n: Math.max(5, Math.min(100, Number(b.n) || 30)) }, { dedupKey: 'research.measure', priority: 25, by: 'person', label: 'Μέτρηση της έρευνας internet (' + (Number(b.n) || 30) + ' προϊόντα)' });
-    return coord.job(j.id);
+    return Object.assign(await coord.job(j.id), { who: why });
   },
   'POST /api/system/repair': (b, _q, ctx) => require('./lib/repair').run(String(b.id || ''), repairDeps(), { force: true, by: ctx.user ? 'διαχειριστή' : '' }),
   // the program's log of what went wrong (lib/events.js) and the «πακέτο διάγνωσης για AI» (lib/diagnostics.js)
@@ -855,6 +858,8 @@ function researchView(loads) {
 }
 let updatePack = null;
 const staleSince = new Map(); // worker id → since when it reports an older revision
+const staleTold = new Map();
+const updateSent = new Map(); // worker id → { at, from } when it fetched the new version
 async function handleWorker(req, res, url, q, key0) {
   if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
   try {
@@ -884,6 +889,9 @@ async function handleWorker(req, res, url, q, key0) {
       updatePack = updatePack || {};
       const k = old ? 'old' : 'new';
       if (!updatePack[k]) updatePack[k] = su.build(__dirname, { forRev: (w.caps && w.caps.rev) || '' });
+      // (said in the log: a computer that fetched the new version and still says the old one later did not apply it)
+      updateSent.set(w.id, { at: Date.now(), from: String((w.caps && w.caps.rev) || '') });
+      events.record({ severity: 'info', service: 'worker', code: 'WORKER_UPDATE_SENT', message: `${w.name}: κατεβάζει την έκδοση ${updatePack[k].rev} (έχει ${(w.caps && w.caps.rev) || '—'})` });
       return send(res, 200, updatePack[k].buf, 'application/gzip', { 'X-Worker-Rev': updatePack[k].rev });
     }
     // the optional search APIs of the research (keys opened only here, for a paired computer; never in a job)
@@ -899,7 +907,10 @@ async function handleWorker(req, res, url, q, key0) {
     if (key0 === 'POST /api/worker/hello') {
       // a computer that stays on an older worker (its update failed by itself): said in the log after 20 minutes
       const rv = String((b.caps && b.caps.rev) || '');
-      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000) events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — η αυτόματη ενημέρωση δεν πέρασε· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
+      const sent = updateSent.get(w.id);
+      if (sent && rv && rv <= sent.from && Date.now() - sent.at > 3 * 60000 && !sent.told) { sent.told = true; events.record({ severity: 'warn', service: 'worker', code: 'WORKER_UPDATE_NOT_APPLIED', message: `${w.name}: κατέβασε την ενημέρωση αλλά τρέχει ακόμα την ${rv} — δεν μπόρεσε να γράψει τα αρχεία ή δεν ξεκίνησε ξανά. Λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά.` }); }
+      if (sent && rv && rv > sent.from) { events.record({ severity: 'info', service: 'worker', code: 'WORKER_UPDATED', message: `${w.name}: ενημερώθηκε ${sent.from} → ${rv}` }); updateSent.delete(w.id); }
+      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000 && !(staleTold.get(w.id) > Date.now() - 3600e3)) staleTold.set(w.id, Date.now()) && events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — η αυτόματη ενημέρωση δεν πέρασε· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
       await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
     // what went wrong on a computer, into the program's log (said with the computer's name; never trusted as more than text)
     if (key0 === 'POST /api/worker/event') {
@@ -996,7 +1007,7 @@ async function systemStatus() {
     const old = on.filter((w) => (w.caps.rev || '') < WORKER_REV);
     const act = on.filter((w) => workerActive(w));
     add('computer', 'Υπολογιστής', !old.length, old.length ? 'updating' : act.length ? 'working' : 'stopped',
-      on.map((w) => `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'}${(w.caps.rev || '') < WORKER_REV ? ' · ενημερώνεται μόνος του' : ''}`).join(' · '));
+      on.map((w) => { const u = updateSent.get(w.id); return `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'} · έκδοση ${w.caps.rev || '—'}${(w.caps.rev || '') < WORKER_REV ? (u && u.told ? ` — ΔΕΝ εφάρμοσε την ενημέρωση ${WORKER_REV}: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` : ` · ενημερώνεται μόνος του σε ${WORKER_REV}`) : ''}`; }).join(' · '));
   }
   const s = settings.all();
   if (!(s.localAI && s.localAI.enabled)) add('ai', 'AI (Ollama)', false, 'disabled', 'Κλειστό (Ρυθμίσεις → AI → «Ενεργό»).');

@@ -349,7 +349,7 @@ function page(o) {
   // the measurement of the research (phase 5): only a computer of the current version, never the cloud; its result kept
   {
     const hm = coord.handler('research.measure');
-    ok(hm && !hm.cloudOk && !hm.canTake({ caps: { rev: '2026-11-23b' } }) && hm.canTake({ caps: { rev: '2026-11-23c' } }), 'the measurement runs only on a computer with the current worker (never in the cloud)');
+    ok(hm && hm.cloudOk && !hm.canTake({ caps: { rev: '2026-11-23b' } }) && hm.canTake({ caps: { rev: '2026-11-23c' } }), 'the measurement: a computer with the current worker, never an old one; with none, the cloud does it (seen 23/11: the computer did not update)');
     hm.apply({ workerName: 'PC-T' }, { summary: 'Μέτρηση έρευνας (30 προϊόντα): βρέθηκε το ίδιο 40%', stats: { products: 30, found: 12, wrongColour: 0, statuses: { complete: 5 }, engines: { ddg: { ok: 50, failed: 1, blocked: 0 } }, rows: [{ name: 'x', status: 'complete', found: ['a.gr'] }] } });
     const ms = store.read('research-measure');
     ok(ms && ms.worker === 'PC-T' && ms.stats.found === 12 && /40%/.test(ms.summary) && require(APP + '/lib/events').query({ severity: 'info', code: 'SEARCH_QUALITY' }).length >= 1, 'its result is kept (Σύστημα) and written in the log (Συμβάντα)');
