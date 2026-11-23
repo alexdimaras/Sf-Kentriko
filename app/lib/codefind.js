@@ -213,11 +213,15 @@ function planOf(it, max) {
   const kindGr = /^[Α-ΩΆ-Ώ]{4,}$/.test(U.greekUpper(title.split(/\s+/)[0] || '')) ? title.split(/\s+/)[0] : (it.cat && /[Ͱ-Ͽ]/.test(it.cat) ? U.collapse(it.cat).split(/\s+/)[0] : '');
   const first = [], alt = [];
   const add = (list, q, why) => list.push({ q, why });
-  if (sku) add(first, `${filed ? brand : ''} ${sku}`.trim(), 'code');
+  // a code that already writes the brand (Mora-14690 of MORAKNIV): searched alone — «MORAKNIV Mora-14690» finds less
+  const skuHasBrand = sku && [brand, ...brandAlts(brand)].some((b) => { const k = U.foldKey(b).replace(/[^A-Z0-9]/g, ''); return k.length >= 3 && U.normSku(sku).startsWith(k); });
+  if (sku) add(first, `${filed && !skuHasBrand ? brand : ''} ${sku}`.trim(), 'code');
   if (ean) add(first, ean, 'ean');
   if (brand && model && colours.length) add(first, `"${brand} ${model}" ${colours.join(' ')}`, 'exact');
   add(first, withBrand, 'title');
-  if (brand && model) add(first, `${brand} ${model}`, 'model');
+  // (a one-letter version word — the C / S of «(C)», «(S)» — is left to the comparison: as a search word it finds nothing)
+  const model2 = keys.filter((k) => k.length > 1).length >= 2 ? keys.filter((k) => k.length > 1).join(' ') : model;
+  if (brand && model) add(first, `${brand} ${model2}`, 'model');
   // the model in quotes, without colour or kind: the exact name of the model (finds the pages of all its shops)
   if (brand && model) add(first, `"${brand} ${model}"`, 'exact-model');
   // the model words without its codes («5.11 ALL HAZARDS AMMO MULE» of «… 56084»): the name the shops give it

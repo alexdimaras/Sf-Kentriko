@@ -110,6 +110,22 @@ function report(site, id) {
   if (!sku) add('SKU / EAN', p.type === 'variable' ? 'warn' : 'crit', 'Χωρίς κωδικό (SKU).', 'Μόνο πραγματικός κωδικός: προμηθευτής ή ο ίδιος σε ≥2 ανεξάρτητα καταστήματα — ποτέ κατασκευασμένος.', 'sku');
   else if (U.junkSku(sku)) add('SKU / EAN', 'crit', `Ο κωδικός «${sku}» είναι κωδικός αντιγράφου (ημερομηνία στο τέλος), όχι πραγματικός.`, 'Κανένα «καθάρισμα» του κωδικού: αντικατάσταση μόνο με κωδικό από προμηθευτή ή ≥2 καταστήματα.', 'sku');
   else if ((D.sku.get(U.normSku(sku)) || 0) > 1) add('SKU / EAN', 'crit', `Ο κωδικός ${sku} υπάρχει σε ${D.sku.get(U.normSku(sku))} προϊόντα.`, 'Ένας κωδικός = ένα προϊόν / παραλλαγή.', 'sku');
+  // codes the internet research saw for this very product: one source = an uncertain finding to check by hand
+  // (it may be the shop's own code, not the maker's); two independent sources go to Διορθώσεις as a proposal
+  if (!sku || U.junkSku(sku)) {
+    const by = new Map();
+    for (const h of cf.hitsFor(key)) {
+      const c = String(h.mpn || h.code || '').trim();
+      if (!c || !/\d/.test(c) || U.junkSku(c) || market.gtinOf(c)) continue;
+      const e = by.get(U.normSku(c)) || { code: c, sites: new Map() };
+      if (!e.sites.has(U.siteOf(h.host))) e.sites.set(U.siteOf(h.host), h.url);
+      by.set(U.normSku(c), e);
+    }
+    for (const e of [...by.values()].sort((a, b) => b.sites.size - a.sites.size).slice(0, 3)) {
+      const src = [...e.sites].map(([site, url]) => site + ' (' + url + ')').join(' · ');
+      add('SKU / EAN', 'warn', e.sites.size >= 2 ? `Ο κωδικός ${e.code} βρέθηκε σε ${e.sites.size} ανεξάρτητα καταστήματα: ${src}.` : `Αβέβαιο εύρημα: ο κωδικός ${e.code} βρέθηκε σε ένα μόνο κατάστημα — ${src}.`, e.sites.size >= 2 ? 'Η πρόταση είναι στις Διορθώσεις για έγκριση.' : 'Χρειάζεται χειροκίνητη επιβεβαίωση (κατασκευαστής / προμηθευτής ή δεύτερο κατάστημα) — δεν προτείνεται αλλαγή.', 'sku');
+    }
+  }
   const ean = String(p.ean || '').replace(/\D/g, '');
   if (ean && !market.gtinOf(ean)) add('SKU / EAN', 'crit', `Το EAN ${p.ean} δεν είναι έγκυρο (ψηφίο ελέγχου).`, 'EAN μόνο με σωστό ψηφίο ελέγχου και για την ίδια παραλλαγή.', 'ean');
   else if (ean && (D.ean.get(ean) || 0) > 1) add('SKU / EAN', 'crit', `Το EAN ${ean} υπάρχει σε ${D.ean.get(ean)} προϊόντα.`, 'Κάθε παραλλαγή έχει δικό της EAN.', 'ean');

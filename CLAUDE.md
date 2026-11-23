@@ -25,13 +25,14 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - **Έρευνα internet** `lib/codefind.js`: 6–8 ερωτήματα (`queriesOf`) σε DDG+Bing+Yahoo → έως 3 σελίδες/κατάστημα (`extract.fromUrl`) → μόνο ίδιο (EAN/κωδικός/`exact`, ίδιο χρώμα & έκδοση) → SKU/EAN/φωτο/μάρκα/τιμή+διαθεσιμότητα (`market.mergeWeb`). Κατάσταση + καταγραφή ανά προϊόν (`web-trace`), επανάληψη ανά πεδίο (`openNeeds`/`dueAt`).
 - **Οικογένειες / παραλλαγές**: `market.compare` → exact | family | similar | none· `lib/families.js` (ξεχωριστά προϊόντα ενός μοντέλου → αρχεία μεταβλητού)· `lib/seoaudit.js` (σελίδα όπως τη βλέπει το Google).
 - **Local AI** `lib/localai.js` + `lib/airesearch.js` (JSON Schema, κρίση αμφίβολων σελίδων): `resolveUrl`, `pickModel`, `test()` (πραγματικό generate), `guardFacts`· στο cloud μέσω `ai.call` στον υπολογιστή με το μοντέλο.
+- **Αναφορά ποιότητας** `lib/quality.js` (Ροή / Internet / SEO χωριστά, μόνο αποθηκευμένα)· **Προφίλ υπολογιστών** `lib/perf.js` (Ήπια/Κανονική/Ενίσχυση).
 - **Διορθώσεις** `lib/fixes.js` (προτάσεις, `confidenceOf`, εξαγωγή CSV)· **Ροή εργασίας** `lib/flow.js` (βήματα 1 Κωδικός → 2 Στοιχεία → 3 Περιεχόμενο → 4 Τιμή).
 - **Έλεγχοι τίτλων/ειδών** `lib/checks.js`, `lib/kinds.js`· χαρακτήρες `lib/util.js` (`repairEntities`, `capsTitle`).
 - UI: `app/public/js/*.js` (`core.js` κοινά, `v-*.js` οθόνες), `app/public/app.css`.
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (89) · rules (90) · jobs (36) · integrity (19) · coord (32) · workers (26) · ai (34) · research (66) · variants (45, πραγματικά δεδομένα στο `test/fixtures`) · db (8, με `COORD_PG`).
+`cd app && npm test` → run (89) · rules (95) · jobs (36) · integrity (19) · coord (40) · workers (26) · ai (40) · research (78) · variants (59, πραγματικά δεδομένα στο `test/fixtures`) · db (8, με `COORD_PG`).
 Μετρήσεις: `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.

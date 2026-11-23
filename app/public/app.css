@@ -925,3 +925,5 @@ ol.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; color:
 .todo-list li { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); overflow-wrap: anywhere; }
 .todo-list li.crit { border-left: 3px solid #c0533a; }
 .todo-list li.warn { border-left: 3px solid #c8902e; }
+/* on a phone a long state word wraps inside its pill instead of running off the screen */
+@media (max-width: 600px) { .pill { white-space: normal; height: auto; min-height: 22px; padding: 3px 8px; max-width: 100%; } }

@@ -172,6 +172,14 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
     const qj = quality.report('sf', 999001);
     ok(qj.areas.some((a) => a.level === 'crit' && /κωδικός αντιγράφου/.test(a.text)) && qj.areas.some((a) => a.level === 'crit' && a.area === 'Φωτογραφίες') && qj.needsResearch, 'a copy\'s code and no photo → «Πρέπει», and the full research is offered (not started)', JSON.stringify(qj.areas.filter((a) => a.level === 'crit').map((a) => a.text)));
     ok(!qj.proposals.some((c) => c.field === 'sku' && /^Mora$/i.test(c.to)), 'no «Mora» made of the copy\'s code');
+    // the real case (amerikaniki-agora.gr, 23/11): one shop shows «Mora-14723» for MORAKNIV RISBERG HUNTING (S)
+    const wc = store.read('web-codes', null) || {};
+    store.write('web-codes', Object.assign({}, wc, { products: Object.assign({}, wc.products, { 'sf:999001': { at: now, status: 'partial', hits: [{ host: 'amerikaniki-agora.gr', url: 'https://amerikaniki-agora.gr/shop/eidi-epiviosis/machairia-epiviosis/morakniv-risberg-hunting-s/', name: 'Morakniv Risberg Hunting (S)', code: 'Mora-14723', sku: 'Mora-14723', at: now }] } }) }));
+    const qm = quality.report('sf', 999001);
+    const un = qm.areas.find((a) => /Mora-14723/.test(a.text));
+    ok(un && un.level === 'warn' && /Αβέβαιο εύρημα/.test(un.text) && /amerikaniki-agora\.gr/.test(un.text) && /χειροκίνητη επιβεβαίωση/.test(un.fix), 'one shop shows Mora-14723 → «αβέβαιο εύρημα» with its URL, to be confirmed by hand', JSON.stringify(un));
+    ok(!qm.proposals.some((c) => c.field === 'sku'), 'one shop only → no proposal to change the code');
+    store.write('web-codes', wc);
     store.write('catalog-sf', { syncedAt: now, source: 'api', products: real, categories: [] });
   }
 
