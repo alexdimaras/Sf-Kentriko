@@ -6,14 +6,27 @@
 // somebody is using a screen the background work steps aside.
 
 let active = 0;       // requests being answered right now
+const started = new Set(); // when each of them started
 let lastRequest = 0;  // when the last one finished
 let slices = 0, waitedMs = 0;
+// a request still open after this long is waiting for something else (the internet, the AI, the database), not using
+// the processor: the background work does not step aside for it (it used to wait 1,5″ per slice behind such a request,
+// e.g. a screen waiting for this very work to end: the work then took 100 times longer)
+const FRESH_MS = 1500;
 
 /** The server tells us about every request (start → the returned function at its end). */
 function request() {
   active++;
+  const t = { at: Date.now() };
+  started.add(t);
   let done = false;
-  return () => { if (done) return; done = true; active = Math.max(0, active - 1); lastRequest = Date.now(); };
+  return () => { if (done) return; done = true; active = Math.max(0, active - 1); started.delete(t); lastRequest = Date.now(); };
+}
+function busyNow() {
+  const now = Date.now();
+  if (now - lastRequest < 120) return true;
+  for (const t of started) if (now - t.at < FRESH_MS) return true;
+  return false;
 }
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -28,7 +41,7 @@ async function breathe(max) {
   await tick();
   const limit = max == null ? 1500 : max;
   let waited = 0;
-  while ((active > 0 || Date.now() - lastRequest < 120) && waited < limit) { await sleep(20); waited += 20; }
+  while (busyNow() && waited < limit) { await sleep(20); waited += 20; }
   waitedMs += waited;
 }
 

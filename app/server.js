@@ -1107,12 +1107,14 @@ async function handleApi(req, res, url) {
   }
   const fn = routes[key0];
   if (!fn) return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
-  const done = bg.request(); // the background work steps aside while somebody waits for an answer
+  let done = () => {};
   const cpu0 = process.cpuUsage();
   const timing = () => { const c = process.cpuUsage(cpu0); return { 'Server-Timing': `cpu;dur=${((c.user + c.system) / 1000).toFixed(1)}` }; };
   try {
     // the data of the screens is loaded once at start, in the background: the first requests wait for it (seconds)
     if (!NO_DATA.test(url.pathname)) await engine.ready();
+    // (counted only now: a request waiting for that work must not slow the very work it waits for)
+    done = bg.request(); // the background work steps aside while somebody waits for an answer
     // before login only small bodies are read
     // bodies: small before login; a few MB for everything else; files (copies, CSV, supplier lists) up to 60 MB
     const limit = SERVER && !ctx.user ? 64 * 1024 : BIG_BODY.has(key0) ? 60 * 1024 * 1024 : 4 * 1024 * 1024;
@@ -1159,7 +1161,7 @@ const server = http.createServer((req, res) => {
     if (origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return send(res, 403, 'Forbidden', 'text/plain');
   }
   const url = new URL(req.url, 'http://127.0.0.1');
-  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, sha: build.sha.slice(0, 12), branch: build.branch, workerRev: WORKER_REV, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), ext: Math.round(process.memoryUsage().external / 1048576), lag: lagMax(), store: (() => { const c = cloudsave.status(); return !c.enabled ? 'disk' : c.where === 'βάση δεδομένων' ? (c.error ? 'db-error' : c.loadedAt ? 'db' : 'db-starting') : 'github'; })() }); }
+  if (url.pathname === '/ping') { const e = engine.status(); return send(res, 200, { app: 'sf-kentro', version: VERSION, sha: build.sha.slice(0, 12), branch: build.branch, workerRev: WORKER_REV, up: Math.round(process.uptime()), starting, ready: e.ready, busy: e.busy, step: e.step || '', buildMs: e.buildMs || 0, bootMs: e.bootMs, mem: Math.round(process.memoryUsage().rss / 1048576), heap: Math.round(process.memoryUsage().heapUsed / 1048576), ext: Math.round(process.memoryUsage().external / 1048576), lag: lagMax(), store: (() => { const c = cloudsave.status(); return !c.enabled ? 'disk' : c.where === 'βάση δεδομένων' ? (c.error ? 'db-error' : c.loadedAt ? 'db' : 'db-starting') : 'github'; })() }); }
   if (url.pathname.startsWith('/r/')) return serveReport(req, res, url);
   if (url.pathname.startsWith('/api/')) { uiSeen = true; return handleApi(req, res, url); }
   if (url.pathname === '/') uiSeen = true;

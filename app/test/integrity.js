@@ -136,6 +136,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   maps.close();
   delete process.env.SFK_ALLOW_PRIVATE;
 
+  // the background work and a request that only waits (for that very work, the internet, the AI): it must not stop
+  // the work (a screen open during the preparation made it 100 times slower: «Ετοιμάζονται τα στοιχεία» for minutes)
+  {
+    const bg = require(APP + '/lib/bg');
+    const waiting = bg.request();
+    await new Promise((r) => setTimeout(r, 1700));
+    function* work() { for (let i = 0; i < 40; i++) { const t = Date.now(); while (Date.now() - t < 13) { /* work */ } yield; } return 'ok'; }
+    const t0 = Date.now();
+    const r = await bg.drain(work());
+    const ms = Date.now() - t0;
+    waiting();
+    ok(r === 'ok' && ms < 5000, `a request that only waits does not hold the background work back (${ms} ms for 40 slices; it used to take ~60 s)`);
+    const fresh = bg.request();
+    const t1 = Date.now(); await bg.breathe(300); const w = Date.now() - t1; fresh();
+    ok(w >= 250, 'a request just arrived: the work still steps aside for it (a person waits for that answer)', w);
+  }
+
   console.log(`\n${passes} ok, ${fails} failed`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   process.exit(fails ? 1 : 0);
