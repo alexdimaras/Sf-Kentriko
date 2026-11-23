@@ -1,0 +1,90 @@
+'use strict';
+// SF Κέντρο — the worker of a computer updates itself from the program in the cloud: no new download, no click.
+//
+//   cloud  — build(): the files the worker runs (worker.js, package.json, lib/*.js, vendor/*), gzipped, with their
+//            revision (lib/workerrev.js) and a SHA-256 of each file; served only to a paired computer (its token).
+//   worker — on its «hello» it learns the cloud's revision; a newer one → apply(): every name checked (only these
+//            folders, never «..»), every file checked against its SHA-256, the new worker.js checked by Node
+//            (`node --check`) BEFORE anything is replaced; then it ends with code 4 and its starter starts it again.
+//   Never older (no downgrade); a revision that failed is not tried again for 6 hours.
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
+const crypto = require('crypto');
+
+const NAME_OK = /^(worker\.js|package\.json|lib\/[\w.-]+\.js|vendor\/[\w.-]+\.js)$/;
+const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+
+/** The files the worker needs, from the app folder → [relative names] (the dictionary and the tests are not). */
+function filesOf(appDir) {
+  const out = ['worker.js', 'package.json'];
+  for (const d of ['lib', 'vendor']) {
+    let list = [];
+    try { list = fs.readdirSync(path.join(appDir, d)); } catch (_) { list = []; }
+    for (const f of list) if (/\.js$/.test(f) && fs.statSync(path.join(appDir, d, f)).isFile()) out.push(d + '/' + f);
+  }
+  return out.filter((n) => NAME_OK.test(n));
+}
+
+/** The pack of the worker's files → Buffer (gzip of JSON { rev, files: { name: { b64, sha } } }). */
+function build(appDir) {
+  const rev = String(require(path.join(appDir, 'lib', 'workerrev.js')));
+  const files = {};
+  for (const n of filesOf(appDir)) { const b = fs.readFileSync(path.join(appDir, n)); files[n] = { b64: b.toString('base64'), sha: sha(b) }; }
+  return { rev, buf: zlib.gzipSync(Buffer.from(JSON.stringify({ rev, files }))) };
+}
+
+/** Should this worker update now? → { ok, why } (pure: the tests check it alone). */
+function shouldUpdate(mine, theirs, tried, now) {
+  const t = String(theirs || ''), m = String(mine || '');
+  if (process.env.SFK_NO_UPDATE === '1') return { ok: false, why: 'ενημέρωση κλειστή (SFK_NO_UPDATE)' };
+  if (!/^\d{4}-\d\d-\d\d[a-z]?$/.test(t)) return { ok: false, why: 'καμία έκδοση από το cloud' };
+  if (t === m) return { ok: false, why: 'ίδια έκδοση' };
+  if (t < m) return { ok: false, why: 'το cloud έχει παλιότερη έκδοση (ποτέ προς τα πίσω)' };
+  const last = tried && tried[t];
+  if (last && (now || Date.now()) - last < 6 * 3600e3) return { ok: false, why: 'απέτυχε πριν από λίγο: ξανά σε 6 ώρες' };
+  return { ok: true, why: `νέα έκδοση ${t} (τρέχει ${m || '—'})` };
+}
+
+/**
+ * Apply a pack to the app folder. → { rev, files } · throws (and changes nothing) when anything is wrong.
+ * opts: { want (the revision expected), nodeExe (to check the new worker.js), check: false (tests without Node) }
+ */
+function apply(buf, appDir, opts) {
+  const o = opts || {};
+  const pack = JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
+  if (!pack || typeof pack.files !== 'object') throw new Error('Άκυρο πακέτο ενημέρωσης.');
+  if (o.want && pack.rev !== o.want) throw new Error(`Το πακέτο είναι η έκδοση ${pack.rev}, όχι η ${o.want}.`);
+  const names = Object.keys(pack.files);
+  if (!names.includes('worker.js') || !names.includes('lib/workerrev.js')) throw new Error('Το πακέτο δεν έχει τον worker.');
+  // 1. every file checked, written beside the app (nothing of the running app is touched yet)
+  const stage = path.join(appDir, '.update-' + process.pid);
+  fs.rmSync(stage, { recursive: true, force: true });
+  try {
+    for (const n of names) {
+      if (!NAME_OK.test(n) || n.includes('..')) throw new Error('Μη επιτρεπτό όνομα αρχείου: ' + n);
+      const b = Buffer.from(String(pack.files[n].b64 || ''), 'base64');
+      if (sha(b) !== pack.files[n].sha) throw new Error('Χαλασμένο αρχείο στο πακέτο: ' + n);
+      fs.mkdirSync(path.join(stage, path.dirname(n)), { recursive: true });
+      fs.writeFileSync(path.join(stage, n), b);
+    }
+    // 2. Node reads the new worker and its modules (a broken file is never put in place)
+    if (o.check !== false) {
+      const { spawnSync } = require('child_process');
+      for (const n of names.filter((x) => /\.js$/.test(x))) {
+        const r = spawnSync(o.nodeExe || process.execPath, ['--check', path.join(stage, n)], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+        if (r.status !== 0) throw new Error('Η νέα έκδοση δεν περνά τον έλεγχο (' + n + '): ' + String(r.stderr || '').split('\n')[0].slice(0, 160));
+      }
+    }
+    // 3. in place, file by file (a .js read by Node is not locked, also on Windows)
+    for (const n of names) {
+      fs.mkdirSync(path.join(appDir, path.dirname(n)), { recursive: true });
+      fs.copyFileSync(path.join(stage, n), path.join(appDir, n));
+    }
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+  return { rev: pack.rev, files: names.length };
+}
+
+module.exports = { build, apply, shouldUpdate, filesOf, NAME_OK };

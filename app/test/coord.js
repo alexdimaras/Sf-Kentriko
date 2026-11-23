@@ -168,6 +168,54 @@ async function makeBackend() {
     ok((await coord.workersView()).find((x) => x.id === wp.id).perf === 'gentle', 'the profile is kept per computer (and given to it with its «hello»)');
   }
 
+  // ---- a computer: starts stopped, keeps no work from the cloud while stopped; installer; its own update ----
+  {
+    const prs = await coord.newPairing('t', 24 * 60);
+    ok(prs.minutes === 24 * 60, 'the code inside an installer file lives 24 hours (a code by hand: 15 minutes)');
+    const ws = await coord.pair(prs.code, 'PC-new', { cpus: 4, ramMB: 8000, types: ['test.light'] });
+    ok((await coord.workersView()).find((x) => x.id === ws.id).mode === 'off', 'a new computer starts STOPPED (uses nothing until switched on)');
+    coord.setActiveCheck((w) => (w.mode || 'off') !== 'off');
+    const others = (await coord.workersView()).filter((x) => x.id !== ws.id);
+    for (const o of others) await coord.setMode(o.id, 'off');
+    const jw = await coord.enqueue('test.light', { n: 7 }, {});
+    const jr = await coord.rawJob(jw.id);
+    ok(await coord.someoneFor(jr) === false, 'only stopped computers → nobody keeps the job: the cloud does it');
+    await coord.setMode(ws.id, 'always');
+    ok(await coord.someoneFor(jr) === true, 'switched on → the job waits for the computer (faster than the cloud)');
+    await coord.cancel(jw.id);
+    coord.setActiveCheck(null);
+
+    const inst = require(APP + '/lib/installer');
+    const txt = inst.cmdText({ server: 'https://sf-kentro.onrender.com', code: 'ABCD-EF23', zip: 'https://github.com/a/b/archive/refs/heads/x.zip', until: '24/11' });
+    ok(/set "CODE=ABCD-EF23"/.test(txt) && /worker\.js" ensure/.test(txt) && /SF-Kentro-Worker\.vbs/.test(txt) && /\r\n/.test(txt) && /STAMATIMENOS/.test(txt), 'installer: address + one-time code, «ensure» (no second pairing), starts with Windows, says it starts stopped');
+    let bad = null; try { inst.cmdText({ server: 'https://x.gr" & del *', code: 'A', zip: 'https://github.com/a' }); } catch (e) { bad = e; }
+    ok(bad, 'installer: a value that could break out of the script is refused');
+    let bad2 = null; try { inst.cmdText({ server: 'https://x.gr', code: 'ABCD', zip: 'https://evil.example/x.zip' }); } catch (e) { bad2 = e; }
+    ok(bad2, 'installer: the program is downloaded only from GitHub');
+
+    const su = require(APP + '/lib/selfupdate');
+    const rev = require(APP + '/lib/workerrev');
+    ok(su.shouldUpdate('2026-11-18c', rev).ok && !su.shouldUpdate(rev, rev).ok && !su.shouldUpdate('2026-12-01a', rev).ok, 'update: newer → yes · same → no · never back to an older one');
+    ok(!su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 3600e3 }).ok && su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 7 * 3600e3 }).ok, 'a revision that failed is tried again after 6 hours, not before');
+    const pk = su.build(APP);
+    ok(pk.rev === rev && pk.buf.length < 2e6, `the pack of the worker: its revision, ${Math.round(pk.buf.length / 1024)} KB (not the 40 MB zip)`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sfk-upd-'));
+    fs.mkdirSync(path.join(dir, 'lib')); fs.writeFileSync(path.join(dir, 'worker.js'), 'old'); fs.writeFileSync(path.join(dir, 'lib', 'workerrev.js'), "module.exports = '2026-11-18c';");
+    const done = su.apply(pk.buf, dir, { want: rev });
+    ok(done.rev === rev && require(path.join(dir, 'lib', 'workerrev.js')) === rev && fs.readFileSync(path.join(dir, 'worker.js'), 'utf8').length > 1000 && !fs.readdirSync(dir).some((n) => n.startsWith('.update-')), 'update applied: every file checked by Node first, then put in place (nothing left behind)');
+    const zlib = require('zlib');
+    const P = JSON.parse(zlib.gunzipSync(pk.buf));
+    const tamper = (fn) => { const q = JSON.parse(JSON.stringify(P)); fn(q); return zlib.gzipSync(Buffer.from(JSON.stringify(q))); };
+    fs.writeFileSync(path.join(dir, 'worker.js'), 'mine');
+    let e1 = null; try { su.apply(tamper((q) => { q.files['worker.js'].b64 = Buffer.from('evil').toString('base64'); }), dir, { want: rev }); } catch (e) { e1 = e; }
+    ok(e1 && /Χαλασμένο/.test(e1.message) && fs.readFileSync(path.join(dir, 'worker.js'), 'utf8') === 'mine', 'a file that does not match its SHA-256 → refused, nothing replaced');
+    let e2 = null; try { su.apply(tamper((q) => { q.files['../evil.js'] = q.files['worker.js']; }), dir, { want: rev }); } catch (e) { e2 = e; }
+    ok(e2 && /Μη επιτρεπτό/.test(e2.message) && !fs.existsSync(path.join(dir, '..', 'evil.js')), 'a name outside the worker\'s folders → refused');
+    let e3 = null; try { const b = Buffer.from('module.exports = ;'); su.apply(tamper((q) => { q.files['lib/perf.js'] = { b64: b.toString('base64'), sha: require('crypto').createHash('sha256').update(b).digest('hex') }; }), dir, { want: rev }); } catch (e) { e3 = e; }
+    ok(e3 && /περνά τον έλεγχο/.test(e3.message) && fs.readFileSync(path.join(dir, 'worker.js'), 'utf8') === 'mine', 'a new file Node cannot read → nothing is replaced (the running worker stays as it is)');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log(`\n${passes} ok, ${fails} failed`);
   if (backend.close) await backend.close();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }

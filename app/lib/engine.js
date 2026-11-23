@@ -14,7 +14,7 @@ const fixes = require('./fixes');
 const flow = require('./flow');
 const U = require('./util');
 
-const FORMAT = 2; // bump when the rules of the checks or the fixes change: saved results are then built again once
+const FORMAT = 3; // bump when saved results must NOT be shown any more (3: no codes made from the product's code)
 const state = { started: false, loaded: false, ready: false, busy: false, step: '', gen: 0, bootMs: 0, buildMs: 0, error: '' };
 let readyResolve, loadedResolve;
 const readyP = new Promise((r) => { readyResolve = r; });
@@ -34,11 +34,20 @@ function step(text) {
 }
 function stepsDone(label) { step(''); if (took.length) console.log(`${label}: ${took.join(' · ')}`); took.length = 0; }
 
+// the code of the rules themselves: a new version of them builds the results again (behind, the old ones shown meanwhile)
+let codeSig = '';
+function codeSignature() {
+  if (codeSig) return codeSig;
+  const h = crypto.createHash('sha1');
+  for (const f of ['checks.js', 'fixes.js', 'flow.js', 'kinds.js', 'market.js', 'codefind.js', 'families.js', 'util.js']) { try { h.update(require('fs').readFileSync(require('path').join(__dirname, f))); } catch (_) { /* packed: the version alone */ } }
+  codeSig = h.digest('hex').slice(0, 12);
+  return codeSig;
+}
 /** What the saved results were calculated from: when this changes they are calculated again. */
 function signature() {
   const meta = store.read('catalog-meta', null) || {};
   const ec = store.read(fixes.CACHE, null) || {};
-  return crypto.createHash('sha1').update(JSON.stringify([FORMAT, (meta.sf || {}).syncedAt || '', (meta.st || {}).syncedAt || '', settings.all(), store.read('links', {}), ec.at || '', (store.read('types', null) || {}).at || '', ((store.read('market-meta', null) || {}).progress || {}).at || ''])).digest('hex');
+  return crypto.createHash('sha1').update(JSON.stringify([FORMAT, codeSignature(), (meta.sf || {}).syncedAt || '', (meta.st || {}).syncedAt || '', settings.all(), store.read('links', {}), ec.at || '', JSON.stringify(store.read('fixes-manual', null) || {}).length, (store.read('types', null) || {}).at || '', ((store.read('market-meta', null) || {}).progress || {}).at || ''])).digest('hex');
 }
 
 // the checks as one long list of rows (written and read in slices) instead of 45 lists inside each other
@@ -109,7 +118,7 @@ function start() {
     stepsDone('Start'); state.busy = false; state.ready = true; if (!state.loaded) { state.loaded = true; loadedResolve(); } state.bootMs = Date.now() - t0; state.gen++;
     readyResolve();
     emit();
-    bg.drain(catalog.warmLateGen()).catch(() => {}).then(() => { if (pending.size) schedule(); });
+    bg.drain(catalog.warmLateGen()).catch(() => {}).then(() => require('./quality').warm()).catch(() => {}).then(() => { if (pending.size) schedule(); });
   });
   return readyP;
 }
@@ -164,6 +173,8 @@ async function build() {
     if (state.ready) stepsDone('Rebuilt'); else step('');
     state.busy = false; state.buildMs = Date.now() - t0; state.gen++;
     emit();
+    // what the opening of a product needs (its family, the duplicates), worked out now — not on the first click
+    require('./quality').warm().catch(() => {});
     if (state.ready) bg.drain(catalog.warmLateGen()).catch(() => {}); // the order of the product list, for the next visit there
   }
 }

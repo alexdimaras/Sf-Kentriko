@@ -344,6 +344,14 @@ function shop() {
     const junkC = { skus: { sf: new Set(), st: new Set() }, vars: { sf: new Map([[60, [
       { id: 61, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 58', sku: '58-1756480828' }, { id: 62, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 56', sku: '56-1758873781' }, { id: 63, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 54', sku: 'K05068-54' }]]]) } };
     ok(fixes.variationCodes(junkC, 'sf', { id: 60 }, 'K05068', []).length === 0, 'the real «58-1756480828» of the site is NOT turned into K05068-58 (no sources)');
+    // «one code for the whole product»: the codes that are not codes go (shown as the product's code) — none is made
+    const uni = fixes.unifyCodes(junkC, 'sf', { id: 60 }, 'K05068', []);
+    ok(uni.length === 3 && uni.every((v) => v.sku === '') && uni.map((v) => v.was).sort().join() === '56-1758873781,58-1756480828,K05068-54', 'BDU ARCTIC: 58-1756480828, 56-1758873781 and K05068-54 (our code + size) → one code for all (none made)', JSON.stringify(uni));
+    ok(fixes.unifyCodes(junkC, 'sf', { id: 60 }, 'K05068', [{ id: 61 }]).length === 2, 'a size with a real code from ≥2 shops is left to that proposal');
+    const ck = require(APP + '/lib/checks');
+    const tctx = { codes: new Set(['K05068']), brands: new Set(['PENTAGON', 'NITECORE']) };
+    ok(ck.codesInTitle('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068', { sku: 'K05001-2.0-MC-1', brand: 'PENTAGON' }, tctx).join() === 'K05068', 'a code inside a title is found (K05068 of the BDU ARCTIC pants)');
+    ok(!ck.codesInTitle('ΦΑΚΟΣ NITECORE MULTI TASK HYBRID MH40PRO', { sku: 'MH40PRO', brand: 'NITECORE' }, tctx).length && !ck.codesInTitle('ΦΥΣΙΓΓΙΑ RIO ROYAL STAR 32GR', { sku: '' }, tctx).length, 'the model name (MH40PRO) and units (32GR) stay in the title');
     ok(fixes.junkSku('K16107-1755357657').base === 'K16107' && fixes.junkSku('Mora-1755379572') && !fixes.junkSku('14002001') && !fixes.junkSku('K05001-2.0-MC-1'), 'a code with the date of a copy at its end is told apart from a real code');
   }
 

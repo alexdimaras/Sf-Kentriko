@@ -20,6 +20,19 @@ const RESEARCH_DAYS = 60;          // (as codefind's STALE_DAYS)
 const days = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 864e5 : Infinity);
 const plain = (html) => U.collapse(U.stripTags(String(html || '')));
 
+/** A value of a proposal as words (a title, «3 φωτογραφίες», «60 → —» for the codes of the sizes…). */
+function show(c, v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'string') return (c.field === 'desc' || c.field === 'short' ? plain(v) : v).slice(0, 300);
+  if (typeof v === 'number') return c.field === 'published' && v < 0 ? 'Πρόχειρο' : String(v);
+  if (Array.isArray(v)) {
+    if (c.field === 'images') return v.length + ' φωτογραφίες';
+    return v.slice(0, 8).map((x) => (x && typeof x === 'object' ? `${x.label || ''} → ${x.sku || '(ο κωδικός του προϊόντος)'}` : String(x))).join(' · ') + (v.length > 8 ? ` · και ${v.length - 8} ακόμα` : '');
+  }
+  if (c.field === 'desc') return 'νέα περιγραφή: ' + plain(v.html || '').slice(0, 160) + '…';
+  if (c.field === 'cats') return v.path || '';
+  return '';
+}
 /** Keep the last SEO check of a product (the report reads it; the check itself runs only when asked). */
 function saveSeo(site, id, r) {
   if (!r || !Array.isArray(r.findings)) return;
@@ -45,8 +58,8 @@ function dupIndex(site) {
   const bump = (m, k) => { if (k) m.set(k, (m.get(k) || 0) + 1); };
   for (const p of list) {
     if (p.status === 'private') continue;
-    const d = plain(p.desc);
-    if (d.length >= 120 && p.type !== 'variation') bump(desc, U.foldKey(d).slice(0, 400));
+    // (the length and the start of the text are kept beside the compressed text: no text is opened for this)
+    if ((p.descLen || 0) >= 120 && p.type !== 'variation') bump(desc, p.descLen + '|' + U.foldKey(p.descHead || ''));
     bump(sku, U.normSku(p.sku || ''));
     bump(ean, String(p.ean || '').replace(/\D/g, ''));
   }
@@ -71,8 +84,8 @@ function report(site, id) {
   const add = (area, level, text, fix, field) => areas.push({ area, level, text, fix: fix || '', field: field || '', fixes: [] });
 
   // ---- the proposals already waiting (they are where every fix goes) ----
-  let pending = [];
-  try { pending = require('./fixes').compute().items.filter((c) => c.site === site && c.pid === p.id && c.status === 'pending'); } catch (_) { pending = []; }
+  let pending = [], approved = [];
+  try { const mine = require('./fixes').compute().items.filter((c) => c.site === site && c.pid === p.id); pending = mine.filter((c) => c.status === 'pending'); approved = mine.filter((c) => c.status === 'approved'); } catch (_) { pending = []; }
 
   // ---- title ----
   const name = U.collapse(p.name || '');
@@ -96,7 +109,8 @@ function report(site, id) {
   else if (desc.length < 300) add('Περιγραφή', 'warn', `Μικρή περιγραφή (${desc.length} χαρακτήρες).`, 'Χρήσιμο κείμενο για τον πελάτη: χρήση, υλικά, μεγέθη — μόνο με πηγή.', 'desc');
   if (desc && (desc.match(/[Α-Ωα-ωάέήίόύώ]/g) || []).length < desc.length * 0.25) add('Περιγραφή', 'warn', 'Η περιγραφή είναι κυρίως σε άλλη γλώσσα.', 'Ελληνική περιγραφή (μετάφραση με το AI, έλεγχος από εσένα).', 'desc');
   const D = dupIndex(site);
-  if (desc.length >= 120 && (D.desc.get(U.foldKey(desc).slice(0, 400)) || 0) > 1) add('Περιγραφή', 'warn', `Η ίδια περιγραφή υπάρχει σε ${D.desc.get(U.foldKey(desc).slice(0, 400))} προϊόντα.`, 'Μοναδικό κείμενο ανά προϊόν (το Google δεν αγαπά τα αντίγραφα).', 'desc');
+  const dk = (p.descLen || 0) + '|' + U.foldKey(p.descHead || '');
+  if ((p.descLen || 0) >= 120 && (D.desc.get(dk) || 0) > 1) add('Περιγραφή', 'warn', `Η ίδια περιγραφή υπάρχει σε ${D.desc.get(dk)} προϊόντα.`, 'Μοναδικό κείμενο ανά προϊόν (το Google δεν αγαπά τα αντίγραφα).', 'desc');
   if (!short) add('Σύντομη περιγραφή', 'warn', 'Δεν έχει σύντομη περιγραφή.', 'Σύνοψη 2–3 γραμμών: τι είναι, κύρια οφέλη.', 'short');
 
   // ---- brand / category / attributes ----
@@ -200,13 +214,21 @@ function report(site, id) {
   const counts = { crit: 0, warn: 0, info: 0, ok: 0 };
   for (const a of areas) counts[a.level]++;
   return {
-    at: U.nowIso(), site, id: p.id, name: p.name,
+    at: U.nowIso(), site, id: p.id, name: p.name, sku: p.sku || '',
+    current: { name: p.name, short: String(p.short || '').slice(0, 4000) },
+    // approved changes waiting for the file of the site (Διορθώσεις → «Αρχείο»)
+    approved: approved.map((c) => ({ id: c.id, label: c.label, to: show(c, c.edited !== undefined ? c.edited : c.to), manual: !!c.manual })),
     statuses: { flow, research, seo: { state: seoState, at: seo ? seo.at : null, counts: seo ? seo.counts : null } },
     areas, counts,
     // the full research is proposed (never started) when it is old / never done, or something important is missing
     needsResearch: rStale || (critMissing && !['complete', 'running', 'queued'].includes(rs)),
-    proposals: pending.map((c) => ({ id: c.id, field: c.field, label: c.label, level: c.level, confidence: c.confidence || 0, from: typeof c.from === 'string' ? c.from.slice(0, 200) : '', to: typeof c.to === 'string' ? c.to.slice(0, 200) : '', why: String(c.why || '').slice(0, 300), source: c.source ? { kind: c.source.kind || '', label: String(c.source.label || '').slice(0, 120), url: c.source.url || '' } : null })),
+    // no real code, and the research never done / due again: it is queued by itself on opening (the normal plan)
+    autoResearch: (!sku || !!U.junkSku(sku)) && ['never', 'due', 'stale'].includes(rs),
+    proposals: pending.map((c) => ({ id: c.id, field: c.field, label: c.label, level: c.level, confidence: c.confidence || 0, from: show(c, c.from), to: show(c, c.to), manual: !!c.manual, editable: ['name', 'short', 'desc'].includes(c.field), html: c.field === 'desc' && c.to && c.to.html ? String(c.to.html).slice(0, 20000) : c.field === 'short' && typeof c.to === 'string' ? c.to.slice(0, 4000) : '', why: String(c.why || '').slice(0, 300), source: c.source ? { kind: c.source.kind || '', label: String(c.source.label || '').slice(0, 120), url: c.source.url || '' } : null })),
   };
 }
 
-module.exports = { report, saveSeo, seoOf, SEO_KEY };
+/** Ahead of the first opening of a product (after each build of the program's results). */
+async function warm() { const catalog = require('./catalog'); for (const s of catalog.SITES) dupIndex(s); await require('./families').warm(); try { require('./checks').catalogCodes(); } catch (_) { /* later */ } }
+
+module.exports = { report, warm, saveSeo, seoOf, SEO_KEY };

@@ -20,12 +20,14 @@ const STAGES = [
 
 // check id (without the site prefix) → step
 const STAGE_OF_CHECK = {
-  nobrand: 2, nocat: 2, broken: 2, mixed: 2, typos: 2, suspect: 2, typefirst: 2, caps: 2, accents: 2, spaces: 2, 'ads-banned': 2, 'ads-google': 2,
+  nobrand: 2, nocat: 2, broken: 2, mixed: 2, typos: 2, suspect: 2, typefirst: 2, codetitle: 2, caps: 2, accents: 2, spaces: 2, 'ads-banned': 2, 'ads-google': 2,
   nodesc: 3, noimg: 3,
   'x-price': 4, 'x-price-zero': 4,
 };
-const FIELD_OF = { broken: 'name', mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
+const FIELD_OF = { codetitle: 'name', broken: 'name', mixed: 'name', typos: 'name', suspect: 'name', typefirst: 'name', caps: 'name', accents: 'name', spaces: 'name', nodesc: 'desc', noimg: 'images', nobrand: 'brand', nocat: 'cats', 'x-price': 'price', 'ads-banned': 'published', 'ads-google': 'gla' };
 
+// the step of a ready change by what it changes
+const STAGE_OF_FIELD = { sku: 1, varsku: 1, gtin: 1, name: 2, brand: 2, cats: 2, published: 2, gla: 2, desc: 3, short: 3, images: 3, price: 4 };
 const MIRRORED = new Set(['name', 'desc', 'short', 'images', 'brand', 'gtin', 'sku']);
 const skuKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, '');
 const bg = require('./bg');
@@ -174,6 +176,17 @@ function compute() {
   if (dyn && dyn.S === S && dyn.fm === fm) return dyn.out;
   const fxBy = new Map();
   for (const x of fm.items) if (x.status !== 'rejected') fxBy.set(x.id, x);
+  // a ready change that no check named (codes of the sizes, a code in the title, a photo, an EAN…) is work of that
+  // product too: it is never «Έτοιμο» while a change waits for a yes (the Flow, Διορθώσεις and the product say the same)
+  const linkedSet = S.linkedSet || (S.linkedSet = new Set(S.linked));
+  for (const r of S.linked) if (r.problems.some((x) => x.extra)) r.problems = r.problems.filter((x) => !x.extra);
+  for (const x of fm.items) {
+    if (x.status === 'rejected' || !STAGE_OF_FIELD[x.field]) continue;
+    const r = S.rows.get(`${x.site}:${x.pid}`);
+    if (!r || r.problems.some((y) => y.field === x.field)) continue;
+    r.problems.push({ stage: STAGE_OF_FIELD[x.field], kind: 'fix-' + x.field, text: (x.label || x.field) + ': έτοιμη αλλαγή', field: x.field, state: 'approve', state0: 'manual', fixId: x.id, extra: true });
+    if (!linkedSet.has(r)) { linkedSet.add(r); S.linked.push(r); }
+  }
   for (const r of S.linked) restage(r, fxBy);
   const stages = STAGES.map((s) => ({ n: s.n, id: s.id, title: s.title, help: s.help, count: { sf: 0, st: 0 }, approve: 0, manual: 0, done: 0 }));
   for (const r of S.rows.values()) {

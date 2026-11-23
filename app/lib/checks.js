@@ -177,8 +177,9 @@ function* runGen() {
     add({ id: site + '-nobrand', site, severity: 'low', title: 'Χωρίς μάρκα', help: 'Η μάρκα βοηθάει στα φίλτρα, στο Google και στη σύνδεση με αντιπρόσωπο.', items: main.filter((p) => !p.brand).map((p) => item(p)) });
 
     // Titles
-    const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [], broken = [];
+    const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [], broken = [], codeTitle = [];
     const suggestType = typeSuggester(site);
+    const codeCtx = { codes: catalogCodes(), brands: new Set([...catalog.knownBrands().keys()].map((k) => k.replace(/[^A-Z0-9]/g, ''))) };
     yield;
     for (const p of main) {
       yield;
@@ -196,6 +197,8 @@ function* runGen() {
       else if (!fm.changed && /[ΆΈΉΊΌΎΏ]/.test(name)) accents.push(item(p, { fix: U.capsTitle(name) }));
       if (/\s{2,}/.test(name) || name !== name.trim() || /​/.test(name)) spaces.push(item(p, { fix: U.collapse(name.replace(/​/g, '')) }));
       if (name.length > s.longTitle) long.push(item(p, { why: name.length + ' χαρακτήρες' }));
+      const inTitle = codesInTitle(name, p, codeCtx);
+      if (inTitle.length) codeTitle.push(item(p, { why: 'κωδικός: ' + inTitle.join(', '), fix: U.collapse(name.split(/\s+/).filter((w) => !inTitle.includes(w)).join(' ')) }));
       // spelling
       const base = U.capsTitle(fm.changed ? fm.text : name);
       const fixes = [];
@@ -221,6 +224,7 @@ function* runGen() {
     add({ id: site + '-typos', site, severity: 'medium', title: 'Πιθανά ορθογραφικά λάθη στον τίτλο', help: 'Λέξεις που δεν υπάρχουν αλλού στον κατάλογο και μοιάζουν με γνωστή λέξη (π.χ. ΠΙΙΣΤΟΛΙ → ΠΙΣΤΟΛΙ). Έλεγξε πριν το ανεβάσεις.', items: typos, fix: nameFix });
     add({ id: site + '-suspect', site, severity: 'medium', title: 'Ελληνικές λέξεις γραμμένες με λατινικά', help: 'Π.χ. «KONTAKIA» αντί «ΚΟΝΤΑΚΙΑ». Εμφανίζονται μόνο λέξεις που υπάρχουν στα ελληνικά κείμενα του καταστήματος.', items: suspect, fix: nameFix });
     add({ id: site + '-typefirst', site, severity: 'medium', title: 'Ο τίτλος δεν ξεκινά με το είδος', help: 'Το πρότυπο είναι ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ. Ο πελάτης ψάχνει «σακίδιο», όχι μόνο τη μάρκα. Η πρόταση βγαίνει από παρόμοια προϊόντα — έλεγξέ την.', items: typeFirst, fix: nameFix });
+    add({ id: site + '-codetitle', site, severity: 'medium', title: 'Κωδικός μέσα στον τίτλο', help: 'Ο κωδικός (SKU / κωδικός κατασκευαστή) μένει στο πεδίο κωδικού: ο τίτλος είναι ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ [ΧΡΩΜΑ]. Όταν ο κωδικός είναι το ίδιο το όνομα του μοντέλου (π.χ. MH40PRO) μένει.', items: codeTitle, fix: nameFix });
     add({ id: site + '-caps', site, severity: 'low', title: 'Τίτλοι με μικρά γράμματα', help: 'Το πρότυπο είναι όλα κεφαλαία χωρίς τόνους. Κωδικοί και μονάδες με αριθμούς (9x19, 400g) μένουν όπως είναι.', items: caps, fix: nameFix });
     add({ id: site + '-accents', site, severity: 'low', title: 'Κεφαλαία με τόνους', help: 'Στα κεφαλαία δεν μπαίνουν τόνοι.', items: accents, fix: nameFix });
     add({ id: site + '-spaces', site, severity: 'low', title: 'Διπλά ή κρυφά κενά στον τίτλο', help: '', items: spaces, fix: nameFix });
@@ -293,7 +297,46 @@ function titleContext(site) {
   const { freq, latin } = wordStats();
   const latinCommon = new Set([...latin].filter(([, n]) => n >= 3).map(([w]) => w));
   for (const b of brands) latinCommon.add(b);
-  return { latinCommon, dict: spell.dict(), freq, suggestType: typeSuggester(site), memo: new Map() };
+  return { latinCommon, dict: spell.dict(), freq, suggestType: typeSuggester(site), memo: new Map(), codes: catalogCodes(), brands };
+}
+// the codes of the catalog (products and variations of both sites, and their bases: K05068 of «K05068-54»): a word of a
+// title that is one of them is a code, not a word of the title
+let codesMemo = null;
+function catalogCodes() {
+  const lists = catalog.SITES.map((s) => catalog.load(s).products);
+  if (codesMemo && codesMemo.lists.every((l, i) => l === lists[i])) return codesMemo.set;
+  const set = new Set();
+  for (const l of lists) for (const p of l) {
+    const k = U.normSku(p.sku || '');
+    if (k.length >= 4 && /\d/.test(k)) set.add(k);
+    const base = U.normSku(String(p.sku || '').split(/[-_/ ]/)[0]);
+    if (base.length >= 5 && /[A-Z]/.test(base) && /\d{3}/.test(base)) set.add(base);
+  }
+  codesMemo = { lists, set };
+  return set;
+}
+/** The words of a title that are codes (its own SKU, the base of it, a code of the catalog) — not the model's only name. */
+function codesInTitle(name, p, ctx) {
+  const own = U.normSku(p.sku || ''), ownBase = U.normSku(String(p.sku || '').split(/[-_/ ]/)[0]);
+  const words = String(name || '').split(/\s+/);
+  // a quantity or unit (32GR, 9X19, 1200, 550ML) is not a code; a long bare number of the catalog is
+  const isUnit = (w) => /^\d+([.,]\d+)?(MM|CM|M|ML|L|LT|GR|G|KG|W|V|MAH|LM|LUMENS|ΤΜΧ|ΓΡ)$/i.test(w) || /^\d+X\d+$/i.test(w) || /^\d{1,4}$/.test(w);
+  // the product's own code written as a model name (MH40PRO, SR51): letters and digits only, short — it is the model
+  const modelLike = (w) => /^[A-Z0-9]{3,10}$/.test(w) && /[A-Z]/.test(w) && /\d/.test(w) && !/^[A-Z]\d{5,}$/.test(w); // (K13075, D19041: a maker's item number, not a model name)
+  const out = [];
+  for (const w0 of words) {
+    const w = w0.replace(/^[([]+|[)\],.;:]+$/g, '');
+    const k = U.normSku(w);
+    if (k.length < 4 || !/\d/.test(k) || isUnit(w)) continue;
+    if (own && k === own && modelLike(w.toUpperCase())) continue;
+    const hit = (own && k === own) || (ownBase.length >= 5 && k === ownBase && !modelLike(w.toUpperCase())) || (ctx && ctx.codes && ctx.codes.has(k) && k !== own);
+    if (hit) out.push(w0);
+  }
+  if (!out.length) return [];
+  // what stays must still name the model: a Latin word that is not the brand, beside the codes taken out
+  const brand = U.foldKey(p.brand || '').replace(/[^A-Z0-9]/g, '');
+  const rest = words.filter((w) => !out.includes(w) && /[A-Z]{2}/.test(U.foldKey(w)) && !/[Ͱ-Ͽ]/.test(w) && U.foldKey(w).replace(/[^A-Z0-9]/g, '') !== brand && !(ctx && ctx.brands && ctx.brands.has(U.foldKey(w).replace(/[^A-Z0-9]/g, ''))));
+  return rest.length ? out : [];
 }
 /**
  * Every title rule of the checks, one after the other, on one title → { fix, steps:[{ kind, why, level }] }.
@@ -308,6 +351,13 @@ function titleFix(p, ctx) {
   const sp = U.collapse(t.replace(/\u200b/g, ''));
   if (sp !== t) steps.push({ kind: 'spaces', why: 'Διπλά ή κρυφά κενά', level: 'high' });
   t = sp;
+  // no code in a title (rule of the shop): K05068 of «ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068» goes; the model's only
+  // name stays (MH40PRO of «ΦΑΚΟΣ NITECORE MH40PRO» is the model, even if it is also the code)
+  const codes = codesInTitle(t, p, ctx);
+  if (codes.length) {
+    t = U.collapse(t.split(/\s+/).filter((w) => !codes.includes(w)).join(' ').replace(/\(\s*\)|\[\s*\]/g, ''));
+    steps.push({ kind: 'code', why: `Κωδικός μέσα στον τίτλο (${codes.join(', ')}): ο κωδικός μένει στο πεδίο κωδικού, όχι στον τίτλο`, level: codes.every((w) => [U.normSku(p.sku || ''), U.normSku(String(p.sku || '').split(/[-_/ ]/)[0])].includes(U.normSku(w))) ? 'high' : 'medium' });
+  }
   const fm = U.fixMixedScript(t, ctx.latinCommon, ctx.dict, ctx.freq);
   if (fm.changed) { t = fm.text; steps.push({ kind: 'mixed', why: 'Ελληνικά και λατινικά γράμματα μαζί (ο πελάτης δεν το βρίσκει στην αναζήτηση)', level: 'high' }); }
   for (const x of fm.suspects) { t = t.split(x.word).join(x.fix); steps.push({ kind: 'suspect', why: `«${x.word}» → «${x.fix}» (ελληνική λέξη με λατινικά)`, level: 'medium' }); }
@@ -441,4 +491,4 @@ function ignoredItems(checkId) {
   return keys.map((k) => { const [site, id] = k.split(':'); const p = catalog.load(site).products.find((x) => x.id === Number(id)); return p ? { site, id: p.id, name: p.name, sku: p.sku } : { site, id: Number(id), name: '(δεν υπάρχει πια)' }; });
 }
 
-module.exports = { warmWords, setWords, wordsForSave, run, raw, rebuild, setRaw, setLazy, isDirty, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };
+module.exports = { codesInTitle, catalogCodes, warmWords, setWords, wordsForSave, run, raw, rebuild, setRaw, setLazy, isDirty, cached, invalidate, fixFile, get, setIgnored, ignoredItems, wordStats, titleContext, titleFix, typeSuggester, ignored };

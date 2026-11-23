@@ -45,6 +45,9 @@ const log = (...a) => {
 };
 
 function readConf() { try { const c = JSON.parse(fs.readFileSync(CONF, 'utf8')); if (c && c.ollamaUrl && !process.env.SFK_WORKER_OLLAMA_URL) process.env.SFK_WORKER_OLLAMA_URL = c.ollamaUrl; return c; } catch (_) { return null; } }
+// the revisions whose update failed (not tried again for 6 hours)
+function readTried() { try { return JSON.parse(fs.readFileSync(path.join(HOME, 'update-tried.json'), 'utf8')) || {}; } catch (_) { return {}; } }
+function writeTried(t) { try { fs.mkdirSync(HOME, { recursive: true }); fs.writeFileSync(path.join(HOME, 'update-tried.json'), JSON.stringify(t)); } catch (_) { /* ignore */ } }
 function writeConf(c) { fs.mkdirSync(HOME, { recursive: true }); const tmp = CONF + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(c, null, 2)); fs.renameSync(tmp, CONF); }
 
 /** What this computer can do (the cloud gives it work that fits). */
@@ -350,6 +353,22 @@ async function supervise() {
       // (the lane of the AI questions goes on: a person is waiting for that answer, and it takes seconds)
       if (c.battery !== paused) { paused = c.battery; applyPerf(); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
       const h = await api.call('POST', '/api/worker/hello', { caps: c });
+      // a newer worker in the cloud: it updates itself (its own files only, checked) and starts again
+      if (h && h.rev) {
+        const su = require('./lib/selfupdate');
+        const tried = readTried();
+        const d = su.shouldUpdate(require('./lib/workerrev'), h.rev, tried);
+        if (d.ok) {
+          log('ενημέρωση: ' + d.why);
+          try {
+            const r = await api.call('GET', '/api/worker/update', null, true);
+            const done = su.apply(r.buf, __dirname, { want: h.rev });
+            log(`ενημερώθηκε στην έκδοση ${done.rev} (${done.files} αρχεία): ξεκινά ξανά`);
+            stopping = true; for (const x of runners.values()) x.p.kill();
+            process.exit(4); // the starter (SF-Kentro-Worker.vbs) starts it again, now with the new files
+          } catch (e) { tried[h.rev] = Date.now(); writeTried(tried); log('η ενημέρωση δεν έγινε: ' + e.message + ' (συνεχίζει με την τωρινή)'); }
+        }
+      }
       // the profile chosen for this computer + what it measures now → how many jobs, pages, how polite
       if (h && h.perf) perfName = h.perf;
       const ramUsed = Math.round(100 * (1 - os.freemem() / os.totalmem()));
@@ -391,6 +410,19 @@ async function pair(server, code) {
   if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
   writeConf({ server: url, id: j.id, name: j.name, token: secrets.protect(j.token), pairedAt: new Date().toISOString() });
   console.log(`Έτοιμο: ο υπολογιστής «${j.name}» δουλεύει πλέον για το SF Κέντρο (${url}).`);
+}
+
+/**
+ * «node worker.js ensure <address> <code>» (the installer): already paired with this program and still known there →
+ * nothing to do (the code stays unused); else a new pairing with the code.
+ */
+async function ensure(server, code) {
+  const url = String(server || '').replace(/\/+$/, '');
+  const c = readConf();
+  if (c && c.token && c.server === url) {
+    try { await client(c).call('POST', '/api/worker/hello', { caps: caps() }); console.log(`Ήδη συνδεδεμένος ως «${c.name}» με ${url}.`); return; } catch (e) { if (!e.fatal) { console.log('Το cloud δεν απαντά τώρα· η σύνδεση μένει ως έχει.'); return; } }
+  }
+  await pair(url, code);
 }
 
 /** «node worker.js ai-test»: the whole path of the AI on THIS computer, step by step, with a real answer. */
@@ -443,6 +475,8 @@ else if (cmd === 'ollama') {
   console.log('Ollama: ' + (u || 'η συνηθισμένη διεύθυνση (127.0.0.1:11434)') + '. Ξεκίνα ξανά τον worker.');
 }
 else if (cmd === 'pair') pair(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'ensure') ensure(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'rev') console.log(require('./lib/workerrev'));
 else if (cmd === 'status') { const c = readConf(); console.log(c ? `Σύζευξη: ${c.name} → ${c.server} (από ${c.pairedAt})` : 'Δεν έχει γίνει σύζευξη.'); if (a1 === '--all') console.log(JSON.stringify(caps(), null, 2)); else { const c2 = caps(); console.log(`${c2.cpus} πυρήνες · ${Math.round(c2.ramMB / 1024)} GB · έκδοση ${c2.version}`); } }
 else if (process.env.SFK_RUNNER) runnerLoop().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });
 else supervise().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });

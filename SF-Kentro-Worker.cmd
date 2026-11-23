@@ -59,7 +59,7 @@ rem the hidden starter: runs the worker without a window, again after a crash (n
 >> "%STARTUP%" echo Do
 >> "%STARTUP%" echo   rc = sh.Run("""%NODE%"" ""%~dp0app\worker.js""", 0, True)
 >> "%STARTUP%" echo   If rc = 2 Or rc = 3 Then Exit Do
->> "%STARTUP%" echo   WScript.Sleep 60000
+>> "%STARTUP%" echo   If rc = 4 Then WScript.Sleep 3000 Else WScript.Sleep 60000
 >> "%STARTUP%" echo Loop
 start "" wscript.exe "%STARTUP%"
 echo.

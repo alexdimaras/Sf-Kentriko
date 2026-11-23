@@ -234,6 +234,24 @@ function variantWant(label) {
   return { size, colours: require('./market').coloursOf(colourText) };
 }
 /**
+ * «One code for the whole product» (the shop's rule when no other shop shows a real code for a size / colour): the
+ * sizes / colours whose code is not a code — the date of a copy (60-1755476639), the same code twice, or our own code
+ * with the size at its end (K05068-54) — lose it, and show the product's code. Never a new code. Those with a real
+ * code from other shops (`ev`) are left to that proposal. → [{ id, label, sku: '', was, srcs: [] }]
+ */
+function unifyCodes(C, site, p, code, ev) {
+  const all = variationsOf(C, site).get(p.id) || [];
+  const count = new Map();
+  for (const v of all) if (v.sku) count.set(U.normSku(v.sku), (count.get(U.normSku(v.sku)) || 0) + 1);
+  const own = U.normSku(code || '');
+  const done = new Set((ev || []).map((v) => v.id));
+  return all.filter((v) => {
+    const k = U.normSku(v.sku || '');
+    if (!k || done.has(v.id)) return false;
+    return !!junkSku(v.sku) || count.get(k) > 1 || (own.length >= 4 && k !== own && k.startsWith(own)) || (own.length >= 4 && k === own);
+  }).map((v) => ({ id: v.id, label: v.varLabel || '', sku: '', was: String(v.sku || ''), srcs: [] }));
+}
+/**
  * The codes of a product's sizes / colours that have none (or a «code» that is the date of a copy, or the same code
  * twice) — ONLY from other shops that show the same product with that very size / colour and its code: the same code
  * at two independent sites at least. Never made from our own code (no K07014-XL, no P-B-10-M): a code nobody shows is
@@ -358,7 +376,7 @@ function categoryGuesser(site, isDefault) {
 // It knows nothing about decisions (yes / no): those, and the "ignore" marks, are laid over it by compute(). So a
 // yes never recalculates anything here — on a small cloud machine that used to take half a minute per approval.
 const bg = require('./bg');
-const TITLE_CHECKS = ['broken', 'mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces'];
+const TITLE_CHECKS = ['broken', 'mixed', 'typos', 'suspect', 'typefirst', 'caps', 'accents', 'spaces', 'codetitle'];
 const MIRROR = ['name', 'desc', 'short', 'images', 'brand', 'gtin', 'sku'];
 const QK = ['desc', 'images', 'brand', 'short', 'title', 'sku'];
 const QW = [30, 25, 10, 10, 15, 10];
@@ -392,7 +410,7 @@ function buildCtx() {
   const checks = require('./checks');
   const wx = require('./wooexport');
   const L = catalog.links();
-  const C = { s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
+  const C = { manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
   for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) C.skus[st].add(U.normSku(x.sku));
   for (const site of catalog.SITES) {
     const cat = catalog.load(site);
@@ -408,7 +426,39 @@ function buildCtx() {
 }
 
 /** Every proposal for one product (no status yet). */
+// a person's own change written on the product's page (title, short text, description): it IS the approval;
+// it waits in Διορθώσεις with the rest until the file for the site is made. { 'site:id': { name|short|desc: { to, at, by } } }
+const MANUAL = 'fixes-manual';
+const MANUAL_FIELDS = ['name', 'short', 'desc'];
 function proposalsFor(site, p, C) {
+  const list = proposalsFor0(site, p, C);
+  const man = (C.manual || {})[site + ':' + p.id];
+  if (!man) return list;
+  const out = list.filter((c) => !(man[c.field] && MANUAL_FIELDS.includes(c.field)));
+  for (const f of MANUAL_FIELDS) {
+    const m = man[f];
+    if (!m) continue;
+    const cur = f === 'name' ? p.name : f === 'short' ? p.short : p.desc;
+    const val = f === 'desc' ? (m.to && m.to.html) || '' : m.to;
+    if (U.collapse(stripText(String(cur || ''))) === U.collapse(stripText(String(val || '')))) continue; // the site has it already
+    out.push(finish({ site, pid: p.id, name: p.name, img: p.thumb || (p.images || [])[0] || '', url: p.url, sku: p.sku, type: p.type, field: f, from: f === 'desc' ? '' : String(cur || ''), to: m.to, manual: true,
+      why: 'Η αλλαγή γράφτηκε από ' + (m.by || 'εσένα') + ' στη σελίδα του προϊόντος.', source: { kind: 'manual', label: 'Από ' + (m.by || 'εσένα') }, level: 'high' }));
+  }
+  return out;
+}
+/** Write a person's own change (it counts as approved) → the proposal as the screens show it. */
+function setManual(site, pid, field, value, by) {
+  if (!MANUAL_FIELDS.includes(field)) throw new Error('Αυτό το πεδίο δεν αλλάζει από εδώ.');
+  const c0 = { field, to: field === 'desc' ? { html: '', meta: '' } : '' };
+  const to = editedValue(c0, value);
+  const key = site + ':' + Number(pid);
+  store.update(MANUAL, {}, (d) => { d[key] = Object.assign({}, d[key], { [field]: { to, at: U.nowIso(), by: by || '' } }); return d; });
+  const id = `${key}:${field}`;
+  store.update(KEY, {}, (d) => { d[id] = { status: 'approved', hash: hashOf(to), at: U.nowIso(), by: by || '' }; return d; });
+  refreshProduct(site, Number(pid));
+  return { id, to };
+}
+function proposalsFor0(site, p, C) {
   const catalog = require('./catalog');
   const checks = require('./checks');
   const S = C.sites[site];
@@ -572,7 +622,8 @@ function proposalsFor(site, p, C) {
         const cb = mk.codeBase(top.code);
         const clash = cb && U.collapse(p.name).split(' ').map((x) => mk.codeBase(x)).find((x) => x && x.shape === cb.shape && x.base !== cb.base && !(x.run && cb.run && x.run === cb.run));
         if (clash) sure = false;
-        const vars = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
+        const ev = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
+        const vars = p.type === 'variable' ? ev.concat(unifyCodes(C, site, p, top.code, ev)) : [];
         add(Object.assign({}, base, { field: 'sku', from: junk ? p.sku : '', to: top.code, vars, why: (junk ? `Ο κωδικός «${p.sku}» δεν είναι κωδικός (έχει στο τέλος την ώρα αντιγραφής του προϊόντος). ` : 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.') + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Αβέβαιο εύρημα — μία μόνο πηγή (ίσως κωδικός του καταστήματος, όχι του κατασκευαστή): χρειάζεται χειροκίνητη επιβεβαίωση.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
       }
     } else if (p.type === 'variable') {
@@ -580,7 +631,12 @@ function proposalsFor(site, p, C) {
       const vars = variationCodes(C, site, p, String(p.sku).trim());
       // only codes other shops show for that very size / colour (two sites at least): never made from ours
       const hostsOf = (v) => v.srcs.map((x) => x.host);
-      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: vars.filter((v) => v.was).map((v) => ({ label: v.label, sku: v.was })), to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα' : vars.length + ' μεγέθη/χρώματα'} χωρίς σωστό κωδικό: τον ίδιο κωδικό για ακριβώς αυτό το μέγεθος/χρώμα δείχνουν ${[...new Set(vars.flatMap(hostsOf))].length} ανεξάρτητα καταστήματα (${[...new Set(vars.flatMap(hostsOf))].slice(0, 3).join(', ')}).` + (vars.some((v) => v.was) ? ` (Οι τωρινοί «${vars.find((v) => v.was).was}…» είναι αυτόματοι αριθμοί ή διπλοί.)` : ''), source: { kind: 'web', label: vars[0].srcs[0].host + ' (ίδιο μέγεθος/χρώμα)', url: vars[0].srcs[0].url }, sources: vars[0].srcs.slice(1).map((x) => ({ kind: 'web', label: x.host + ' (ίδιο μέγεθος/χρώμα)', url: x.url })), level: 'high' }));
+      // the rest: one code for the whole product (no code made of ours — the size / colour shows the product's code)
+      const unify = unifyCodes(C, site, p, String(p.sku).trim(), vars);
+      if (unify.length && !vars.length) add(Object.assign({}, base, { field: 'varsku', from: unify.map((v) => ({ label: v.label, sku: v.was })), to: unify.map((v) => ({ label: v.label, sku: '' })), vars: unify,
+        why: `Ένας ενιαίος κωδικός για όλο το προϊόν (${p.sku}): ${unify.length === 1 ? 'ένα μέγεθος/χρώμα έχει' : unify.length + ' μεγέθη/χρώματα έχουν'} κωδικό που δεν είναι πραγματικός (${unify.slice(0, 2).map((v) => v.was).join(', ')}${unify.length > 2 ? '…' : ''}: αυτόματος αριθμός αντιγραφής, διπλός, ή ο κωδικός του προϊόντος με το μέγεθος στο τέλος). Μένουν χωρίς δικό τους κωδικό και δείχνουν τον κωδικό του προϊόντος. Δικός τους κωδικός μόνο όταν τον δείχνουν ≥2 άλλα καταστήματα για ακριβώς αυτό το μέγεθος/χρώμα.`,
+        source: { kind: 'rule', label: 'Κανόνας του καταστήματος: ένας κωδικός ανά προϊόν' }, level: 'high' }));
+      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: vars.filter((v) => v.was).map((v) => ({ label: v.label, sku: v.was })).concat(unify.map((v) => ({ label: v.label, sku: v.was }))), to: vars.map((v) => ({ label: v.label, sku: v.sku })).concat(unify.map((v) => ({ label: v.label, sku: '' }))), vars: vars.concat(unify), why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα' : vars.length + ' μεγέθη/χρώματα'} χωρίς σωστό κωδικό: τον ίδιο κωδικό για ακριβώς αυτό το μέγεθος/χρώμα δείχνουν ${[...new Set(vars.flatMap(hostsOf))].length} ανεξάρτητα καταστήματα (${[...new Set(vars.flatMap(hostsOf))].slice(0, 3).join(', ')}).` + (vars.some((v) => v.was) ? ` (Οι τωρινοί «${vars.find((v) => v.was).was}…» είναι αυτόματοι αριθμοί ή διπλοί.)` : ''), source: { kind: 'web', label: vars[0].srcs[0].host + ' (ίδιο μέγεθος/χρώμα)', url: vars[0].srcs[0].url }, sources: vars[0].srcs.slice(1).map((x) => ({ kind: 'web', label: x.host + ' (ίδιο μέγεθος/χρώμα)', url: x.url })), level: 'high' }));
     }
     if (p.type === 'simple' && !p.ean) {
       // EAN: from the supplier (sure source) and from the shops with the same product; different EANs → nothing
@@ -1099,4 +1155,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

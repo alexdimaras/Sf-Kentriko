@@ -51,13 +51,40 @@ function familyTitle(p) {
 }
 
 /** Families of a site: [{ key, site, title, members: [...], colours, evidence, confidence, status, web }] */
+// worked out once per change of the catalog / the decisions / the research (it read the whole catalog on every
+// opening of a product: half a second here, many seconds on the small cloud machine)
+const memo = {};
 function list(site, opts) {
+  const o = opts || {};
+  const catalog = require('./catalog');
+  const key = [catalog.load(site).products, store.ver(KEY), store.ver('web-codes'), store.ver('suppliers')];
+  const m = memo[site];
+  if (!(m && m.key.every((x, i) => x === key[i]))) {
+    memo[site] = { key, out: listAll(site), byId: null };
+  }
+  const out = memo[site].out;
+  return o.key ? out.filter((f) => f.key === o.key) : out;
+}
+function listAll(site) { return require('./bg').drainSync(listGen(site)); }
+/** Work it out ahead, in slices (the program keeps answering): the first opening of a product is then instant. */
+async function warm() {
+  const catalog = require('./catalog');
+  for (const site of catalog.SITES) {
+    const key = [catalog.load(site).products, store.ver(KEY), store.ver('web-codes'), store.ver('suppliers')];
+    const m = memo[site];
+    if (m && m.key.every((x, i) => x === key[i])) continue;
+    const out = await require('./bg').drain(listGen(site));
+    memo[site] = { key, out, byId: null };
+  }
+}
+function* listGen(site) {
   const catalog = require('./catalog');
   const market = require('./market');
-  const o = opts || {};
   const known = catalog.knownBrands();
   const groups = new Map();
+  let n = 0;
   for (const p of catalog.load(site).products) {
+    if (++n % 300 === 0) yield;
     if (p.type !== 'simple' || p.status === 'private') continue;
     const k = keyOf(p, known);
     if (!k) continue;
@@ -102,7 +129,7 @@ function list(site, opts) {
     });
   }
   out.sort((a, b) => (a.proof === 'confirmed' ? 0 : 1) - (b.proof === 'confirmed' ? 0 : 1) || (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || b.members.length - a.members.length || b.confidence - a.confidence);
-  return o.key ? out.filter((f) => f.key === o.key) : out;
+  return out;
 }
 
 /**
@@ -145,7 +172,10 @@ function proofOf(site, ms, memberColours, web) {
 
 /** The family a product belongs to (for its card), or null. */
 function ofProduct(site, id) {
-  return list(site).find((f) => f.members.some((m) => m.id === Number(id))) || null;
+  const all = list(site);
+  const m = memo[site];
+  if (!m.byId) { m.byId = new Map(); for (const f of all) for (const x of f.members) m.byId.set(x.id, f); }
+  return m.byId.get(Number(id)) || null;
 }
 
 function decide(site, key, answer, by) {
@@ -248,4 +278,4 @@ function exportFiles(site, key, opts) {
   };
 }
 
-module.exports = { list, ofProduct, decide, exportFiles, proofOf, keyOf, familyTitle, colourAttribute, KEY };
+module.exports = { warm, list, ofProduct, decide, exportFiles, proofOf, keyOf, familyTitle, colourAttribute, KEY };

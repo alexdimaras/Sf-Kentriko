@@ -10,7 +10,7 @@
       main.appendChild(pageHead('Ρυθμίσεις', 'Αλλάζουν μόνο τον τρόπο που δουλεύει το πρόγραμμα. Τίποτα δεν αλλάζει στα sites.'));
       const server = App.MODE === 'server';
       const admin = !server || (App.me && App.me.role === 'admin');
-      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, server && admin ? ['workers', 'Υπολογιστές'] : null, server && admin ? ['audit', 'Ιστορικό ενεργειών'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
+      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, server && admin ? ['workers', 'Σύστημα'] : null, server && admin ? ['audit', 'Ιστορικό ενεργειών'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
       main.appendChild(h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { 'aria-selected': String(k === tab), onclick: () => App.go('settings', { tab: k }) }, l))));
       const box = h('div', { class: 'stack' });
       main.appendChild(box);
@@ -184,17 +184,13 @@
           h('div', { class: 'grid3', style: { marginTop: '12px' } }, server ? null : field('Διεύθυνση', url), field('Μοντέλο', model, 'Κενό = το πρώτο εγκατεστημένο')),
           h('label', { class: 'check', style: { marginTop: '10px' } }, en, 'Ενεργό'),
           h('label', { class: 'check' }, inResearch, 'Και στην έρευνα internet: προτείνει αναζητήσεις και κρίνει τις αμφίβολες σελίδες (ποτέ δεν κάνει μόνο του κάτι «ίδιο»)'), usage,
-          h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Δοκιμή', { cls: 'sm' }, async () => {
+          server ? h('p', { class: 'faint', style: { marginTop: '10px' } }, 'Ο έλεγχος του AI (και όλου του συστήματος) γίνεται σε ένα σημείο: Ρυθμίσεις → Σύστημα → «Έλεγχος όλων».') : h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Δοκιμή', { cls: 'sm' }, async () => {
             clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή…'));
-            clear(res).appendChild(h('span', { class: 'muted' }, 'Δοκιμή: το Ollama, τα μοντέλα και μια πραγματική απάντηση (την πρώτη φορά το μοντέλο φορτώνει: έως 1–2 λεπτά)…'));
             try {
               await POST('/api/settings', { localAI: { enabled: en.checked, url: url.value, model: model.value } });
               const r = await POST('/api/ai/test', {});
-              clear(res).appendChild(h('div', { class: 'note ' + (r.ok ? 'ok' : 'crit') },
-                h('b', null, r.ok ? 'Το AI δουλεύει' + (r.model ? ' (' + r.model + ')' : '') + '.' : 'Το AI δεν δουλεύει ακόμα: ' + ({ no_worker: 'κανένας υπολογιστής συζευγμένος', offline: 'ο υπολογιστής είναι κλειστός', stale_worker: 'παλιά έκδοση του worker στον υπολογιστή', unreachable: 'ο worker δεν βρίσκει το Ollama', no_model: 'το Ollama δεν έχει μοντέλο', model_missing: 'λείπει το μοντέλο που επέλεξες', generation_failed: 'το μοντέλο δεν απάντησε', disabled: 'είναι κλειστό στις ρυθμίσεις', starting: 'το πρόγραμμα ξεκινάει' }[r.state] || '')),
-                r.metrics && r.metrics.totalMs ? h('div', { class: 'faint', style: { marginTop: '4px' } }, `Μετρήσεις: συνολικά ${(r.metrics.ms / 1000).toFixed(1)}″ · φόρτωση μοντέλου ${(r.metrics.loadMs / 1000).toFixed(1)}″ · ερώτηση ${r.metrics.promptTokens} tokens · απάντηση ${r.metrics.tokens} tokens${r.metrics.tokPerSec ? ' (' + r.metrics.tokPerSec + ' tokens/″)' : ''}`) : null,
-                h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))),
-                server && !r.ok ? h('div', { class: 'faint', style: { marginTop: '6px' } }, 'Στο PC με το Ollama, στον φάκελο του worker: «runtime\\node.exe app\\worker.js ai-test» δείχνει τα ίδια βήματα εκεί.') : null));
+              clear(res).appendChild(h('div', { class: 'note ' + (r.ok ? 'ok' : 'crit') }, h('b', null, r.ok ? 'Το AI δουλεύει' + (r.model ? ' (' + r.model + ')' : '') + '.' : 'Το AI δεν δουλεύει ακόμα:'),
+                h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text)))));
             } catch (e) { clear(res).appendChild(h('div', { class: 'note crit' }, e.message)); }
           })), res));
         box.appendChild(saveBtn(() => ({ localAI: { enabled: en.checked, url: url.value, model: model.value, research: inResearch.checked } })));
@@ -205,6 +201,33 @@
       if (tab === 'workers' && server && admin) {
         // the computers of the shops that do the heavy work (lib/coord.js, app/worker.js) — live, every 3 seconds
         const root = h('div', { class: 'stack' });
+        // ONE place for the whole system: the program, the data, the computer, the AI, the research — and one check
+        const sys = h('div', { class: 'panel' });
+        const sysList = h('ul', { class: 'todo-list sys-list' });
+        const sysOut = h('div');
+        const LIGHT = { ok: 'ok', working: 'ok', stopped: '', disabled: '', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', error: 'crit' };
+        const drawSys = (r) => {
+          clear(sysList);
+          for (const x of r.items) sysList.appendChild(h('li', { class: x.ok ? '' : LIGHT[x.state] === 'crit' ? 'crit' : LIGHT[x.state] === 'warn' ? 'warn' : '' },
+            h('span', { class: 'pill ' + (LIGHT[x.state] != null ? LIGHT[x.state] : x.ok ? 'ok' : 'warn') }, x.ok ? '✓' : x.state === 'stopped' || x.state === 'disabled' ? '■' : '!'), ' ', h('b', null, x.label + ': '), x.text));
+        };
+        const installer = () => POST('/api/workers/installer').then((r) => {
+          const a = h('a', { href: URL.createObjectURL(new Blob([r.text], { type: 'application/octet-stream' })), download: r.name });
+          document.body.appendChild(a); a.click(); a.remove();
+          toast(`Κατέβηκε το «${r.name}». Στο PC: διπλό κλικ → κάνει τα πάντα μόνο του (ισχύει ${r.hours} ώρες, μία φορά).`);
+        }).catch(fail);
+        sys.appendChild(h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', { style: { margin: 0 } }, 'Κατάσταση συστήματος'),
+          h('div', { class: 'row tight', style: { flexWrap: 'wrap' } },
+            btn('Έλεγχος όλων', { cls: 'sm primary', icon: 'check', title: 'Αποθήκευση δεδομένων και πραγματική απάντηση του AI μέσα από τον υπολογιστή' }, () => {
+              clear(sysOut).appendChild(h('span', { class: 'muted' }, 'Έλεγχος… (το AI την πρώτη φορά φορτώνει: έως 1–2 λεπτά)'));
+              POST('/api/system/check').then((r) => { drawSys(r); clear(sysOut).appendChild(h('div', { class: 'note ' + (r.steps.every((x) => x.ok || x.state === 'disabled') ? 'ok' : 'crit') }, h('b', null, r.steps.every((x) => x.ok || x.state === 'disabled') ? 'Όλα δουλεύουν.' : 'Κάτι θέλει προσοχή:'), h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))))); }).catch((e) => clear(sysOut).appendChild(h('div', { class: 'note crit' }, e.message)));
+            }),
+            btn('Αρχείο εγκατάστασης υπολογιστή', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο για το PC: διπλό κλικ → κατεβάζει, συνδέεται, ξεκινά με τα Windows (σταματημένο)' }, installer))),
+          h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ο υπολογιστής συνδέεται και ενημερώνεται μόνος του. Ξεκινά σταματημένος (δεν τρώει πόρους): τον ανοίγεις πιο κάτω με «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα».'),
+          sysList, sysOut);
+        box.appendChild(sys);
+        const sysTick = async () => { if (!document.body.contains(sys)) return; try { drawSys(await GET('/api/system/status')); } catch (_) { /* next time */ } setTimeout(sysTick, 10000); };
+        sysTick();
         box.appendChild(root);
         const hist = App.workerHist || (App.workerHist = new Map()); // id → last CPU readings (for the line)
         const nz = (v) => fmt.num(Number(v) || 0);
@@ -270,14 +293,15 @@
           if (!(d.workers || []).length) root.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Κανένας υπολογιστής ακόμα'), h('p', null, 'Όλη η δουλειά γίνεται στο cloud, αργά. Πρόσθεσε το PC του μαγαζιού (πιο κάτω) για να δουλεύει στο τέρμα.')));
           root.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Προσθήκη υπολογιστή'),
             h('ol', { class: 'steps' },
-              h('li', null, 'Στο PC (Windows 10/11, 64-bit) κατέβασε τον φάκελο με το κουμπί από κάτω (είναι πάντα η τρέχουσα έκδοση). Δεξί κλικ στο zip → Ιδιότητες → «Κατάργηση αποκλεισμού» → OK → δεξί κλικ → «Εξαγωγή όλων…» σε ΝΕΟ φάκελο → διπλό κλικ στο «SF-Kentro-Worker.cmd». Για ενημέρωση: κλείσε πρώτα το παράθυρο του παλιού.'),
-              h('li', null, 'Πάτα «Νέος κωδικός» εδώ και γράψε τη διεύθυνση και τον κωδικό στο παράθυρο που ανοίγει εκεί. Ο κωδικός ισχύει 15 λεπτά και μία φορά.'),
-              h('li', null, 'Τέλος: ξεκινά μόνο του με τα Windows και δουλεύει σε όλους τους πυρήνες (αφήνει έναν για σένα, με χαμηλή προτεραιότητα: δεν σε καθυστερεί).')),
+              h('li', null, 'Πάτα «Αρχείο εγκατάστασης υπολογιστή» (πάνω) και πήγαινε το αρχείο στο PC (Windows 10/11).'),
+              h('li', null, 'Διπλό κλικ στο αρχείο. Κατεβάζει το πρόγραμμα, συνδέεται, ξεκινά με τα Windows — χωρίς τίποτα άλλο. Αν τα Windows ρωτήσουν «Να εκτελεστεί;», πάτα «Περισσότερα» → «Εκτέλεση».'),
+              h('li', null, 'Εμφανίζεται εδώ σταματημένος. Διάλεξε «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα» όταν θέλεις να δουλεύει.')),
+            h('details', null, h('summary', null, 'Με το χέρι (φάκελος zip και κωδικός)'),
             d.download ? h('div', { class: 'row', style: { marginBottom: '8px' } }, h('a', { class: 'btn primary', href: d.download, target: '_blank', rel: 'noopener' }, '⬇ Κατέβασε τον φάκελο του υπολογιστή (zip)'), h('span', { class: 'faint mono', style: { wordBreak: 'break-all', fontSize: '12px' } }, d.download)) : null,
             h('div', { class: 'row' }, btn('Νέος κωδικός', { cls: 'primary', icon: 'new' }, () => POST('/api/workers/pair').then((r) => {
               clear(pairBox);
               pairBox.appendChild(h('div', { class: 'pair-code' }, h('div', { class: 'faint' }, 'Διεύθυνση'), h('b', { class: 'mono' }, location.origin), h('div', { class: 'faint' }, `Κωδικός (ισχύει ${nz(r && r.minutes)} λεπτά)`), h('b', { class: 'mono big' }, (r && r.code) || '—')));
-            }).catch(fail))), pairBox));
+            }).catch(fail))), pairBox)));
           root.appendChild(h('p', { class: 'faint', style: { margin: 0 } }, 'Τα δεδομένα φυλάγονται ' + (d.store || '—') + '. Ενημέρωση κάθε 3 δευτερόλεπτα.'));
         };
         let failed = 0;

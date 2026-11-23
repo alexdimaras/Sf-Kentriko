@@ -19,6 +19,7 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
   ως πηγή αλήθειας (`lib/pgsave.js`, `SFK_DATABASE_URL`) και **GitHub** ως ημερήσιο αντίγραφο (`lib/cloudsave.js`, branches `backup-ΗΗΗΗ-ΜΜ-ΗΗ`).
 - **Ουρά** `lib/coord.js` (+ `coord-store.js` αρχεία / `db.js` PG): leases 90″, heartbeat, idempotency, dedup, ανάθεση ανά δυνατότητες,
   cloud μόνο αν χωρά στη μνήμη (`cloudRamMB`). Τύποι: `lib/jobtypes.js` → `market.shop` (έρευνα ενός καταστήματος), `codes.web` (έρευνα internet), `ai.call` (Ollama του PC· γρήγορη λωρίδα).
+- **Εγκατάσταση/ενημέρωση υπολογιστή**: Ρυθμίσεις → **Σύστημα** → «Αρχείο εγκατάστασης» (`lib/installer.js`: .cmd με διεύθυνση + κωδικό μίας χρήσης 24 ωρών → κατεβάζει, `worker.js ensure`, ξεκινά με τα Windows). Νέος υπολογιστής = **σταματημένος** (`mode: 'off'`, το cloud κάνει τη δουλειά). Αυτο-ενημέρωση: `hello` → `rev`, `/api/worker/update` (`lib/selfupdate.js`, SHA-256 + `node --check`, έξοδος 4 → επανεκκίνηση). Ενιαίος έλεγχος: `/api/system/status`, `/api/system/check`.
 - **Worker στο PC** `app/worker.js` (+ `SF-Kentro-Worker.cmd`): επόπτης + 1 εργάτης/πυρήνα, κοινός ρυθμός αναζητήσεων (IPC permits),
   αναφορά φόρτου `/api/worker/load` → Ρυθμίσεις → Υπολογιστές (ζωντανά). Τρέχει και από το zip του GitHub (`vendor/node-html-parser.js`).
 - **Έρευνα τιμών** `lib/market.js` (αντιστοίχιση `compare/score`, `MATCH_VERSION`), `lib/research.js` (κατανεμημένη), `lib/compcat.js` + `lib/sitemapcat.js` (κατάλογοι ανταγωνιστών).
@@ -32,7 +33,7 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (89) · rules (95) · jobs (36) · integrity (19) · coord (40) · workers (26) · ai (40) · research (78) · variants (59, πραγματικά δεδομένα στο `test/fixtures`) · db (8, με `COORD_PG`).
+`cd app && npm test` → run (89) · rules (99) · jobs (36) · integrity (19) · coord (54) · workers (31) · ai (40) · research (78) · variants (59, πραγματικά δεδομένα στο `test/fixtures`) · db (8, με `COORD_PG`).
 Μετρήσεις: `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.

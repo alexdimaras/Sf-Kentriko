@@ -433,7 +433,22 @@ const routes = {
   // the live page of a product as Google reads it: what the site already produces, what is missing, how to fix it
   'GET /api/seo/audit': async (q) => { const site = q.site === 'st' ? 'st' : 'sf'; const r = await require('./lib/seoaudit').audit(site, q.id); try { require('./lib/quality').saveSeo(site, Number(q.id), r); } catch (_) { /* kept next time */ } return r; },
   // the quality report of a product: what is here + the last saved research / SEO check (nothing is searched from here)
-  'GET /api/quality': (q) => require('./lib/quality').report(q.site === 'st' ? 'st' : 'sf', q.id),
+  'GET /api/quality': async (q) => {
+    const site = q.site === 'st' ? 'st' : 'sf';
+    const r = require('./lib/quality').report(site, q.id);
+    // no real code and no recent research: the research on the internet starts by itself (once: the queue keeps one
+    // per product; the normal plan, not the full one — that stays a person's button)
+    if (r.autoResearch && coordReady) {
+      try {
+        const cf = require('./lib/codefind');
+        const items = cf.itemsFor([site + ':' + r.id], '');
+        if (items.length) { await coord.enqueue('codes.web', webPayload(items), { dedupKey: 'codes.web:open:' + site + ':' + r.id, priority: 30, auto: true, label: 'Έρευνα στο internet: ' + String(r.name).slice(0, 60) }); r.statuses.research.autoQueued = true; }
+      } catch (e) { r.statuses.research.autoError = e.message; }
+    }
+    return r;
+  },
+  // a person's own change on the product's page (title, short text, description): counts as approved
+  'POST /api/fixes/manual': (b, _, ctx) => fixes.setManual(b.site === 'st' ? 'st' : 'sf', Number(b.id), String(b.field || ''), b.value, ctx.user ? ctx.user.name : ''),
   'GET /api/ai/log': () => { const d = store.read('ai-log', null) || {}; return { totals: d.totals || {}, items: (d.items || []).slice(-30).reverse() }; },
   // a site of the internet: approved (its prices count) / rejected / nothing; the list of sites by kind
   'POST /api/codes/shop': (b) => require('./lib/codefind').decideShop(b.host, b.answer),
@@ -601,6 +616,15 @@ const routes = {
     return { workers: ws, stats: await coord.stats(), queue: { waiting: lq.filter((j) => j.status === 'queued').length, running: lq.filter((j) => j.status !== 'queued').length }, workerRev: WORKER_REV, download: workerZip(), research: researchView(ws.filter((w) => w.load).map((w) => w.load)), store: storeName() };
   },
   'POST /api/workers/pair': (b, _q, ctx) => coord.newPairing(ctx.user ? ctx.user.name : ''),
+  // the one-click installer of a computer: a .cmd with this program's address and a one-time code (valid 24 hours)
+  'POST /api/workers/installer': async (b, _q, ctx) => {
+    const pr = await coord.newPairing(ctx.user ? ctx.user.name : '', 24 * 60);
+    const until = new Date(Date.now() + pr.minutes * 60000).toLocaleString('el-GR', { timeZone: 'Europe/Athens' });
+    return { name: 'SF-Kentro-Egkatastasi.cmd', text: require('./lib/installer').cmdText({ server: ctx.origin, code: pr.code, zip: workerZip(), until }), until, hours: pr.minutes / 60 };
+  },
+  // the whole system in one look (and one check): the program, its data, the computers, the AI, the research
+  'GET /api/system/status': () => systemStatus(),
+  'POST /api/system/check': () => systemCheck(),
   'POST /api/workers/mode': async (b) => ({ ok: await coord.setMode(String(b.id || ''), String(b.mode || '')) }),
   'POST /api/workers/perf': async (b) => ({ ok: await coord.setPerf(String(b.id || ''), String(b.profile || '')) }),
   'POST /api/workers/revoke': async (b) => ({ ok: await coord.revoke(String(b.id || '')) }),
@@ -629,7 +653,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -757,7 +781,7 @@ function serveReport(req, res, url) {
 let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
-  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
@@ -806,6 +830,7 @@ function researchView(loads) {
   const perHour = loads.reduce((a, l) => a + (l.perHour.products || 0), 0);
   return { looked: st.looked || 0, found: st.withCode || 0, waiting: st.waiting || 0, perHour, hoursLeft: perHour > 0 ? Math.round((st.waiting / perHour) * 10) / 10 : null };
 }
+let updatePack = null;
 async function handleWorker(req, res, url, q, key0) {
   if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
   try {
@@ -827,6 +852,8 @@ async function handleWorker(req, res, url, q, key0) {
       if (q.have && q.have === pk.v) return send(res, 200, Buffer.alloc(0), 'application/gzip', { ETag: pk.v });
       return send(res, 200, pk.gz, 'application/gzip', { ETag: pk.v });
     }
+    // the worker's own files, for its update by itself (only for a paired computer; built once per start of the program)
+    if (key0 === 'GET /api/worker/update') { if (!updatePack) updatePack = require('./lib/selfupdate').build(__dirname); return send(res, 200, updatePack.buf, 'application/gzip', { 'X-Worker-Rev': updatePack.rev }); }
     // the optional search APIs of the research (keys opened only here, for a paired computer; never in a job)
     if (key0 === 'GET /api/worker/search-keys') return send(res, 200, { apis: require('./lib/searchkeys').config() });
     if (key0 === 'GET /api/worker/comp') {
@@ -836,10 +863,11 @@ async function handleWorker(req, res, url, q, key0) {
       return gz ? send(res, 200, gz, 'application/gzip') : send(res, 200, Buffer.alloc(0), 'application/gzip');
     }
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : key0 === 'POST /api/worker/heartbeat' ? 2 * 1024 * 1024 : 256 * 1024) : {};
-    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'always', perf: w.perf || 'normal', active: workerActive(w) }); }
+    // (rev: the worker's revision here — an older worker fetches /api/worker/update and starts again by itself)
+    if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     // a question to its AI is answered whatever the mode; other work only when it is on
-    if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'always' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
+    if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'off' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
     if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log, b.partial));
     if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
     if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
@@ -902,6 +930,47 @@ async function aiWhy() {
   const info = online.map((w) => { const i = w.caps.ollamaInfo; return `${w.name}: ${i ? (i.ok ? i.error || 'χωρίς μοντέλο' : i.error || 'δεν βρέθηκε το Ollama') : 'παλιά έκδοση του worker (δεν ελέγχει το Ollama)'}`; });
   const noModel = online.some((w) => w.caps.ollamaInfo && w.caps.ollamaInfo.ok);
   return { ok: false, state: noModel ? 'no_model' : 'unreachable', text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
+}
+/** One look at everything (fast, nothing is run): → { items: [{ id, label, ok, state, text }] } */
+async function systemStatus() {
+  const items = [];
+  const add = (id, label, ok, state, text) => items.push({ id, label, ok, state, text });
+  const m = process.memoryUsage();
+  add('cloud', 'Πρόγραμμα (cloud)', true, 'ok', `Έκδοση ${VERSION}${build.sha ? ' · ' + build.sha.slice(0, 7) : ''} · μνήμη ${Math.round(m.rss / 1048576)} MB · σε λειτουργία ${Math.round(process.uptime() / 60)}′`);
+  const c = cloudsave.status();
+  add('data', 'Δεδομένα', !c.error, c.error ? 'error' : 'ok', !c.enabled ? 'Στον φάκελο του διακομιστή' : (c.where || 'αποθήκευση') + (c.error ? ': ' + c.error : ' · εντάξει'));
+  const ws = coordReady ? await coord.workersView() : [];
+  const on = ws.filter((w) => w.online);
+  if (!ws.length) add('computer', 'Υπολογιστής', false, 'none', 'Κανένας υπολογιστής δεν έχει συνδεθεί. Η δουλειά γίνεται αργά στο cloud. «Αρχείο εγκατάστασης» → διπλό κλικ στο PC.');
+  else if (!on.length) add('computer', 'Υπολογιστής', false, 'offline', `${ws.map((w) => w.name).join(', ')}: κλειστός τώρα (ανοίγει μόνος του με τα Windows).`);
+  else {
+    const old = on.filter((w) => (w.caps.rev || '') < WORKER_REV);
+    const act = on.filter((w) => workerActive(w));
+    add('computer', 'Υπολογιστής', !old.length, old.length ? 'updating' : act.length ? 'working' : 'stopped',
+      on.map((w) => `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'}${(w.caps.rev || '') < WORKER_REV ? ' · ενημερώνεται μόνος του' : ''}`).join(' · '));
+  }
+  const s = settings.all();
+  if (!(s.localAI && s.localAI.enabled)) add('ai', 'AI (Ollama)', false, 'disabled', 'Κλειστό (Ρυθμίσεις → AI → «Ενεργό»).');
+  else { const w = await aiWhy(); add('ai', 'AI (Ollama)', w.ok, w.state || (w.ok ? 'ok' : 'error'), w.text); }
+  const loads = [...workerLoad.values()].filter((l) => Date.now() - l.at < 60000);
+  const paused = loads.flatMap((l) => Object.entries(l.engines || {}).filter(([, v]) => v === 'paused').map(([k]) => k));
+  const rv = researchView(loads);
+  add('research', 'Έρευνα internet', !paused.length, paused.length ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
+  return { at: new Date().toISOString(), ok: items.every((x) => x.ok || ['stopped', 'disabled'].includes(x.state)), items };
+}
+function act0(ws) { return ws.some((w) => w.online && workerActive(w)); }
+/** The check of everything, for real: the data store answers, the AI writes an answer through the computer. */
+async function systemCheck() {
+  const st = await systemStatus();
+  const steps = [];
+  const t0 = Date.now();
+  try { store.write('system-check', { at: new Date().toISOString() }); const r = store.read('system-check', null); steps.push({ id: 'data', ok: !!(r && r.at), text: 'Αποθήκευση και ανάγνωση δεδομένων: εντάξει' }); } catch (e) { steps.push({ id: 'data', ok: false, text: 'Δεδομένα: ' + e.message }); }
+  const s = settings.all();
+  if (s.localAI && s.localAI.enabled) {
+    const t = await localai.test();
+    steps.push({ id: 'ai', ok: t.ok, state: t.state, text: t.ok ? `AI: πραγματική απάντηση από ${t.model} σε ${(t.ms / 1000).toFixed(1)}″ μέσω του υπολογιστή` + (t.metrics && t.metrics.tokPerSec ? ` (${t.metrics.tokPerSec} tokens/″)` : '') : 'AI: ' + ((t.steps.find((x) => !x.ok) || {}).text || t.state), steps: t.steps });
+  } else steps.push({ id: 'ai', ok: false, state: 'disabled', text: 'AI: κλειστό (δεν ελέγχθηκε)' });
+  return Object.assign(st, { checked: true, ms: Date.now() - t0, steps });
 }
 async function askComputerAI(pathName, body, timeout, meta) {
   if (!coordReady) throw new Error('Το πρόγραμμα ξεκινάει· δοκίμασε σε λίγο.');
@@ -1009,7 +1078,9 @@ async function handleApi(req, res, url) {
     if (!fs.existsSync(p)) return send(res, 404, { error: 'Δεν βρέθηκε το αρχείο.' });
     return send(res, 200, fs.readFileSync(p), MIME[path.extname(p).toLowerCase()] || 'application/octet-stream', { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(p))}` });
   }
-  const ctx = { ip: clientIp(req), ua: String(req.headers['user-agent'] || ''), client: String(req.headers['x-client'] || '').slice(0, 40), cookies: [] };
+  const ctx = { ip: clientIp(req), ua: String(req.headers['user-agent'] || ''), client: String(req.headers['x-client'] || '').slice(0, 40), cookies: [],
+    // the address people use for this program (for the installer of a computer)
+    origin: String(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || `${String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() || 'http'}://${String(req.headers.host || '').replace(/[^\w.:-]/g, '')}` };
   ctx.setCookie = (sid) => ctx.cookies.push(sessionCookie(req, sid));
   if (SERVER) {
     // every call needs a logged-in user and the session's own token; settings and users only for administrators
@@ -1149,8 +1220,8 @@ function workerZip() {
   const branch = /^[\w./-]+$/.test(process.env.RENDER_GIT_BRANCH || '') ? process.env.RENDER_GIT_BRANCH : 'claude/friendly-sagan-bfjrkj';
   return `https://github.com/${slug}/archive/refs/heads/${branch}.zip`;
 }
-/** Should this computer work now? 'off': never · 'app': while a screen of the program was open in the last 2 minutes · else always. */
-function workerActive(w) { const m = (w && w.mode) || 'always'; return m === 'off' ? false : m === 'app' ? Date.now() - lastUiAt < 120000 : true; }
+/** Should this computer work now? 'off' (the default: a new computer uses nothing until it is switched on) · 'app': while a screen of the program was open in the last 2 minutes · 'always'. */
+function workerActive(w) { const m = (w && w.mode) || 'off'; return m === 'off' ? false : m === 'app' ? Date.now() - lastUiAt < 120000 : true; }
 // which change of the code runs here: from the host (Render gives the commit), its title and date from GitHub (public)
 const build = { version: VERSION, sha: String(process.env.RENDER_GIT_COMMIT || process.env.SFK_GIT_COMMIT || '').slice(0, 40), branch: process.env.RENDER_GIT_BRANCH || '', startedAt: new Date(STARTED_AT).toISOString(), message: '', committedAt: '' };
 function buildInfo() { return Object.assign({}, build, { url: build.sha ? 'https://github.com/alexdimaras/Sf-Kentriko/commit/' + build.sha : '' }); }
@@ -1185,6 +1256,7 @@ function afterStart() {
     jobtypes.register();
     // what the cloud itself was doing when it stopped goes back to the queue now (not after an hour)
     try { const n = await coord.recoverCloud(); if (n) console.log(`queue: ${n} εργασίες του cloud ξανά στη σειρά μετά την επανεκκίνηση`); } catch (e) { console.error('queue recover:', e.message); }
+    coord.setActiveCheck(workerActive); // a stopped computer never keeps work from the cloud
     coordReady = true;
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)

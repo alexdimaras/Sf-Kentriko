@@ -228,10 +228,12 @@ async function sweep() {
 
 // ---------- workers ----------
 /** A one-off code (15 minutes) an administrator gives to a new computer. */
-async function newPairing(by) {
+async function newPairing(by, minutes) {
   const code = Array.from(crypto.randomBytes(8)).map((b) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
-  await backend.savePairing({ hash: sha(code), by: by || '', until: now() + 15 * 60000 });
-  return { code: code.slice(0, 4) + '-' + code.slice(4), minutes: 15 };
+  // 15 minutes for a code typed by hand; the one inside an installer file lives longer (one use, all the same)
+  const m = Math.max(5, Math.min(48 * 60, Number(minutes) || 15));
+  await backend.savePairing({ hash: sha(code), by: by || '', until: now() + m * 60000 });
+  return { code: code.slice(0, 4) + '-' + code.slice(4), minutes: m };
 }
 /** A computer with a pairing code becomes a worker. → { id, token } (the token is shown only this once). */
 async function pair(code, name, caps) {
@@ -239,7 +241,8 @@ async function pair(code, name, caps) {
   const p = c.length === 8 ? await backend.takePairing(sha(c)) : null;
   if (!p || p.until < now()) throw Object.assign(new Error('Ο κωδικός δεν ισχύει (λάθος ή έληξε). Φτιάξε νέο από Ρυθμίσεις → Υπολογιστές.'), { status: 403 });
   const token = 'sfkw_' + crypto.randomBytes(32).toString('base64url');
-  const w = { id: U.uid('w'), name: U.collapse(String(name || 'Υπολογιστής')).slice(0, 60), tokenHash: sha(token), caps: cleanCaps(caps), createdAt: iso(), by: p.by, lastSeen: iso(), online: true, revoked: false, load: 0, done: 0, failed: 0 };
+  // a new computer starts stopped (it uses nothing until a person switches it on: Ρυθμίσεις → Σύστημα)
+  const w = { id: U.uid('w'), name: U.collapse(String(name || 'Υπολογιστής')).slice(0, 60), tokenHash: sha(token), caps: cleanCaps(caps), createdAt: iso(), by: p.by, mode: 'off', lastSeen: iso(), online: true, revoked: false, load: 0, done: 0, failed: 0 };
   await backend.saveWorker(w);
   changed();
   return { id: w.id, name: w.name, token };
@@ -325,10 +328,14 @@ async function recoverCloud() {
   }
   return n;
 }
+// whether a computer should work now (its mode, set by the program: lib/coord knows no screens) — a stopped computer
+// never keeps work from the cloud
+let activeCheck = null;
+function setActiveCheck(fn) { activeCheck = typeof fn === 'function' ? fn : null; }
 /** Is any computer of the shops able to take this job now (or lately)? */
 async function someoneFor(j) {
   const t = now();
-  for (const w of await backend.workers()) if (!w.revoked && fits(w, j) && t - new Date(w.lastSeen || 0).getTime() < CLOUD_AFTER_MS) return true;
+  for (const w of await backend.workers()) if (!w.revoked && fits(w, j) && (!activeCheck || activeCheck(w)) && t - new Date(w.lastSeen || 0).getTime() < CLOUD_AFTER_MS) return true;
   return false;
 }
 /**
@@ -393,7 +400,7 @@ async function workersView() {
   const t = now();
   const jobsBy = new Map();
   for (const j of await backend.live()) if (j.workerId) { const a = jobsBy.get(j.workerId) || []; a.push(view(j)); jobsBy.set(j.workerId, a); }
-  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'always', perf: w.perf || 'normal', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
+  return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'off', perf: w.perf || 'normal', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
 }
 async function stats() {
   const l = await backend.live();
@@ -401,4 +408,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

@@ -116,30 +116,9 @@
     const body = h('div');
     const imgs = p.images || [];
     body.appendChild(dlgHead(p.name, null, drawer));
-    // what this product still needs: from the code to the photos, with the ready changes approvable right here
-    if (d.todo) {
-      const t = d.todo;
-      const STEP = ['', 'Κωδικός', 'Στοιχεία', 'Περιγραφή και φωτογραφίες', 'Τιμή', 'Έτοιμο'];
-      const box = h('div', { class: 'panel todo-box' + (t.stage >= 5 && !t.fixes.length ? ' done' : '') },
-        h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } },
-          h('h3', { style: { margin: 0 } }, t.stage >= 5 && !t.fixes.length ? '✓ Το προϊόν είναι έτοιμο' : 'Τι θέλει αυτό το προϊόν'),
-          h('span', { class: 'pill' }, 'Βήμα ' + Math.min(5, t.stage || 5) + ': ' + STEP[Math.min(5, t.stage || 5)])));
-      if (t.problems.length) box.appendChild(h('ul', { class: 'todo-list' }, t.problems.map((x) => h('li', { class: x.state === 'approve' ? 'warn' : x.state === 'manual' ? 'crit' : '' }, h('b', null, `${STEP[x.stage] || ''}: `), x.text, x.hint ? h('div', { class: 'faint' }, x.hint) : null))));
-      if (t.fixes.length) {
-        box.appendChild(h('div', { class: 'faint', style: { margin: '8px 0 4px' } }, 'Έτοιμες αλλαγές για έγκριση:'));
-        box.appendChild(h('ul', { class: 'todo-list' }, t.fixes.map((c) => h('li', null,
-          h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
-            h('span', null, h('b', null, c.label), c.to ? ' → ' + c.to : '', ' ', h('span', { class: 'pill ' + (c.level === 'high' ? 'ok' : 'warn') }, (c.confidence || '') + '%')),
-            btn('Έγκριση', { cls: 'sm primary', icon: 'check' }, () => POST('/api/fixes/decide', { ids: [c.id], status: 'approved' }).then(() => { toast('Εγκρίθηκε: ' + c.label + '.'); openProduct(site, id); }).catch(fail))),
-          h('div', { class: 'faint' }, c.why)))));
-        box.appendChild(h('div', { class: 'row tight', style: { marginTop: '8px' } },
-          btn('Έγκριση όλων', { cls: 'sm', icon: 'check' }, () => POST('/api/fixes/decide', { ids: t.fixes.map((c) => c.id), status: 'approved' }).then(() => { toast('Εγκρίθηκαν όλες οι αλλαγές του προϊόντος.'); openProduct(site, id); }).catch(fail)),
-          btn('Πριν / Μετά αναλυτικά', { cls: 'sm ghost' }, () => { drawer.close(); go('fixes', { site, q: p.sku || p.name }); })));
-      } else if (t.stage < 5) box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0 0' } }, 'Καμία έτοιμη αλλαγή ακόμα: η έρευνα στο internet και στους αντιπροσώπους συνεχίζει μόνη της. «Βρες κωδικό» / «Νέα έρευνα» πιο κάτω για τώρα.'));
-      body.appendChild(box);
-    }
-    // the quality report: the flow, the internet research and the SEO check side by side (three states, never mixed)
-    body.appendChild(qualityPanel(site, p.id, () => openProduct(site, id)));
+    // ONE box: what this product needs — the flow, the internet research, the SEO; every ready change with before /
+    // after, approvable or written by hand right here (nothing goes to the site by itself: Διορθώσεις → file)
+    body.appendChild(needsPanel(site, p.id, () => openProduct(site, id)));
     body.appendChild(h('div', { class: 'p-hero' },
       imgs[0] ? h('img', { class: 'img', src: imgs[0], alt: '', referrerpolicy: 'no-referrer' }) : h('div', { class: 'img thumb none', style: { width: '200px', height: '200px' } }, 'Χωρίς φωτογραφία'),
       h('div', { class: 'stack s' },
@@ -297,32 +276,73 @@
   }
 
   /** The live page as Google reads it. */
-  /** One report of the product's quality: what is here now + the last saved research and SEO check (nothing is searched on open). */
-  function qualityPanel(site, id, refresh) {
-    const box = h('div', { class: 'panel' }, h('h2', null, 'Αναφορά ποιότητας'), h('span', { class: 'muted' }, 'Έλεγχος…'));
-    const LV = { crit: ['Πρέπει', 'crit'], warn: ['Καλό να γίνει', 'warn'], info: ['Για ενημέρωση', ''], ok: ['Εντάξει', 'ok'] };
+  /** «Τι θέλει αυτό το προϊόν»: the three states side by side (never mixed), the ready changes (before / after, why,
+   *  source, how sure) with «Έγκριση» / «Όχι» / «Αλλαγή» right here, then what still needs a look. Nothing is searched
+   *  on opening, except the normal research of a product without a real code (once, in the queue). */
+  function needsPanel(site, id, refresh) {
+    const box = h('div', { class: 'panel needs' }, h('h2', null, 'Τι θέλει αυτό το προϊόν'), h('span', { class: 'muted' }, 'Έλεγχος…'));
+    const LV = { crit: 'Πρέπει', warn: 'Καλό να γίνει', info: 'Για ενημέρωση', ok: 'Εντάξει' };
     const RW = { complete: 'ok', partial: 'warn', family_only: 'warn', coverage_limited: 'warn', not_found: '', no_results: '', never: '', stale: 'warn', due: 'warn', search_failed: 'crit', pages_failed: 'crit', blocked: 'warn', error: 'crit', cancelled: 'warn', running: 'warn', queued: 'warn' };
     const SW = { never: ['SEO: δεν έχει ελεγχθεί', ''], stale: ['SEO: παλιός έλεγχος', 'warn'], crit: ['SEO: σοβαρά θέματα', 'crit'], warn: ['SEO: θέλει βελτίωση', 'warn'], ok: ['SEO: εντάξει', 'ok'] };
+    const decide = (ids, status) => POST('/api/fixes/decide', { ids, status }).then(() => { toast(status === 'approved' ? 'Εγκρίθηκε — μπαίνει στο αρχείο των Διορθώσεων.' : 'Απορρίφθηκε.'); refresh(); }).catch(fail);
+    // write it by hand: the person's text counts as the approval
+    const editor = (field, value, html) => {
+      const inp = field === 'name' ? h('input', { type: 'text', value: value || '', style: { width: '100%' } }) : h('textarea', { rows: field === 'desc' ? 8 : 3, style: { width: '100%' } }, html || value || '');
+      const wrap = h('div', { class: 'stack s', style: { marginTop: '6px' } }, inp,
+        h('div', { class: 'row tight' }, btn('Αποθήκευση (εγκρίνεται)', { cls: 'sm primary', icon: 'check' }, () => POST('/api/fixes/manual', { site, id, field, value: inp.value }).then((r) => { toast('Αποθηκεύτηκε και εγκρίθηκε: ' + (typeof r.to === 'string' ? r.to.slice(0, 80) : 'νέο κείμενο') + '. Πάει στο αρχείο των Διορθώσεων.'); refresh(); }).catch(fail)),
+          btn('Άκυρο', { cls: 'sm ghost' }, () => wrap.remove())),
+        field === 'name' ? h('div', { class: 'faint' }, 'Μόνο κεφαλαία, ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ [ΧΡΩΜΑ], χωρίς κωδικό (γίνεται μόνο του).') : null);
+      return wrap;
+    };
     (async () => {
       let r;
       try { r = await GET('/api/quality', { site, id }); } catch (e) { box.lastChild.replaceWith(h('div', { class: 'faint' }, e.message)); return; }
       box.lastChild.remove();
       const st = r.statuses, rs = st.research, ss = SW[st.seo.state] || SW.never;
+      const done = st.flow.stage >= 5 && !r.proposals.length && !r.counts.crit;
+      box.firstChild.textContent = done ? '✓ Το προϊόν είναι έτοιμο' : 'Τι θέλει αυτό το προϊόν';
       box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } },
-        h('span', { class: 'pill' + (st.flow.stage >= 5 ? ' ok' : ''), title: 'Η ροή εργασίας του καταστήματος (Ροή εργασίας)' }, 'Ροή: ' + st.flow.label),
-        h('span', { class: 'pill ' + (RW[rs.state] || ''), style: { whiteSpace: 'normal', maxWidth: '100%', height: 'auto', minHeight: '22px', padding: '3px 8px' }, title: rs.at ? 'Τελευταία έρευνα: ' + fmt.ago(rs.at) : 'Δεν έχει γίνει' }, 'Internet: ' + rs.label + (rs.at ? ' · ' + fmt.ago(rs.okAt || rs.at) : '')),
-        h('span', { class: 'pill ' + ss[1], title: st.seo.at ? 'Τελευταίος έλεγχος: ' + fmt.ago(st.seo.at) : '' }, ss[0] + (st.seo.at ? ' · ' + fmt.ago(st.seo.at) : ''))));
-      box.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, `${r.counts.crit} πρέπει · ${r.counts.warn} καλό να γίνουν · ${r.counts.info} για ενημέρωση · ${r.proposals.length} έτοιμες προτάσεις στις Διορθώσεις (τίποτα δεν αλλάζει χωρίς έγκριση)`));
-      if (r.needsResearch) box.appendChild(h('div', { class: 'note', style: { margin: '6px 0' } }, rs.state === 'never' ? 'Δεν έχει γίνει έρευνα στο internet για αυτό το προϊόν. ' : rs.stale ? 'Η έρευνα στο internet είναι παλιά. ' : 'Λείπουν σημαντικά στοιχεία (κωδικός, φωτογραφία ή μάρκα). ',
-        btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις για έγκριση.'); refresh(); } })).catch(fail))));
-      const groups = ['crit', 'warn', 'info', 'ok'].map((lv) => [lv, r.areas.filter((a) => a.level === lv)]).filter(([, l]) => l.length);
-      for (const [lv, list] of groups) {
-        const ul = h('ul', { class: 'todo-list' }, list.map((a) => h('li', { class: lv === 'crit' ? 'crit' : lv === 'warn' ? 'warn' : '' }, h('b', null, a.area + ': '), a.text,
-          a.fix ? h('div', { class: 'faint' }, a.fix) : null,
-          a.fixes.length ? h('div', { class: 'faint' }, `→ ${a.fixes.length} έτοιμη πρόταση στις Διορθώσεις (Πριν / Μετά, πηγή, σιγουριά) — δες το πάνω κουτί`) : null)));
-        box.appendChild(lv === 'crit' || lv === 'warn' ? h('div', null, h('div', { class: 'faint', style: { marginTop: '6px' } }, LV[lv][0] + ` (${list.length})`), ul) : h('details', { open: lv === 'info' && list.length <= 5 }, h('summary', null, LV[lv][0] + ` (${list.length})`), ul));
+        h('span', { class: 'pill' + (st.flow.stage >= 5 ? ' ok' : ''), title: 'Η ροή εργασίας του καταστήματος' }, 'Ροή: ' + st.flow.label),
+        h('span', { class: 'pill ' + (RW[rs.state] || '') }, 'Internet: ' + rs.label + (rs.at ? ' · ' + fmt.ago(rs.okAt || rs.at) : '')),
+        h('span', { class: 'pill ' + ss[1] }, ss[0] + (st.seo.at ? ' · ' + fmt.ago(st.seo.at) : ''))));
+      if (rs.autoQueued) box.appendChild(h('div', { class: 'note', style: { margin: '8px 0' } }, 'Δεν έχει πραγματικό κωδικό: η έρευνα στο internet ξεκίνησε μόνη της (κωδικός, EAN, φωτογραφίες, τιμή). Ό,τι βρεθεί εμφανίζεται εδώ για έγκριση.'));
+      else if (r.needsResearch) box.appendChild(h('div', { class: 'note', style: { margin: '8px 0' } }, rs.state === 'never' ? 'Δεν έχει γίνει έρευνα στο internet. ' : rs.stale ? 'Η έρευνα στο internet είναι παλιά. ' : 'Λείπουν σημαντικά στοιχεία. ',
+        btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι εδώ για έγκριση.'); refresh(); } })).catch(fail))));
+      // 1. the ready changes, approvable or written by hand here
+      if (r.proposals.length) {
+        box.appendChild(h('h3', { class: 'needs-h' }, `Έτοιμες αλλαγές (${r.proposals.length})`));
+        for (const c of r.proposals) {
+          const card = h('div', { class: 'fx-mini' },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' } }, h('b', null, c.label), h('span', { class: 'pill ' + (c.level === 'high' ? 'ok' : 'warn') }, 'Σιγουριά ' + (c.confidence || '') + '%')),
+            c.from || c.to ? h('div', { class: 'ba' }, c.from ? h('div', null, h('span', { class: 'faint' }, 'Πριν: '), h('span', { class: 'strike' }, c.from)) : null, h('div', null, h('span', { class: 'faint' }, 'Μετά: '), h('b', null, c.to || '—'))) : null,
+            c.why ? h('div', { class: 'faint' }, c.why) : null,
+            c.source ? h('div', { class: 'faint' }, 'Πηγή: ', c.source.url ? link(c.source.url, c.source.label) : c.source.label) : null);
+          const row = h('div', { class: 'row tight', style: { marginTop: '6px', flexWrap: 'wrap' } },
+            btn('Έγκριση', { cls: 'sm primary', icon: 'check' }, () => decide([c.id], 'approved')),
+            btn('Όχι', { cls: 'sm ghost' }, () => decide([c.id], 'rejected')),
+            c.editable ? btn('Αλλαγή', { cls: 'sm', icon: 'edit' }, () => { if (!card.querySelector('.stack')) card.appendChild(editor(c.field, c.field === 'name' ? (c.to || r.current.name) : '', c.html || (c.field === 'short' ? r.current.short : ''))); }) : null);
+          card.appendChild(row);
+          box.appendChild(card);
+        }
+        if (r.proposals.length > 1) box.appendChild(h('div', { class: 'row tight', style: { marginTop: '6px' } }, btn('Έγκριση όλων', { cls: 'sm', icon: 'check' }, () => decide(r.proposals.map((c) => c.id), 'approved'))));
       }
-      if (!r.areas.length) box.appendChild(h('p', { class: 'faint' }, 'Κανένα εύρημα.'));
+      // 2. by hand, also without a proposal: the title, the short text
+      const manual = h('div', { class: 'row tight', style: { marginTop: '10px', flexWrap: 'wrap' } });
+      const slot = h('div');
+      if (!r.proposals.some((c) => c.field === 'name')) manual.appendChild(btn('Αλλαγή τίτλου', { cls: 'sm ghost', icon: 'edit' }, () => { clear(slot).appendChild(editor('name', r.current.name)); }));
+      if (!r.proposals.some((c) => c.field === 'short')) manual.appendChild(btn('Αλλαγή σύντομης περιγραφής', { cls: 'sm ghost', icon: 'edit' }, () => { clear(slot).appendChild(editor('short', '', r.current.short)); }));
+      box.appendChild(manual); box.appendChild(slot);
+      if (r.approved.length) box.appendChild(h('p', { class: 'faint', style: { margin: '8px 0 0' } }, `Εγκεκριμένες, περιμένουν το αρχείο για το site (Διορθώσεις → Αρχείο): ${r.approved.map((a) => a.label + (a.to ? ' → ' + a.to.slice(0, 60) : '')).join(' · ')}`));
+      // 3. what still needs a look (the findings that are not already a ready change above)
+      const shown = new Set(r.proposals.map((c) => c.id));
+      const areas = r.areas.filter((a) => !(a.fixes || []).some((x) => shown.has(x)));
+      for (const lv of ['crit', 'warn', 'info']) {
+        const list = areas.filter((a) => a.level === lv);
+        if (!list.length) continue;
+        const ul = h('ul', { class: 'todo-list' }, list.map((a) => h('li', { class: lv === 'crit' ? 'crit' : lv === 'warn' ? 'warn' : '' }, h('b', null, a.area + ': '), a.text, a.fix ? h('div', { class: 'faint' }, a.fix) : null)));
+        box.appendChild(lv === 'info' ? h('details', { open: list.length <= 3 }, h('summary', null, `${LV[lv]} (${list.length})`), ul) : h('div', null, h('h3', { class: 'needs-h' }, `${LV[lv]} (${list.length})`), ul));
+      }
+      if (done) box.classList.add('done');
     })();
     return box;
   }

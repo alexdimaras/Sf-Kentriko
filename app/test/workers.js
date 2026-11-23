@@ -120,6 +120,17 @@ function web() {
     ok(conf.token && !String(conf.token).startsWith('sfkw_'), 'its token is kept protected on the computer (not as plain text)');
     let ws = await get('/api/workers');
     ok(ws.workers.length === 1 && ws.workers[0].caps.ramMB > 0, 'the cloud lists it with what it can do', JSON.stringify(ws.workers.map((w) => w.name)));
+    ok(ws.workers[0].mode === 'off', 'a newly paired computer starts stopped (uses nothing until switched on)', ws.workers[0].mode);
+    const sys = await get('/api/system/status');
+    const compItem = sys.items && sys.items.find((x) => x.id === 'computer');
+    ok(compItem && (compItem.state === 'offline' || /σταματημένος|κλειστός/.test(compItem.text)), 'Σύστημα: the computer is shown (stopped / closed), in one place with the program, data, AI, research', JSON.stringify(sys.items && sys.items.map((x) => x.id + ':' + x.state)));
+    const inst = await post('/api/workers/installer');
+    ok(inst.name === 'SF-Kentro-Egkatastasi.cmd' && /set "CODE=[A-Z0-9]{4}-[A-Z0-9]{4}"/.test(inst.text) && inst.text.includes('set "SERVER=' + base + '"') && inst.hours === 24, 'one-click installer: this program\'s address and a one-time code (24 hours) inside', inst.name);
+    const chk = await post('/api/system/check');
+    ok(chk.checked && chk.steps.some((x) => x.id === 'data' && x.ok), '«Έλεγχος όλων»: the data is written and read back', JSON.stringify(chk.steps));
+    const upNo = await fetch(base + '/api/worker/update', { headers: { Authorization: 'Bearer sfkw_fake' } });
+    ok(upNo.status === 401, 'the worker\'s files for its own update: only for a paired computer (its token)');
+    await post('/api/workers/mode', { id: ws.workers[0].id, mode: 'always' });
     const noTok = await fetch(base + '/api/worker/claim', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sfkw_fake' }, body: '{}' });
     ok(noTok.status === 401, 'a computer without a valid token gets nothing');
     const staffNo = await fetch(base + '/api/worker/claim', { method: 'POST', headers: H, body: '{}' });
@@ -184,6 +195,7 @@ function web() {
     r1.p.kill('SIGKILL');
     const w2 = startWorker('two');
     await pairWorker(w2);
+    for (const x of (await get('/api/workers')).workers) if (x.mode === 'off') await post('/api/workers/mode', { id: x.id, mode: 'always' });
     const r2 = w2.run();
     end = await until(async () => { const j = await get('/api/jobs/' + job.id); return j.status !== 'running' && j.status !== 'queued' ? j : null; }, 60000);
     const bjob = (await get('/api/jobs')).find((y) => y.distributed && /shop-b/.test(y.label));
