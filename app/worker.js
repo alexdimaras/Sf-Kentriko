@@ -252,6 +252,14 @@ async function supervise() {
   if (!conf || !conf.token) { console.error('Δεν έχει γίνει σύζευξη. Τρέξε: node worker.js pair <διεύθυνση> <κωδικός>'); process.exit(2); }
   try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch (_) { /* not allowed: fine */ }
   const api = client(conf);
+  // what goes wrong on this computer goes to the program's log too (one per kind every 10 minutes; never a secret)
+  const told = {};
+  const tell = (code, severity, message, service) => {
+    if (Date.now() - (told[code] || 0) < 10 * 60000) return;
+    told[code] = Date.now();
+    api.call('POST', '/api/worker/event', { code, severity, service: service || 'worker', message: String(message || '').slice(0, 300) }).catch(() => {});
+  };
+  let ollamaWas = null;
   // K: the most this computer can do (its cores and memory); the profile (lib/perf.js) says how many of them work now
   const K = slotsOf();
   const perf = require('./lib/perf');
@@ -282,7 +290,7 @@ async function supervise() {
       if (m.t === 'mem') r.rss = Number(m.rss) || 0;
       else if (m.t === 'job') r.job = m.job || null;
       else if (m.t === 'count') counts.push([Date.now(), String(m.k)]);
-      else if (m.t === 'blocked') { pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
+      else if (m.t === 'blocked') { tell('SEARCH_BLOCKED_' + String(m.eng).toUpperCase().replace(/[^A-Z0-9]/g, ''), 'warn', `η μηχανή αναζήτησης ${m.eng} ζήτησε παύση (10 λεπτά, μετά πιο αργά)`, 'search'); pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
       else if (m.t === 'ailock') { aiQueue.push([p, m.id]); nextAi(); }
       else if (m.t === 'aiunlock') { if (aiOwner === p) { aiBusy = false; aiOwner = null; } nextAi(); }
       else if (m.t === 'permit' && String(m.eng).startsWith('site:')) {
@@ -307,6 +315,7 @@ async function supervise() {
       if (aiOwner === p) { aiBusy = false; aiOwner = null; nextAi(); } // (a runner that ends while holding the AI gives it back)
       if (stopping || (dormant && !lane)) return; // stopped on purpose (the mode of this computer)
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
+      if (code) tell('RUNNER_EXIT', 'warn', `ένας εργάτης σταμάτησε απρόσμενα (κωδικός ${code}${r.job ? ', εργασία: ' + r.job.label : ''}): ξεκινά ξανά σε 5″`);
       setTimeout(() => start(i, lane), 5000);
     });
     if (!lane) { if (paused || i >= Math.min(K, P.slots)) p.send({ t: 'pause', on: true }); p.send({ t: 'perf', pages: P.pages }); }
@@ -348,7 +357,13 @@ async function supervise() {
   let n = 0;
   for (;;) {
     try {
-      if (n++ % 4 === 0) await probeOllama();
+      if (n++ % 4 === 0) {
+        await probeOllama();
+        // Ollama went away / came back on this computer: said once, not every minute
+        const okNow = !!(ollama.ok && ollama.models.length);
+        if (ollamaWas !== null && okNow !== ollamaWas) tell(okNow ? 'OLLAMA_BACK' : 'OLLAMA_DOWN', okNow ? 'info' : 'warn', okNow ? 'το Ollama απαντά ξανά (' + ollama.models.slice(0, 3).join(', ') + ')' : 'το Ollama δεν απαντά: ' + (ollama.error || 'κανένα μοντέλο κειμένου'), 'ai');
+        ollamaWas = okNow;
+      }
       const c = caps();
       // (the lane of the AI questions goes on: a person is waiting for that answer, and it takes seconds)
       if (c.battery !== paused) { paused = c.battery; applyPerf(); log(paused ? 'μπαταρία: καμία νέα εργασία' : 'ρεύμα: συνέχεια'); }
@@ -366,7 +381,7 @@ async function supervise() {
             log(`ενημερώθηκε στην έκδοση ${done.rev} (${done.files} αρχεία): ξεκινά ξανά`);
             stopping = true; for (const x of runners.values()) x.p.kill();
             process.exit(4); // the starter (SF-Kentro-Worker.vbs) starts it again, now with the new files
-          } catch (e) { tried[h.rev] = Date.now(); writeTried(tried); log('η ενημέρωση δεν έγινε: ' + e.message + ' (συνεχίζει με την τωρινή)'); }
+          } catch (e) { tried[h.rev] = Date.now(); writeTried(tried); log('η ενημέρωση δεν έγινε: ' + e.message + ' (συνεχίζει με την τωρινή)'); tell('WORKER_UPDATE_FAILED', 'error', `η αυτόματη ενημέρωση στην ${h.rev} δεν έγινε: ${e.message}`); }
         }
       }
       // the profile chosen for this computer + what it measures now → how many jobs, pages, how polite

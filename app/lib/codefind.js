@@ -601,6 +601,13 @@ function shardOf(k) { let h = 0; for (const ch of String(k)) h = (h * 31 + ch.ch
 /** Keep what was found for a product (with what happened), and count the sites of the internet that sell our products. */
 function save(results) {
   const own = ownHosts();
+  // what went wrong with the searching (engines that refused, searches that failed): one event per kind
+  try {
+    const n = {};
+    for (const r of Object.values(results || {})) if (r && ['blocked', 'search_failed', 'pages_failed', 'error'].includes(r.status)) n[r.status] = (n[r.status] || 0) + 1;
+    const W = { blocked: ['SEARCH_BLOCKED', 'warn', 'οι μηχανές αναζήτησης ζήτησαν παύση'], search_failed: ['SEARCH_FAILED', 'warn', 'απέτυχαν οι μηχανές αναζήτησης'], pages_failed: ['PAGES_FAILED', 'warn', 'δεν διαβάστηκαν οι σελίδες'], error: ['SEARCH_ERROR', 'error', 'σφάλμα στην έρευνα'] };
+    for (const [k, c] of Object.entries(n)) require('./events').record({ severity: W[k][1], service: 'search', code: W[k][0], message: `Έρευνα internet: ${W[k][2]} (${c} προϊόντα)` });
+  } catch (_) { /* the log never stops the saving */ }
   const traces = {};
   const merged = {};
   store.update(KEY, {}, (d) => {

@@ -1,7 +1,7 @@
 /* Ρυθμίσεις */
 'use strict';
 (function () {
-  const { h, clear, btn, icon, fmt, GET, POST, toast, fail, select, pageHead, siteName, confirmBox } = App;
+  const { h, clear, btn, icon, fmt, GET, POST, toast, fail, select, pageHead, siteName, confirmBox, modal, dlgHead } = App;
 
   App.views.settings = {
     async render(main, p) {
@@ -230,6 +230,31 @@
         sys.appendChild(sysList);
         sys.appendChild(sysOut);
         box.appendChild(sys);
+        // the program's log of what went wrong (one shape for every part) and the «πακέτο διάγνωσης για AI»
+        const evList = h('ul', { class: 'todo-list ev-list' });
+        const evSel = select([['warn', 'Προσοχή και σφάλματα'], ['error', 'Μόνο σφάλματα'], ['info', 'Όλα']], 'warn', () => drawEv());
+        const SV = { server: 'πρόγραμμα', queue: 'ουρά', db: 'βάση', health: 'υγεία', ai: 'AI', search: 'έρευνα', worker: 'υπολογιστής', engine: 'προετοιμασία', backup: 'αντίγραφο' };
+        const drawEv = () => GET('/api/diagnostics', { severity: evSel.value, limit: 40 }).then((r) => {
+          clear(evList);
+          if (!r.events.length) evList.appendChild(h('li', { class: 'faint' }, 'Κανένα συμβάν — τίποτα δεν πήγε στραβά τις τελευταίες 14 μέρες.'));
+          for (const e of r.events) evList.appendChild(h('li', { class: e.severity === 'error' ? 'crit' : e.severity === 'warn' ? 'warn' : '' },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' } }, h('b', null, (SV[e.service] || e.service) + ' · ' + e.code + (e.count > 1 ? ` ×${e.count}` : '')), h('span', { class: 'faint num' }, fmt.ago(e.last || e.at))),
+            h('div', null, e.message), e.jobId || e.rid ? h('div', { class: 'faint', style: { fontSize: '12px' } }, [e.jobId && 'εργασία ' + e.jobId, e.rid && 'κωδικός σφάλματος ' + e.rid].filter(Boolean).join(' · ')) : null));
+        }).catch(() => {});
+        const bundleBtn = btn('Πακέτο διάγνωσης για AI', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο με την κατάσταση της στιγμής για να το δώσεις σε ένα AI (π.χ. Claude) — χωρίς κωδικούς και μυστικά' }, () => GET('/api/diagnostics/bundle').then((r) => {
+          const ta = h('textarea', { readonly: true, rows: 16, style: { width: '100%', fontFamily: 'ui-monospace, monospace', fontSize: '12px' } }, r.markdown);
+          modal.open(h('div', null, dlgHead('Πακέτο διάγνωσης για AI', 'Δες το πριν το στείλεις. Δεν περιέχει κωδικούς, tokens, κλειδιά, διευθύνσεις email ή ονόματα χρηστών.'), ta,
+            h('div', { class: 'dlg-foot' }, btn('Κλείσιμο', () => modal.close()),
+              btn('Αντιγραφή', { icon: 'copy' }, () => { (navigator.clipboard ? navigator.clipboard.writeText(r.markdown) : Promise.reject(new Error('x'))).then(() => toast('Αντιγράφηκε. Επικόλλησέ το στο Claude.')).catch(() => { ta.select(); document.execCommand('copy'); toast('Αντιγράφηκε.'); }); }),
+              btn('Λήψη (.md)', { cls: 'primary', icon: 'download' }, () => { const a = h('a', { href: URL.createObjectURL(new Blob([r.markdown], { type: 'text/markdown' })), download: r.name }); document.body.appendChild(a); a.click(); a.remove(); }))));
+        }).catch(fail));
+        box.appendChild(h('div', { class: 'panel' },
+          h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('h2', { style: { margin: 0 } }, 'Συμβάντα'), h('div', { class: 'row tight', style: { flexWrap: 'wrap' } }, evSel, bundleBtn)),
+          h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ό,τι πήγε στραβά, από όλα τα μέρη του προγράμματος και τους υπολογιστές, σε ένα σημείο (14 μέρες). Το «Πακέτο διάγνωσης» είναι ό,τι χρειάζεται ένα AI για να βοηθήσει.'),
+          evList));
+        drawEv();
+        const evTick = () => { if (!document.body.contains(evList)) return; drawEv(); setTimeout(evTick, 30000); };
+        setTimeout(evTick, 30000);
         const sysTick = async () => { if (!document.body.contains(sys)) return; try { drawSys(await GET('/api/system/status')); } catch (_) { /* next time */ } setTimeout(sysTick, 10000); };
         sysTick();
         box.appendChild(root);

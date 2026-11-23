@@ -21,6 +21,7 @@
 | Προφίλ απόδοσης και αυτόματο κατέβασμα | `app/test/coord.js` · perf block |
 | Ollama: ξεχωριστές καταστάσεις, μετρήσεις | `app/test/ai.js` |
 | Έλεγχος υγείας: 4 επίπεδα, βάση με εγγραφή/ανάγνωση | `app/test/integrity.js` (μονάδες) · `app/test/db.js` (PostgreSQL) · `app/test/workers.js` (server) |
+| Αρχείο συμβάντων: κανένα μυστικό, ×N αντί για πλημμύρα· πακέτο διάγνωσης χωρίς μυστικά | `app/test/integrity.js` (events / diagnostics) · `app/test/workers.js` (bundle, `/api/worker/event` μόνο με token) |
 | Η προετοιμασία δεν καθυστερεί από αιτήματα που περιμένουν | `app/test/integrity.js` · «a request that only waits does not hold the background work back» |
 | Αναφορά ποιότητας: 3 καταστάσεις, χωρίς αναζήτηση στο άνοιγμα | `app/test/variants.js` · quality block |
 | Worker που σβήνει στη μέση: τίποτα δεν χάνεται | `app/test/research.js`, `app/test/workers.js` |

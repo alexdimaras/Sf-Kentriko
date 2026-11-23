@@ -109,6 +109,7 @@ function save(reason) {
         // written by another program in between: kept as it is in the database; this copy is not written over it
         conflicts.push(f);
         console.error('database: ' + e.message);
+        try { require('./events').record({ severity: 'error', service: 'db', code: 'DB_CONFLICT', message: e.message }); } catch (_) { /* fine */ }
       }
     }
     // files that are no longer in the folder (removed competitors…) leave the database too
@@ -119,7 +120,7 @@ function save(reason) {
     state.files = known.size; state.sent = sent; state.sentSize = sentSize;
     state.pending = changes !== at;
     return { saved: true, files: known.size, sent, size: sentSize };
-  })().catch((e) => { state.error = 'Βάση: ' + e.message; state.pending = true; console.error('database save:', e.message); return { error: e.message }; })
+  })().catch((e) => { state.error = 'Βάση: ' + e.message; state.pending = true; console.error('database save:', e.message); try { require('./events').record({ severity: 'error', service: 'db', code: 'DB_SAVE_FAILED', message: e.message }); } catch (_) { /* fine */ } return { error: e.message }; })
     .finally(() => { saving = null; });
   return saving;
 }

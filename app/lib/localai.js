@@ -135,7 +135,12 @@ async function ask(prompt, opts) {
   const model = o.model || (await chooseModel()).model;
   const t0 = Date.now();
   const body = Object.assign({ model, prompt, stream: false, keep_alive: '15m', options: { temperature: o.temperature == null ? 0.3 : o.temperature, num_ctx: NUM_CTX, num_predict: o.maxTokens || 1200 } }, o.format ? { format: o.format } : {}, o.system ? { system: o.system } : {});
-  const r = await call('/api/generate', body, o.timeout || GEN_TIMEOUT, { model });
+  let r;
+  try { r = await call('/api/generate', body, o.timeout || GEN_TIMEOUT, { model }); } catch (e) {
+    // (into the program's log: which model, what went wrong — the test of «Σύστημα» says the same in words)
+    if (!o.quietLog) { try { require('./events').record({ severity: 'error', service: 'ai', code: 'AI_' + String(e.code || 'FAILED').toUpperCase(), message: `${model}: ${e.message}` }); } catch (_) { /* fine */ } }
+    throw e;
+  }
   const text = cleanAnswer(r.response);
   if (!text) throw aiError('empty', `Το μοντέλο ${model} δεν έδωσε απάντηση. Δοκίμασε ξανά ή άλλο μοντέλο.`);
   const ns = (v) => Math.round((Number(v) || 0) / 1e6);

@@ -158,6 +158,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(health.worst(['ok', 'unknown', 'warn']) === 'warn' && health.worst(['ok', 'crit']) === 'crit' && health.worst(['ok', 'unknown']) === 'unknown', 'the whole is the worst of its lines');
   }
 
+  // one log of what went wrong (phase 2): one shape, never a secret, a loop never floods it
+  {
+    const events = require(APP + '/lib/events');
+    events.reset();
+    const secret = 'postgres://sfk:SuperSecret1@db.example.com:5432/x sfkw_AbCdEf123456789 ghp_abcdefghij1234567890 Bearer eyJhbGciOiJIUzI1NiJ9.abcdef password=hunter22 alex@example.com https://x.gr/a?key=K123SECRET&t=TOK999';
+    const e1 = events.record({ severity: 'error', service: 'db', code: 'db_save_failed', message: secret, jobId: 'q1' });
+    ok(!/SuperSecret1|AbCdEf123456789|abcdefghij1234567890|eyJhbGci|hunter22|alex@example\.com|K123SECRET|TOK999/.test(e1.message) && e1.code === 'DB_SAVE_FAILED' && e1.service === 'db', 'a secret never stays in the log (database address, worker token, GitHub token, Bearer, password, e-mail, key in a link)', e1.message);
+    for (let i = 0; i < 50; i++) events.record({ severity: 'warn', service: 'search', code: 'SEARCH_BLOCKED', message: 'paused' });
+    const q = events.query({ service: 'search' });
+    ok(q.length === 1 && q[0].count === 50, 'the same event again within a minute raises its count (a loop never floods the log)', JSON.stringify(q.map((x) => x.count)));
+    ok(events.query({ severity: 'error' }).every((x) => x.severity === 'error') && events.summary().by['db:error'] === 1, 'filters by severity / service; a summary of the last day');
+    ok(events.flush() && store.read('events').items.length === 2, 'kept in the data (every minute, not on every event)');
+    const diag = require(APP + '/lib/diagnostics');
+    const b = diag.bundle({ build: { version: '1.6.0', sha: 'abc1234', branch: 'b', startedAt: 'now' }, workerRev: '2026-11-23b',
+      status: { level: 'warn', items: [{ id: 'db', level: 'crit', text: 'βάση: ' + secret }] }, health: {}, workers: [{ name: 'PC-1', online: true, mode: 'off', caps: { rev: '2026-11-18c', ollama: ['qwen2.5:7b'], ollamaInfo: { ok: true } }, jobs: [] }],
+      queue: { queued: 1, running: 0, stuck: 0, old: 0, failed: 1 }, failed: [{ type: 'codes.web', label: 'x', error: 'token=SECRETTOKEN1', attempts: 2 }],
+      settings: { minShops: 2, searchKeys: { brave: { key: 'BRAVEKEY123' } }, localAI: { enabled: true, model: 'qwen2.5:7b' } } });
+    ok(/1\.6\.0/.test(b.markdown) && /abc1234/.test(b.markdown) && /PC-1/.test(b.markdown) && /ΠΑΛΙΑ/.test(b.markdown) && /DB_SAVE_FAILED/.test(b.markdown), 'the bundle says the version, the computers (an old worker marked), the events');
+    ok(!/SuperSecret1|AbCdEf123456789|hunter22|alex@example|SECRETTOKEN1|BRAVEKEY123|K123SECRET/.test(b.markdown + JSON.stringify(b.json)), 'the bundle carries no secret (also not the search API keys of the settings)');
+    ok(/Η βάση δεδομένων/.test(b.markdown), 'the bundle adds the runbook that answers its events (docs/RUNBOOKS.md)');
+    events.reset();
+  }
+
   // the background work and a request that only waits (for that very work, the internet, the AI): it must not stop
   // the work (a screen open during the preparation made it 100 times slower: «Ετοιμάζονται τα στοιχεία» for minutes)
   {

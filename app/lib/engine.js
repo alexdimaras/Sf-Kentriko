@@ -114,7 +114,7 @@ function start() {
         if (meta.sig !== signature()) { pending.add('checks'); pending.add('fixes'); } // older than the data: shown now, built again behind
       }
     }
-  })().catch((e) => { state.error = e.message; console.error('engine start:', e); }).finally(() => {
+  })().catch((e) => { state.error = e.message; console.error('engine start:', e); try { require('./events').record({ severity: 'error', service: 'engine', code: 'ENGINE_START', message: e.message }); } catch (_) { /* fine */ } }).finally(() => {
     stepsDone('Start'); state.busy = false; state.ready = true; if (!state.loaded) { state.loaded = true; loadedResolve(); } state.bootMs = Date.now() - t0; state.gen++;
     readyResolve();
     emit();
@@ -135,7 +135,7 @@ function schedule() {
 }
 function run() {
   if (running) return running;
-  running = build().catch((e) => { state.error = e.message; console.error('engine build:', e); }).finally(() => { running = null; if (pending.size && !holds) schedule(); });
+  running = build().catch((e) => { state.error = e.message; console.error('engine build:', e); try { require('./events').record({ severity: 'error', service: 'engine', code: 'ENGINE_BUILD', message: e.message, detail: e.stack ? String(e.stack).split('\n').slice(1, 4).join(' | ') : '' }); } catch (_) { /* fine */ } }).finally(() => { running = null; if (pending.size && !holds) schedule(); });
   return running;
 }
 async function build() {

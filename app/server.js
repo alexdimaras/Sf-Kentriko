@@ -51,6 +51,7 @@ const cloudsave = process.env.SFK_DATABASE_URL ? require('./lib/pgsave') : requi
 const coord = require('./lib/coord');
 const jobtypes = require('./lib/jobtypes');
 const audit = require('./lib/audit');
+const events = require('./lib/events'); // one log of what went wrong, from every part (lib/events.js)
 const engine = require('./lib/engine');
 const bg = require('./lib/bg');
 const U = require('./lib/util');
@@ -624,6 +625,17 @@ const routes = {
   },
   // the whole system in one look (and one check): the program, its data, the computers, the AI, the research
   'GET /api/system/status': () => systemStatus(),
+  // the program's log of what went wrong (lib/events.js) and the «πακέτο διάγνωσης για AI» (lib/diagnostics.js)
+  'GET /api/diagnostics': (q) => ({ events: events.query({ severity: q.severity, service: q.service, code: q.code, limit: q.limit }), summary: events.summary() }),
+  'GET /api/diagnostics/bundle': async () => {
+    events.flush();
+    const status = await systemStatus();
+    return require('./lib/diagnostics').bundle({
+      build: buildInfo(), workerRev: WORKER_REV, status, health: require('./lib/health').view(),
+      workers: coordReady ? await coord.workersView() : [], queue: coordReady ? await coord.healthOf() : null,
+      failed: coordReady ? (await coord.recent(80)).filter((j) => j.status === 'failed') : [], settings: settings.all(),
+    });
+  },
   'POST /api/system/check': () => systemCheck(),
   'POST /api/workers/mode': async (b) => ({ ok: await coord.setMode(String(b.id || ''), String(b.mode || '')) }),
   'POST /api/workers/perf': async (b) => ({ ok: await coord.setPerf(String(b.id || ''), String(b.profile || '')) }),
@@ -653,7 +665,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -865,6 +877,12 @@ async function handleWorker(req, res, url, q, key0) {
     const b = req.method === 'POST' ? await readBody(req, key0 === 'POST /api/worker/complete' ? 30 * 1024 * 1024 : key0 === 'POST /api/worker/heartbeat' ? 2 * 1024 * 1024 : 256 * 1024) : {};
     // (rev: the worker's revision here — an older worker fetches /api/worker/update and starts again by itself)
     if (key0 === 'POST /api/worker/hello') { await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
+    // what went wrong on a computer, into the program's log (said with the computer's name; never trusted as more than text)
+    if (key0 === 'POST /api/worker/event') {
+      const sv = ['worker', 'search', 'ai'].includes(b.service) ? b.service : 'worker';
+      events.record({ severity: ['info', 'warn', 'error'].includes(b.severity) ? b.severity : 'warn', service: sv, code: String(b.code || 'WORKER').slice(0, 40), message: `${w.name}: ${String(b.message || '').slice(0, 300)}` });
+      return send(res, 200, { ok: true });
+    }
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     // a question to its AI is answered whatever the mode; other work only when it is on
     if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'off' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
@@ -1138,6 +1156,7 @@ async function handleApi(req, res, url) {
   const fn = routes[key0];
   if (!fn) return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
   let done = () => {};
+  const rid = crypto.randomBytes(4).toString('hex'); // the request's id: an error on the screen and in the log share it
   const cpu0 = process.cpuUsage();
   const timing = () => { const c = process.cpuUsage(cpu0); return { 'Server-Timing': `cpu;dur=${((c.user + c.system) / 1000).toFixed(1)}` }; };
   try {
@@ -1153,7 +1172,12 @@ async function handleApi(req, res, url) {
     if (AUDITED[key0]) audit.record(ctx.user ? ctx.user.name : (SERVER ? '' : 'αυτός ο υπολογιστής'), AUDITED[key0], '', audit.summary(body)).catch(() => {});
     send(res, 200, out === undefined ? { ok: true } : out, null, Object.assign(timing(), ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null));
   } catch (e) {
-    if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) console.error('[api]', key0, e);
+    // an error of the program (not a message for the person): into the log with the request's id, said on the screen
+    if (!(e && (e.status || e.network)) && !/^[Α-Ωα-ωΆ-ώ]/.test(String(e && e.message))) {
+      console.error('[api]', rid, key0, e);
+      events.record({ severity: 'error', service: 'server', code: 'API_ERROR', message: `${key0}: ${e && e.message ? e.message : e}`, rid, detail: e && e.stack ? String(e.stack).split('\n').slice(1, 4).join(' | ') : '' });
+      return send(res, 400, { error: (e && e.message ? e.message : String(e)) + ` (κωδικός σφάλματος ${rid})`, rid }, null, Object.assign({ 'X-Request-Id': rid }, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null));
+    }
     send(res, 400, { error: e && e.message ? e.message : String(e) }, null, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : null);
   } finally { done(); }
 }
@@ -1315,6 +1339,8 @@ function afterStart() {
   engine.ready().then(dailyCopy);
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
   setInterval(dailyCopy, 3600 * 1000).unref();
+  events.setRev(build.sha ? build.sha.slice(0, 7) : VERSION);
+  setInterval(() => { try { events.flush(); } catch (e) { console.error('events:', e.message); } }, 60 * 1000).unref();
   // the real checks of the data every 15 minutes (so «Σύστημα» is never green only because nothing was checked)
   if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 90 * 1000).unref(); setInterval(() => { healthProbe().catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
@@ -1373,10 +1399,10 @@ function afterStart() {
   }
 }
 
-process.on('uncaughtException', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
+process.on('uncaughtException', (e) => { console.error('Error:', e && e.stack ? e.stack : e); try { events.record({ severity: 'error', service: 'server', code: 'UNCAUGHT', message: e && e.message ? e.message : String(e), detail: e && e.stack ? String(e.stack).split('\n').slice(1, 4).join(' | ') : '' }); } catch (_) { /* fine */ } });
 // on a cloud host the data is saved before it stops (at most 20 seconds)
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { try { users.flush(); } catch (_) { /* ignore */ } try { await Promise.race([cloudsave.save('κλείσιμο'), new Promise((x) => setTimeout(x, 20000))]); } catch (_) { /* ignore */ } process.exit(0); });
-process.on('unhandledRejection', (e) => { console.error('Error:', e && e.stack ? e.stack : e); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { try { users.flush(); } catch (_) { /* ignore */ } try { events.flush(); } catch (_) { /* ignore */ } try { await Promise.race([cloudsave.save('κλείσιμο'), new Promise((x) => setTimeout(x, 20000))]); } catch (_) { /* ignore */ } process.exit(0); });
+process.on('unhandledRejection', (e) => { console.error('Error:', e && e.stack ? e.stack : e); try { events.record({ severity: 'error', service: 'server', code: 'UNHANDLED_REJECTION', message: e && e.message ? e.message : String(e), detail: e && e.stack ? String(e.stack).split('\n').slice(1, 4).join(' | ') : '' }); } catch (_) { /* fine */ } });
 
 void execFile;
 

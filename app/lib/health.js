@@ -13,7 +13,15 @@ const FRESH_MS = 30 * 60000;           // a check older than this is «unknown»
 const PROBE_DOC = '_health-probe';     // (no «.json»: never brought to the data folder, never in the backup)
 const last = {};                       // id → { level, text, at, ms, evidence }
 
-function set(id, level, text, evidence, ms) { last[id] = { level, text, at: new Date().toISOString(), ms: ms || 0, evidence: evidence || null }; return last[id]; }
+function set(id, level, text, evidence, ms) {
+  const before = last[id] && last[id].level;
+  last[id] = { level, text, at: new Date().toISOString(), ms: ms || 0, evidence: evidence || null };
+  // a change of level is an event (worse: warn / error; back to ok: info) — not every check
+  if (before !== level && (level === 'warn' || level === 'crit' || (before && before !== 'unknown' && level === 'ok'))) {
+    try { require('./events').record({ severity: level === 'crit' ? 'error' : level === 'warn' ? 'warn' : 'info', service: id === 'db' || id === 'save' ? 'db' : id === 'backup' ? 'backup' : id === 'queue' ? 'queue' : 'health', code: 'HEALTH_' + id.toUpperCase() + '_' + level.toUpperCase(), message: text }); } catch (_) { /* fine */ }
+  }
+  return last[id];
+}
 
 /** The database: it answers (SELECT 1), a test document is written and read back, its size against the free plan. */
 async function probeDb(pool) {

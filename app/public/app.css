@@ -934,3 +934,5 @@ ol.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; color:
 .fx-mini { border: 1px solid var(--line-2, #e3e3dc); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: var(--surface, #fff); }
 .fx-mini .ba { margin: 6px 0; display: grid; gap: 3px; word-break: break-word; }
 .strike { text-decoration: line-through; opacity: .7; }
+/* an open window (modal / drawer) is never covered by the «Αποθήκευση» pill */
+body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="false"]) .savepill { display: none; }

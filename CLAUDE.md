@@ -33,13 +33,14 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (89) · rules (103) · jobs (36) · integrity (29) · coord (54) · workers (32) · ai (40) · research (78) · variants (62, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
+`cd app && npm test` → run (89) · rules (103) · jobs (36) · integrity (36) · coord (54) · workers (35) · ai (40) · research (78) · variants (62, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
 Μετρήσεις: `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.
 
 ## Έγγραφα
 **AGENTS.md** (χάρτης για κάθε AI) · **docs/STATE.md** (τι τρέχει, τι δεν έχει αποδειχθεί) · **docs/DECISIONS.md** (αποφάσεις — μην τις αναιρείς) · **docs/BUGS.md** · **docs/RUNBOOKS.md** · **docs/TEST-MATRIX.md**.
+- **Συμβάντα** `lib/events.js` (ένα αρχείο για όλα τα μέρη, χωρίς μυστικά) + **πακέτο διάγνωσης για AI** `lib/diagnostics.js` (Σύστημα → Συμβάντα).
 - **Υγεία συστήματος** `lib/health.js`: 4 επίπεδα ΟΚ/ΠΡΟΣΟΧΗ/ΚΡΙΣΙΜΟ/ΑΓΝΩΣΤΟ από πραγματικούς ελέγχους (βάση, αποθήκευση, αντίγραφο, ουρά), κάθε 15′ και με «Έλεγχος όλων».
 
 ## Δουλειά που εκκρεμεί

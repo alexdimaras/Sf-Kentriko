@@ -166,8 +166,10 @@ async function complete(workerId, jobId, idemKey, result) {
   j.result = summary === undefined ? null : summary;
   return finish(j, j.cancel ? 'cancelled' : 'completed');
 }
+function ev(e) { try { require('./events').record(e); } catch (_) { /* the log never breaks the queue */ } }
 async function finish(j, status) {
   j.status = status; j.completedAt = iso(); j.leaseUntil = 0;
+  if (status === 'failed') ev({ severity: 'error', service: 'queue', code: 'JOB_FAILED', message: `${j.label || j.type}: ${j.error || 'απέτυχε'} (προσπάθειες ${j.attempts}/${j.maxAttempts})`, jobId: j.id });
   if (status !== 'completed' && status !== 'failed') j.progress = Object.assign({}, j.progress, { msg: status === 'cancelled' ? 'Σταμάτησε.' : j.progress.msg });
   await backend.save(j);
   const h = handler(j.type);
@@ -214,6 +216,7 @@ async function sweep() {
     if (j.status === 'queued' && j.auto && h && h.expireMs && t - new Date(j.createdAt).getTime() > h.expireMs) { j.error = 'Κανείς δεν την πήρε για μέρες (υπολογιστές κλειστοί): μπαίνει ξανά στη σειρά όταν χρειαστεί.'; await finish(j, 'cancelled'); continue; }
     if (j.status === 'queued' || !j.leaseUntil || j.leaseUntil > t) continue;
     j.error = `Ο υπολογιστής «${j.workerName || j.workerId}» σταμάτησε να απαντά.`;
+    ev({ severity: 'warn', service: 'queue', code: 'LEASE_EXPIRED', message: `${j.label || j.type}: ${j.error} — ${j.cancel ? 'ακυρώνεται' : j.attempts < j.maxAttempts ? 'ξανά στη σειρά' : 'τέλος προσπαθειών'}`, jobId: j.id });
     if (j.cancel) await finish(j, 'cancelled');
     else if (j.attempts < j.maxAttempts) await requeue(j, 0);
     else await finish(j, 'failed');

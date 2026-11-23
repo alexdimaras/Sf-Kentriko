@@ -131,6 +131,15 @@ function web() {
       ? chk.steps.some((x) => x.id === 'db' && x.ok && /γράφει και διαβάζει/.test(x.text)) && chk.steps.some((x) => x.id === 'save' && ['ok', 'unknown'].includes(x.state))
       : chk.steps.some((x) => x.id === 'save' && x.state === 'warn' && /δίσκο/.test(x.text))), '«Έλεγχος όλων»: real checks — the queue answers; the database answers and writes (or: data only on the server\'s disk is said plainly, ΠΡΟΣΟΧΗ, not a green «ok»)', JSON.stringify(chk.steps));
     ok(['ok', 'warn', 'crit', 'unknown'].includes(chk.level) && chk.items.every((x) => ['ok', 'warn', 'crit', 'unknown'].includes(x.level)), 'every line of «Σύστημα» has one of four levels: ΟΚ · ΠΡΟΣΟΧΗ · ΚΡΙΣΙΜΟ · ΑΓΝΩΣΤΟ', JSON.stringify(chk.items.map((x) => x.id + ':' + x.level)));
+    // phase 2: the shared log and the bundle for an AI
+    const bun = await get('/api/diagnostics/bundle');
+    ok(/# SF Κέντρο — πακέτο διάγνωσης/.test(bun.markdown) && /Υπολογιστές/.test(bun.markdown) && !/Test-pass-123456|sfkw_[A-Za-z0-9]{6}/.test(bun.markdown), 'the «πακέτο διάγνωσης για AI»: the state of the moment, no password or token in it', bun.name);
+    const evNo = await fetch(base + '/api/worker/event', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sfkw_fake' }, body: JSON.stringify({ code: 'X', message: 'y' }) });
+    ok(evNo.status === 401, 'only a paired computer writes into the log');
+    const bad = await fetch(base + '/api/diagnostics/nothing-here', { headers: H });
+    void bad;
+    const dg = await get('/api/diagnostics?severity=info');
+    ok(Array.isArray(dg.events) && dg.summary && typeof dg.summary.by === 'object', 'the log of events is read in one place (Ρυθμίσεις → Σύστημα → Συμβάντα)');
     const upNo = await fetch(base + '/api/worker/update', { headers: { Authorization: 'Bearer sfkw_fake' } });
     ok(upNo.status === 401, 'the worker\'s files for its own update: only for a paired computer (its token)');
     await post('/api/workers/mode', { id: ws.workers[0].id, mode: 'always' });
