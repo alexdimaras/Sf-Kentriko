@@ -402,10 +402,22 @@ async function workersView() {
   for (const j of await backend.live()) if (j.workerId) { const a = jobsBy.get(j.workerId) || []; a.push(view(j)); jobsBy.set(j.workerId, a); }
   return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'off', perf: w.perf || 'normal', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
 }
+/** For the health check: work stuck (its lease long gone), waiting for days, failed in the last day. */
+async function healthOf() {
+  const t = now();
+  const live = await backend.live();
+  const failed = (await backend.recent(100)).filter((j) => j.status === 'failed' && j.completedAt && t - new Date(j.completedAt).getTime() < 864e5);
+  return {
+    queued: live.filter((j) => j.status === 'queued').length, running: live.filter((j) => j.status !== 'queued').length,
+    stuck: live.filter((j) => j.status !== 'queued' && j.leaseUntil && j.leaseUntil < t - 5 * 60000).length,
+    old: live.filter((j) => j.status === 'queued' && j.createdAt && t - new Date(j.createdAt).getTime() > 2 * 864e5).length,
+    failed: failed.length,
+  };
+}
 async function stats() {
   const l = await backend.live();
   const ws = await workersView();
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

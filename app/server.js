@@ -937,8 +937,15 @@ async function systemStatus() {
   const add = (id, label, ok, state, text) => items.push({ id, label, ok, state, text });
   const m = process.memoryUsage();
   add('cloud', 'Πρόγραμμα (cloud)', true, 'ok', `Έκδοση ${VERSION}${build.sha ? ' · ' + build.sha.slice(0, 7) : ''} · μνήμη ${Math.round(m.rss / 1048576)} MB · σε λειτουργία ${Math.round(process.uptime() / 60)}′`);
-  const c = cloudsave.status();
-  add('data', 'Δεδομένα', !c.error, c.error ? 'error' : 'ok', !c.enabled ? 'Στον φάκελο του διακομιστή' : (c.where || 'αποθήκευση') + (c.error ? ': ' + c.error : ' · εντάξει'));
+  // the data: proved by the last real checks (the database answers and writes, the saving, the daily copy, the queue)
+  const H = require('./lib/health').view();
+  const HL = { db: 'Βάση δεδομένων', save: 'Αποθήκευση δεδομένων', backup: 'Ημερήσιο αντίγραφο (GitHub)', queue: 'Ουρά εργασιών' };
+  for (const id of ['db', 'save', 'backup', 'queue']) {
+    const r = H[id];
+    if (!r) { add(id, HL[id], false, 'unknown', 'Δεν έχει ελεγχθεί ακόμα (γίνεται μόνο του σε λίγο, ή πάτα «Έλεγχος όλων»).'); continue; }
+    if (id === 'db' && r.level === 'unknown' && !process.env.SFK_DATABASE_URL) continue; // no database here: nothing to say
+    add(id, HL[id], r.level === 'ok', r.level, r.text + (r.at ? ` (έλεγχος ${new Date(r.at).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' })})` : ''));
+  }
   const ws = coordReady ? await coord.workersView() : [];
   const on = ws.filter((w) => w.online);
   if (!ws.length) add('computer', 'Υπολογιστής', false, 'none', 'Κανένας υπολογιστής δεν έχει συνδεθεί. Η δουλειά γίνεται αργά στο cloud. «Αρχείο εγκατάστασης» → διπλό κλικ στο PC.');
@@ -956,20 +963,43 @@ async function systemStatus() {
   const paused = loads.flatMap((l) => Object.entries(l.engines || {}).filter(([, v]) => v === 'paused').map(([k]) => k));
   const rv = researchView(loads);
   add('research', 'Έρευνα internet', !paused.length, paused.length ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
-  return { at: new Date().toISOString(), ok: items.every((x) => x.ok || ['stopped', 'disabled'].includes(x.state)), items };
+  // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
+  const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
+  for (const x of items) x.level = LEVEL[x.state] || (x.ok ? 'ok' : 'warn');
+  const level = require('./lib/health').worst(items.map((x) => x.level));
+  return { at: new Date().toISOString(), level, ok: level === 'ok', items };
 }
 function act0(ws) { return ws.some((w) => w.online && workerActive(w)); }
 /** The check of everything, for real: the data store answers, the AI writes an answer through the computer. */
+/** The real checks of the data (lib/health.js): the database, the saving, the daily copy, the queue. */
+async function healthProbe() {
+  const health = require('./lib/health');
+  const pgOn = !!process.env.SFK_DATABASE_URL;
+  const pool = pgOn && cloudsave.poolNow ? await cloudsave.poolNow().catch(() => null) : null;
+  if (pgOn && !pool) health.set('db', 'crit', 'Δεν γίνεται σύνδεση με τη βάση δεδομένων.');
+  const gh = require('./lib/cloudsave').status();
+  const H = await health.probe({ pool: pgOn ? pool : null, saveStatus: cloudsave.status(), ghEnabled: pgOn && gh.enabled, coord: coordReady ? coord : null });
+  // GitHub alone (no database): every save is the copy
+  if (!pgOn && gh.enabled) health.set('backup', gh.savedAt ? 'ok' : 'unknown', gh.savedAt ? 'Τα δεδομένα σώζονται στο GitHub (τελευταία ' + new Date(gh.savedAt).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ').' : 'Δεν έχει γίνει ακόμα αποθήκευση στο GitHub.');
+  return health.view();
+}
 async function systemCheck() {
-  const st = await systemStatus();
+  const st = {};
   const steps = [];
   const t0 = Date.now();
-  try { store.write('system-check', { at: new Date().toISOString() }); const r = store.read('system-check', null); steps.push({ id: 'data', ok: !!(r && r.at), text: 'Αποθήκευση και ανάγνωση δεδομένων: εντάξει' }); } catch (e) { steps.push({ id: 'data', ok: false, text: 'Δεδομένα: ' + e.message }); }
+  // the real checks first (the database answers and writes, the saving, the daily copy, the queue), then the screen
+  const H = await healthProbe();
+  for (const [id, label] of [['db', 'Βάση'], ['save', 'Αποθήκευση'], ['backup', 'Αντίγραφο GitHub'], ['queue', 'Ουρά']]) {
+    const r = H[id];
+    if (!r || (id === 'db' && !process.env.SFK_DATABASE_URL)) continue;
+    steps.push({ id, ok: r.level === 'ok', state: r.level, text: `${label}: ${r.text}` });
+  }
   const s = settings.all();
   if (s.localAI && s.localAI.enabled) {
     const t = await localai.test();
     steps.push({ id: 'ai', ok: t.ok, state: t.state, text: t.ok ? `AI: πραγματική απάντηση από ${t.model} σε ${(t.ms / 1000).toFixed(1)}″ μέσω του υπολογιστή` + (t.metrics && t.metrics.tokPerSec ? ` (${t.metrics.tokPerSec} tokens/″)` : '') : 'AI: ' + ((t.steps.find((x) => !x.ok) || {}).text || t.state), steps: t.steps });
   } else steps.push({ id: 'ai', ok: false, state: 'disabled', text: 'AI: κλειστό (δεν ελέγχθηκε)' });
+  Object.assign(st, await systemStatus());
   return Object.assign(st, { checked: true, ms: Date.now() - t0, steps });
 }
 async function askComputerAI(pathName, body, timeout, meta) {
@@ -1285,6 +1315,8 @@ function afterStart() {
   engine.ready().then(dailyCopy);
   if (!SERVER) { heartbeat(); setInterval(heartbeat, 60 * 1000).unref(); process.on('exit', () => { try { fs.unlinkSync(instanceFile()); } catch (_) { /* gone */ } }); }
   setInterval(dailyCopy, 3600 * 1000).unref();
+  // the real checks of the data every 15 minutes (so «Σύστημα» is never green only because nothing was checked)
+  if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 90 * 1000).unref(); setInterval(() => { healthProbe().catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
   setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();
   engine.ready().then(async () => {

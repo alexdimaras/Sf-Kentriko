@@ -205,11 +205,13 @@
         const sys = h('div', { class: 'panel' });
         const sysList = h('ul', { class: 'todo-list sys-list' });
         const sysOut = h('div');
-        const LIGHT = { ok: 'ok', working: 'ok', stopped: '', disabled: '', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', error: 'crit' };
+        // four levels, never green only because nothing was checked: ΟΚ · ΠΡΟΣΟΧΗ · ΚΡΙΣΙΜΟ · ΑΓΝΩΣΤΟ
+        const LVL = { ok: ['ΟΚ', 'ok', ''], warn: ['ΠΡΟΣΟΧΗ', 'warn', 'warn'], crit: ['ΚΡΙΣΙΜΟ', 'crit', 'crit'], unknown: ['ΑΓΝΩΣΤΟ', '', ''] };
         const drawSys = (r) => {
           clear(sysList);
-          for (const x of r.items) sysList.appendChild(h('li', { class: x.ok ? '' : LIGHT[x.state] === 'crit' ? 'crit' : LIGHT[x.state] === 'warn' ? 'warn' : '' },
-            h('span', { class: 'pill ' + (LIGHT[x.state] != null ? LIGHT[x.state] : x.ok ? 'ok' : 'warn') }, x.ok ? '✓' : x.state === 'stopped' || x.state === 'disabled' ? '■' : '!'), ' ', h('b', null, x.label + ': '), x.text));
+          const all = LVL[r.level] || LVL.unknown;
+          sysList.appendChild(h('li', { class: all[2] }, h('span', { class: 'pill ' + all[1] }, all[0]), ' ', h('b', null, 'Συνολικά: '), r.level === 'ok' ? 'όλα ελεγμένα και εντάξει.' : r.level === 'unknown' ? 'κάποια δεν έχουν ελεγχθεί πρόσφατα — πάτα «Έλεγχος όλων».' : 'δες τις γραμμές με ΠΡΟΣΟΧΗ / ΚΡΙΣΙΜΟ.'));
+          for (const x of r.items) { const l = LVL[x.level] || LVL.unknown; sysList.appendChild(h('li', { class: l[2] }, h('span', { class: 'pill ' + l[1] }, x.state === 'stopped' ? 'ΣΤΑΜΑΤΗΜΕΝΟΣ' : x.state === 'disabled' ? 'ΚΛΕΙΣΤΟ' : l[0]), ' ', h('b', null, x.label + ': '), x.text)); }
         };
         const installer = () => POST('/api/workers/installer').then((r) => {
           const a = h('a', { href: URL.createObjectURL(new Blob([r.text], { type: 'application/octet-stream' })), download: r.name });
@@ -220,11 +222,13 @@
           h('div', { class: 'row tight', style: { flexWrap: 'wrap' } },
             btn('Έλεγχος όλων', { cls: 'sm primary', icon: 'check', title: 'Αποθήκευση δεδομένων και πραγματική απάντηση του AI μέσα από τον υπολογιστή' }, () => {
               clear(sysOut).appendChild(h('span', { class: 'muted' }, 'Έλεγχος… (το AI την πρώτη φορά φορτώνει: έως 1–2 λεπτά)'));
-              POST('/api/system/check').then((r) => { drawSys(r); clear(sysOut).appendChild(h('div', { class: 'note ' + (r.steps.every((x) => x.ok || x.state === 'disabled') ? 'ok' : 'crit') }, h('b', null, r.steps.every((x) => x.ok || x.state === 'disabled') ? 'Όλα δουλεύουν.' : 'Κάτι θέλει προσοχή:'), h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))))); }).catch((e) => clear(sysOut).appendChild(h('div', { class: 'note crit' }, e.message)));
+              POST('/api/system/check').then((r) => { drawSys(r); const good = r.steps.every((x) => x.ok || x.state === 'disabled'); clear(sysOut).appendChild(h('div', { class: 'note ' + (good ? 'ok' : r.steps.some((x) => x.state === 'crit' || x.state === 'generation_failed' || x.state === 'unreachable') ? 'crit' : 'warn') }, h('b', null, good ? 'Όλα δουλεύουν (ελέγχθηκαν τώρα).' : 'Κάτι θέλει προσοχή:'), h('ul', { class: 'todo-list', style: { margin: '6px 0 0' } }, r.steps.map((x) => h('li', { class: x.ok ? '' : 'crit' }, (x.ok ? '✓ ' : '✗ ') + x.text))))); }).catch((e) => clear(sysOut).appendChild(h('div', { class: 'note crit' }, e.message)));
             }),
             btn('Αρχείο εγκατάστασης υπολογιστή', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο για το PC: διπλό κλικ → κατεβάζει, συνδέεται, ξεκινά με τα Windows (σταματημένο)' }, installer))),
-          h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ο υπολογιστής συνδέεται και ενημερώνεται μόνος του. Ξεκινά σταματημένος (δεν τρώει πόρους): τον ανοίγεις πιο κάτω με «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα».'),
-          sysList, sysOut);
+          );
+        sys.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ο υπολογιστής συνδέεται και ενημερώνεται μόνος του. Ξεκινά σταματημένος (δεν τρώει πόρους): τον ανοίγεις πιο κάτω με «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα».'));
+        sys.appendChild(sysList);
+        sys.appendChild(sysOut);
         box.appendChild(sys);
         const sysTick = async () => { if (!document.body.contains(sys)) return; try { drawSys(await GET('/api/system/status')); } catch (_) { /* next time */ } setTimeout(sysTick, 10000); };
         sysTick();

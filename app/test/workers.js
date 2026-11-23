@@ -127,7 +127,10 @@ function web() {
     const inst = await post('/api/workers/installer');
     ok(inst.name === 'SF-Kentro-Egkatastasi.cmd' && /set "CODE=[A-Z0-9]{4}-[A-Z0-9]{4}"/.test(inst.text) && inst.text.includes('set "SERVER=' + base + '"') && inst.hours === 24, 'one-click installer: this program\'s address and a one-time code (24 hours) inside', inst.name);
     const chk = await post('/api/system/check');
-    ok(chk.checked && chk.steps.some((x) => x.id === 'data' && x.ok), '«Έλεγχος όλων»: the data is written and read back', JSON.stringify(chk.steps));
+    ok(chk.checked && chk.steps.some((x) => x.id === 'queue' && x.ok) && (process.env.COORD_PG
+      ? chk.steps.some((x) => x.id === 'db' && x.ok && /γράφει και διαβάζει/.test(x.text)) && chk.steps.some((x) => x.id === 'save' && ['ok', 'unknown'].includes(x.state))
+      : chk.steps.some((x) => x.id === 'save' && x.state === 'warn' && /δίσκο/.test(x.text))), '«Έλεγχος όλων»: real checks — the queue answers; the database answers and writes (or: data only on the server\'s disk is said plainly, ΠΡΟΣΟΧΗ, not a green «ok»)', JSON.stringify(chk.steps));
+    ok(['ok', 'warn', 'crit', 'unknown'].includes(chk.level) && chk.items.every((x) => ['ok', 'warn', 'crit', 'unknown'].includes(x.level)), 'every line of «Σύστημα» has one of four levels: ΟΚ · ΠΡΟΣΟΧΗ · ΚΡΙΣΙΜΟ · ΑΓΝΩΣΤΟ', JSON.stringify(chk.items.map((x) => x.id + ':' + x.level)));
     const upNo = await fetch(base + '/api/worker/update', { headers: { Authorization: 'Bearer sfkw_fake' } });
     ok(upNo.status === 401, 'the worker\'s files for its own update: only for a paired computer (its token)');
     await post('/api/workers/mode', { id: ws.workers[0].id, mode: 'always' });

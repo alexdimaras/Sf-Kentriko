@@ -31,6 +31,17 @@ const ok = (c, n, d) => { if (c) passes++; else fails++; console.log((c ? '  ok 
   await db.audit(pool, 'alex', 'δοκιμή', 'x', { n: 1 });
   ok((await db.auditList(pool, 5)).some((a) => a.action === 'δοκιμή'), 'the audit log keeps actions');
   ok((await db.size(pool)) > 0, 'the size of the database can be shown (free plan: 500 MB)');
+  // the health check of «Σύστημα» (audit 23/11): the database proved by a real question and a test write read back
+  {
+    const health = require(APP + '/lib/health');
+    const r = await health.probeDb(pool);
+    ok(r.level === 'ok' && /γράφει και διαβάζει/.test(r.text) && r.evidence.ping >= 0, 'health: the database answers (SELECT 1), a test write is read back the same → ΟΚ', JSON.stringify(r));
+    ok(!(await db.docList(pool)).some((d) => /\.json$/.test(d.name) && /health/.test(d.name)), 'the test document is never one of the data files (not brought to the folder, not in the backup)');
+    const broken = { query: async () => { throw new Error('connect ECONNREFUSED'); } };
+    const b = await health.probeDb(broken);
+    ok(b.level === 'crit' && /ECONNREFUSED/.test(b.text), 'health: a database that does not answer → ΚΡΙΣΙΜΟ, with the reason', b.text);
+    await db.docDelete(pool, health.PROBE_DOC);
+  }
   await pool.end();
   console.log(`\n${passes} ok, ${fails} failed`);
   process.exit(fails ? 1 : 0);

@@ -133,11 +133,13 @@ function start() {
   const gh = require('./cloudsave');
   if (gh.status().enabled) {
     const daily = async () => {
+      // (the time of the last good copy is kept in the data: a restart does not make one more, nor forget it)
+      if (!state.backupAt) { const m = store.read('backup-meta', null); if (m && m.at) state.backupAt = m.at; }
       const last = state.backupAt ? new Date(state.backupAt).getTime() : 0;
       if (Date.now() - last < 23 * 36e5 || !restored) return;
       gh.backupOnly();
       const r = await gh.save('ημερήσιο αντίγραφο');
-      if (r && !r.error) state.backupAt = new Date().toISOString();
+      if (r && !r.error) { state.backupAt = new Date().toISOString(); require('./health').backupDone(state.backupAt); }
     };
     setTimeout(daily, 10 * 60000).unref();
     setInterval(daily, 60 * 60000).unref();

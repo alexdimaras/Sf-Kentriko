@@ -136,6 +136,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   maps.close();
   delete process.env.SFK_ALLOW_PRIVATE;
 
+  // the health of «Σύστημα»: four levels, from real checks (audit 23/11)
+  {
+    const health = require(APP + '/lib/health');
+    ok(health.probeSave({ enabled: true, where: 'βάση δεδομένων', savedAt: new Date().toISOString() }).level === 'ok' && health.probeSave({ enabled: true, conflicts: ['market.json'] }).level === 'crit' && health.probeSave({ enabled: true, blocked: true, error: 'x' }).level === 'crit' && health.probeSave({ enabled: false }).level === 'warn', 'saving: ok · a conflict / a blocked start → ΚΡΙΣΙΜΟ · only the server\'s disk → ΠΡΟΣΟΧΗ');
+    store.write('backup-meta', null);
+    ok(health.probeBackup(true).level === 'unknown', 'no good daily copy recorded yet → ΑΓΝΩΣΤΟ (not «ok»)');
+    health.backupDone(new Date(Date.now() - 2 * 36e5).toISOString());
+    ok(health.probeBackup(true).level === 'ok', 'a copy 2 hours old → ΟΚ');
+    health.backupDone(new Date(Date.now() - 30 * 36e5).toISOString());
+    ok(health.probeBackup(true).level === 'warn', 'a copy 30 hours old → ΠΡΟΣΟΧΗ');
+    health.backupDone(new Date(Date.now() - 80 * 36e5).toISOString());
+    ok(health.probeBackup(true).level === 'crit', 'a copy over 3 days old → ΚΡΙΣΙΜΟ');
+    const qOk = await health.probeQueue({ healthOf: async () => ({ queued: 2, running: 1, stuck: 0, old: 0, failed: 0 }) });
+    const qBad = await health.probeQueue({ healthOf: async () => ({ queued: 0, running: 1, stuck: 1, old: 0, failed: 0 }) });
+    ok(qOk.level === 'ok' && qBad.level === 'crit' && /κολλημένες/.test(qBad.text), 'the queue: a job stuck after its lease → ΚΡΙΣΙΜΟ');
+    health.set('db', 'ok', 'παλιός έλεγχος');
+    const real = Date.now; Date.now = () => real() + 31 * 60000;
+    const v = health.view(); Date.now = real;
+    ok(v.db.level === 'unknown', 'a check older than 30 minutes is ΑΓΝΩΣΤΟ again (never green from an old result)');
+    ok(health.worst(['ok', 'unknown', 'warn']) === 'warn' && health.worst(['ok', 'crit']) === 'crit' && health.worst(['ok', 'unknown']) === 'unknown', 'the whole is the worst of its lines');
+  }
+
   // the background work and a request that only waits (for that very work, the internet, the AI): it must not stop
   // the work (a screen open during the preparation made it 100 times slower: «Ετοιμάζονται τα στοιχεία» for minutes)
   {
