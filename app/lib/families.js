@@ -171,7 +171,7 @@ function exportFiles(site, key, opts) {
     const m = f.members[i];
     const onSale = p.sale > 0 && p.sale < p.regular;
     const v = {
-      Type: 'variation', SKU: mode === 'own' ? p.sku || '' : '', Parent: parentSku, Published: 1, 'Visibility in catalog': 'visible', 'Tax status': 'taxable', 'In stock?': p.inStock !== false ? 1 : 0,
+      Type: 'variation', SKU: mode === 'own' && !require('./fixes').junkSku(p.sku) ? p.sku || '' : '', Parent: parentSku, Published: 1, 'Visibility in catalog': 'visible', 'Tax status': 'taxable', 'In stock?': p.inStock !== false ? 1 : 0,
       'Regular price': (p.regular || p.price) > 0 ? Number(p.regular || p.price).toFixed(2) : '', 'Sale price': onSale ? Number(p.sale).toFixed(2) : '',
       // the photo of THIS colour (its own product's photos, never another colour's)
       Images: wx.imgs((p.images || []).slice(0, 1)),

@@ -131,7 +131,7 @@
         const status = select([['draft', 'Ως πρόχειρα (τα δημοσιεύεις εσύ)'], ['publish', 'Δημοσιευμένα αμέσως']], s.newProduct.status, null);
         const tag = select([['h2', 'Επικεφαλίδα (H2) — καλό για Google'], ['h3', 'Μικρότερη επικεφαλίδα (H3)'], ['p', 'Έντονο κείμενο']], s.newProduct.titleTag, null);
         const footer = h('textarea', { rows: 2, value: s.newProduct.footer });
-        const vsku = select([['suffix', 'Δικός του κωδικός ανά χρώμα / μέγεθος (π.χ. K13079-SAND) — όπως ζητά η Google'], ['same', 'Ένας κωδικός για όλα (το χρώμα / μέγεθος μένει ιδιότητα)']], s.variantSku || 'suffix', null);
+        const vsku = select([['suffix', 'Δικός του κωδικός ανά χρώμα / μέγεθος — μόνο πραγματικός (προμηθευτής ή ίδιος κωδικός σε ≥2 καταστήματα), ποτέ από επίθεμα'], ['same', 'Κανένας κωδικός σε χρώματα / μεγέθη (μόνο ο κωδικός του προϊόντος)']], s.variantSku || 'suffix', null);
         const seo = {}, attrs = {};
         const attrNames = { sf: await GET('/api/attributes', { site: 'sf' }), st: await GET('/api/attributes', { site: 'st' }) };
         const sum = App.state.summary;

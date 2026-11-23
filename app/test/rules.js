@@ -305,7 +305,7 @@ function shop() {
       cf.save({ 'sf:267335': { hits: r.hits.slice(0, 1), read: 1 } });
       fixes.invalidate();
       const w2 = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 267335 && c.field === 'sku');
-      ok(w2 && w2.level === 'medium' && /Μία μόνο πηγή/.test(w2.why), 'one shop only → «look at it» (medium)', JSON.stringify(w2 && [w2.level]));
+      ok(w2 && w2.level === 'medium' && /μία μόνο πηγή/i.test(w2.why) && /χειροκίνητη επιβεβαίωση/.test(w2.why), 'one shop only → «look at it» (medium)', JSON.stringify(w2 && [w2.level]));
       ok(!fixes.compute().items.some((c) => c.field === 'sku' && /^S[FT]-\d/.test(String(c.to))), 'no invented codes: only codes found somewhere');
       ok(cf.suggestedShops(1).some((x) => x.host === 'shop-a.example') && !cf.suggestedShops(1).some((x) => x.host === 'shop.example'), 'the shops that sell our products are kept as proposals for the price research (never our own site)');
       // photos: the same file at two shops of the internet with the same product = the maker's photo → sure
@@ -327,19 +327,24 @@ function shop() {
     const fakeC = { skus: { sf: new Set(['K07014XL']), st: new Set() }, vars: { sf: new Map([[50, [
       { id: 51, type: 'variation', parent: 50, varLabel: 'Μέγεθος: XL', sku: '' }, { id: 52, type: 'variation', parent: 50, varLabel: 'Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο', sku: '' },
       { id: 53, type: 'variation', parent: 50, varLabel: '', sku: '' }, { id: 54, type: 'variation', parent: 50, varLabel: 'Μέγεθος: L', sku: 'K07014-L' }]]]) } };
-    // the owner's decision (18/11/2026): a distinct code per size / colour, as Google asks for variants — «same» stays possible
-    require(APP + '/lib/settings').save({ variantSku: 'same' });
-    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014').length === 0, 'with «one code for all» every size / colour keeps the product\'s one code');
+    // the owner's test plan (19/11/2026): NO code made from ours (no K07014-XL, no P-B-10-M) — a size / colour gets a code
+    // only when other shops show that very size / colour with it, two independent sites at least
     require(APP + '/lib/settings').save({ variantSku: 'suffix' });
-    const vc = fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014');
-    ok(require(APP + '/lib/settings').DEFAULTS.variantSku === 'suffix', 'the default: a distinct code per size / colour (Google)');
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014', []).length === 0, 'no sources → no code for the sizes / colours (nothing like K07014-XL / K07014-MAVRO is made up)');
+    const ev = (host, list) => ({ host, url: `https://${host}/p`, variants: list });
+    const twoShops = [ev('a.gr', [{ size: 'XL', sku: 'K07014-XL-01' }, { size: 'L', sku: 'K07014-L' }]), ev('b.gr', [{ size: 'XL', sku: 'K07014-XL-01' }])];
+    const vc = fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014', twoShops);
+    ok(vc.length === 1 && vc[0].id === 51 && vc[0].sku === 'K07014-XL-01' && vc[0].srcs.map((x) => x.host).join() === 'a.gr,b.gr', 'the XL gets the code two shops show for the XL, with both sources', JSON.stringify(vc));
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014', twoShops.slice(0, 1)).length === 0, 'one shop only → no code (an uncertain finding)');
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014', [ev('a.gr', [{ size: 'XL', sku: 'K07014-XL-01' }]), ev('a.gr', [{ size: 'XL', sku: 'K07014-XL-01' }])]).length === 0, 'two pages of ONE site are one source, not two');
+    require(APP + '/lib/settings').save({ variantSku: 'same' });
+    ok(fixes.variationCodes(fakeC, 'sf', { id: 50 }, 'K07014', twoShops).length === 0, '«no codes for sizes / colours» → none at all');
+    require(APP + '/lib/settings').save({ variantSku: 'suffix' });
     // codes that are not codes: the moment of a WordPress copy at their end, or the same code twice
     const junkC = { skus: { sf: new Set(), st: new Set() }, vars: { sf: new Map([[60, [
       { id: 61, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 58', sku: '58-1756480828' }, { id: 62, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 56', sku: '56-1758873781' }, { id: 63, type: 'variation', parent: 60, varLabel: 'Μεγεθος: 54', sku: 'K05068-54' }]]]) } };
-    const jc = fixes.variationCodes(junkC, 'sf', { id: 60 }, 'K05068');
-    ok(jc.length === 2 && jc[0].sku === 'K05068-58' && jc[0].was === '58-1756480828' && jc[1].sku === 'K05068-56', 'the real «58-1756480828» of the site (a copy\'s date) → K05068-58; the good K05068-54 is left alone', JSON.stringify(jc));
-    ok(fixes.junkSku('K16107-1755357657').base === 'K16107' && !fixes.junkSku('14002001') && !fixes.junkSku('K05001-2.0-MC-1'), 'a product code with the date of a copy at its end is told apart from a real code');
-    ok(vc.length === 3 && vc[0].sku === 'K07014-XL-2' && vc[1].sku === 'K07014-43UK812-MAVRO' && vc[2].sku === 'K07014-3' && new Set(vc.map((v) => v.sku)).size === 3, 'with the setting «own code per size/colour»: «K07014-MAVRO»-style codes, never one already used, the ones with a code left alone', JSON.stringify(vc.map((v) => v.sku)));
+    ok(fixes.variationCodes(junkC, 'sf', { id: 60 }, 'K05068', []).length === 0, 'the real «58-1756480828» of the site is NOT turned into K05068-58 (no sources)');
+    ok(fixes.junkSku('K16107-1755357657').base === 'K16107' && fixes.junkSku('Mora-1755379572') && !fixes.junkSku('14002001') && !fixes.junkSku('K05001-2.0-MC-1'), 'a code with the date of a copy at its end is told apart from a real code');
   }
 
   console.log(`\n${passes} ok, ${fails} failed`);

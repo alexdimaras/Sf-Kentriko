@@ -100,7 +100,8 @@ function draftRows(d, site) {
   const rows = [row];
   vars.forEach((v, i) => {
     const vr = {
-      Type: 'variation', SKU: settings.all().variantSku !== 'suffix' ? '' : v.sku || (sku ? `${sku}-${U.normSku(v.size || v.color || String(i + 1))}` : ''), /* one code for the product and all its sizes / colours (Settings → Νέα προϊόντα) */ Name: d.title + ' - ' + [v.size, v.color].filter(Boolean).join(' '),
+      // its own code only when the source gives one (the supplier's code of that size): never made from ours (no K05007-M)
+      Type: 'variation', SKU: settings.all().variantSku === 'same' ? '' : v.sku || '', /* one code for the product and all its sizes / colours (Settings → Νέα προϊόντα) */ Name: d.title + ' - ' + [v.size, v.color].filter(Boolean).join(' '),
       Published: 1, 'Visibility in catalog': 'visible', 'Tax status': 'taxable', 'In stock?': 1, 'Regular price': num(v.price || d.price),
       'Sale price': d.sale > 0 && d.sale < (v.price || d.price) ? num(d.sale) : '', Parent: sku, Images: v.image ? imgs([v.image]) : '',
     };

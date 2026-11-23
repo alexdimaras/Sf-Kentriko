@@ -226,28 +226,59 @@ function junkSku(sku) {
   const m = String(sku || '').trim().match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
   return m ? { base: m[1].replace(/[-_.\s]+$/, '') } : null;
 }
-function variationCodes(C, site, p, code) {
+/** «Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο» → { size: '43UK812', colours: Set } (what a shop's variant must match). */
+function variantWant(label) {
+  const parts = String(label || '').split(',').map((x) => x.trim()).filter(Boolean);
+  let size = '', colourText = '';
+  for (const x of parts) {
+    const k = x.includes(':') ? x.slice(0, x.indexOf(':')) : '', v = x.includes(':') ? x.slice(x.indexOf(':') + 1).trim() : x;
+    if (/χρώμ|χρωμ|colou?r/i.test(k)) colourText += ' ' + v; else if (!size) size = U.normSku(U.greeklish(v));
+  }
+  return { size, colours: require('./market').coloursOf(colourText) };
+}
+/**
+ * The codes of a product's sizes / colours that have none (or a «code» that is the date of a copy, or the same code
+ * twice) — ONLY from other shops that show the same product with that very size / colour and its code: the same code
+ * at two independent sites at least. Never made from our own code (no K07014-XL, no P-B-10-M): a code nobody shows is
+ * not a code. → [{ id, label, sku, was, srcs: [{ host, url }] }]
+ */
+function variationCodes(C, site, p, code, hits) {
   if (settings.all().variantSku === 'same') return []; // one code for the product and all its sizes / colours
-  // without a code, or with a «code» that is a date of a copy (58-1756480828), or the same code twice: a distinct one
   const all = variationsOf(C, site).get(p.id) || [];
   const count = new Map();
   for (const v of all) if (v.sku) count.set(U.normSku(v.sku), (count.get(U.normSku(v.sku)) || 0) + 1);
-  const bad = (v) => !String(v.sku || '').trim() || !!junkSku(v.sku) || count.get(U.normSku(v.sku)) > 1 || U.normSku(v.sku) === U.normSku(code);
+  const bad = (v) => !String(v.sku || '').trim() || !!junkSku(v.sku) || count.get(U.normSku(v.sku)) > 1 || (code && U.normSku(v.sku) === U.normSku(code));
   const vs = all.filter(bad);
-  if (!vs.length || !code) return [];
+  if (!vs.length) return [];
+  let H = hits;
+  if (!H) { try { H = webHits(C, site, p); } catch (_) { H = []; } }
   const taken = new Set();
   for (const v of all) if (v.sku && !bad(v)) taken.add(U.normSku(v.sku));
+  const m = require('./market');
   const out = [];
-  vs.forEach((v, i) => {
-    const vals = String(v.varLabel || '').split(',').map((x) => (x.includes(':') ? x.slice(x.indexOf(':') + 1) : x).trim()).filter(Boolean);
-    let suf = vals.map((x) => U.greeklish(x).toUpperCase().replace(/[^A-Z0-9]+/g, '')).filter(Boolean).join('-').slice(0, 30);
-    let c = code + '-' + (suf || String(i + 1));
-    let n = 1;
-    // (only this site counts: the same product on the other site has, rightly, the same codes)
-    while (taken.has(U.normSku(c)) || C.skus[site].has(U.normSku(c))) c = code + '-' + (suf ? suf + '-' : '') + ++n;
-    taken.add(U.normSku(c));
-    out.push({ id: v.id, label: v.varLabel || '', sku: c, was: String(v.sku || '') });
-  });
+  for (const v of vs) {
+    const want = variantWant(v.varLabel);
+    if (!want.size && !want.colours.size) continue;
+    const votes = new Map();
+    for (const h of H || []) {
+      for (const x of h.variants || []) {
+        const sku = String(x.sku || '').trim();
+        if (!sku || junkSku(sku) || !/\d/.test(sku)) continue;
+        if (want.size && U.normSku(U.greeklish(x.size || '')) !== want.size) continue;
+        if (want.colours.size && ![...m.coloursOf(x.colour || '')].some((c) => want.colours.has(c))) continue;
+        const k = U.normSku(sku);
+        const e = votes.get(k) || { sku, hosts: new Map() };
+        if (!e.hosts.has(h.host)) e.hosts.set(h.host, h.url);
+        votes.set(k, e);
+      }
+    }
+    const ranked = [...votes.values()].sort((a, b) => b.hosts.size - a.hosts.size);
+    const top = ranked[0];
+    // two independent sites at least, nobody else disagreeing as strongly, not a code already used here
+    if (!top || top.hosts.size < 2 || (ranked[1] && ranked[1].hosts.size >= top.hosts.size) || taken.has(U.normSku(top.sku)) || C.skus[site].has(U.normSku(top.sku))) continue;
+    taken.add(U.normSku(top.sku));
+    out.push({ id: v.id, label: v.varLabel || '', sku: top.sku, was: String(v.sku || ''), srcs: [...top.hosts].map(([host, url]) => ({ host, url })) });
+  }
   return out;
 }
 /** What the shops of the internet say about a product (lib/codefind.js); the same product on SpecialForces counts for the ads site. */
@@ -270,6 +301,7 @@ function codeOf(raw, variable) {
   if (/^\d+$/.test(t) && (t.length >= 9 || t.length <= 3)) return '';
   if (validGtin(t)) return '';
   if (/\.vs\d+$/i.test(t)) return ''; // a shop's own number for a variation (amerikaniki-agora: «3498.vs1»), not the maker's code
+  if (junkSku(t)) return ''; // the date of a copy at its end (Mora-1755379572): not a code
   if (variable) { const cb = require('./market').codeBase(t); if (cb && cb.base.length >= 4 && cb.base !== U.normSku(t)) return baseText(t, cb.base); }
   return t;
 }
@@ -516,19 +548,25 @@ function proposalsFor(site, p, C) {
         add(Object.assign({}, base, { field: 'brand', from: '', to: top.name, why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (top.srcs.length > 1 ? ` Συμφωνούν ${top.srcs.length} πηγές.` : '') + (top.known ? '' : ' (Νέα μάρκα για το κατάστημα: έλεγξε τη γραφή.)') + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium', exportable }));
       }
     }
-    if (!String(p.sku || '').trim()) {
-      // Code: our other site → the supplier's list → the shops with the same product (their maker's code)
+    const junk = junkSku(p.sku);
+    if (!String(p.sku || '').trim() || junk) {
+      // Code: our other site → the supplier's list → the shops with the same product (their maker's code). A «code»
+      // that is the date of a copy (Mora-1755379572) is replaced only by a code that sources show — never «cleaned»
+      // into what is left of it («Mora» is the brand, not a code).
       const cv = new Map();
       const addCode = (raw, src, weak) => { const c = codeOf(raw, p.type === 'variable'); if (!c) return; const k = U.normSku(c); const e = cv.get(k) || { code: c, srcs: [], weak: false }; if (!e.srcs.some((x) => x.label === src.label)) e.srcs.push(src); if (weak) e.weak = true; cv.set(k, e); };
-      if (twin && twin.sku) addCode(twin.sku, { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, false);
+      if (twin && twin.sku && !junkSku(twin.sku)) addCode(twin.sku, { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, false);
       if (found && found.data && found.data.code) addCode(found.data.code, found.src, found.src.level !== 'high');
       for (const w of wit) { if (!w.code || !safeWitness(p, w)) continue; addCode(w.code, { kind: 'competitor', label: `${w.shop} (${w.proof})`, url: w.url }, w.byWords || !w.exact); }
       // …and the shops of the internet that show the same product (searched for the products without a code)
-      for (const h of webHits(C, site, p)) { if (!h.code || !sameColours(p.name, h.name)) continue; addCode(h.code, { kind: 'web', label: `${h.host} (ίδιο προϊόν στο internet)`, url: h.url }, true); }
+      // (the maker's code of their page when it gives one; a shop's own code alone is weaker: it may be theirs only)
+      for (const h of webHits(C, site, p)) { const raw = h.mpn || h.code; if (!raw || !sameColours(p.name, h.name) || h.match === 'code') continue; addCode(raw, { kind: 'web', label: `${h.host} (ίδιο προϊόν στο internet${h.mpn ? ', κωδικός κατασκευαστή' : ''})`, url: h.url }, true); }
       const ranked = [...cv.values()].sort((a1, b1) => b1.srcs.length - a1.srcs.length);
       const top = ranked[0];
       // two different codes with the same support: nothing (a wrong code is worse than none)
-      if (top && !(ranked[1] && ranked[1].srcs.length >= top.srcs.length) && !C.skus[site].has(U.normSku(top.code))) {
+      // replacing a code that is there (the date of a copy): two independent sources at least
+      if (top && junk && top.srcs.filter((x) => x.kind !== 'twin').length < 2 && !top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier')) { /* an uncertain finding: shown in the product's quality report, no proposal */ }
+      else if (top && !(ranked[1] && ranked[1].srcs.length >= top.srcs.length) && !C.skus[site].has(U.normSku(top.code))) {
         const fromUs = top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier');
         // sure: our own other site, a sure supplier source, or two shops that give the same code on their own
         let sure = top.srcs.some((x) => x.kind === 'twin') || (fromUs && !top.weak) || top.srcs.length >= 2;
@@ -538,18 +576,14 @@ function proposalsFor(site, p, C) {
         const clash = cb && U.collapse(p.name).split(' ').map((x) => mk.codeBase(x)).find((x) => x && x.shape === cb.shape && x.base !== cb.base && !(x.run && cb.run && x.run === cb.run));
         if (clash) sure = false;
         const vars = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
-        add(Object.assign({}, base, { field: 'sku', from: '', to: top.code, vars, why: 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.' + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Μία μόνο πηγή (κατάστημα με το ίδιο προϊόν): έλεγξέ τον.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
+        add(Object.assign({}, base, { field: 'sku', from: junk ? p.sku : '', to: top.code, vars, why: (junk ? `Ο κωδικός «${p.sku}» δεν είναι κωδικός (έχει στο τέλος την ώρα αντιγραφής του προϊόντος). ` : 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.') + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Αβέβαιο εύρημα — μία μόνο πηγή (ίσως κωδικός του καταστήματος, όχι του κατασκευαστή): χρειάζεται χειροκίνητη επιβεβαίωση.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
       }
-    } else if (junkSku(p.sku) && junkSku(p.sku).base.length >= 4 && !C.skus[site].has(U.normSku(junkSku(p.sku).base))) {
-      // a «code» that ends with the date a product was copied (K16107-1755357657): the code before it — it is the
-      // product's own code, written once more without the tail (Google and the price lists read the clean one)
-      const clean = junkSku(p.sku).base;
-      const vars = p.type === 'variable' ? variationCodes(C, site, p, clean) : [];
-      add(Object.assign({}, base, { field: 'sku', from: p.sku, to: clean, vars, why: `Ο κωδικός «${p.sku}» έχει στο τέλος αυτόματο αριθμό (την ώρα που αντιγράφηκε το προϊόν στο WordPress): ο σωστός είναι «${clean}».` + (vars.length ? ` Μαζί παίρνουν δικό τους κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: { kind: 'rule', label: 'Από τον ίδιο τον κωδικό του προϊόντος' }, level: 'high' }));
     } else if (p.type === 'variable') {
       // the product has a code, some of its sizes / colours do not (or have a date of a copy, or the same code twice)
       const vars = variationCodes(C, site, p, String(p.sku).trim());
-      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: vars.filter((v) => v.was).map((v) => ({ label: v.label, sku: v.was })), to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα δεν έχει' : vars.length + ' μεγέθη/χρώματα δεν έχουν'} δικό τους σωστό κωδικό: παίρνουν τον κωδικό του προϊόντος (${p.sku}) με το μέγεθος/χρώμα στο τέλος, ώστε κάθε ένα να είναι μοναδικό — όπως ζητά η Google για τις παραλλαγές.` + (vars.some((v) => v.was) ? ` (Οι παλιοί «${vars.find((v) => v.was).was}…» είναι αυτόματοι αριθμοί ή διπλοί.)` : ''), source: { kind: 'rule', label: 'Από τον κωδικό του προϊόντος' }, level: 'high' }));
+      // only codes other shops show for that very size / colour (two sites at least): never made from ours
+      const hostsOf = (v) => v.srcs.map((x) => x.host);
+      if (vars.length) add(Object.assign({}, base, { field: 'varsku', from: vars.filter((v) => v.was).map((v) => ({ label: v.label, sku: v.was })), to: vars.map((v) => ({ label: v.label, sku: v.sku })), vars, why: `${vars.length === 1 ? 'Ένα μέγεθος/χρώμα' : vars.length + ' μεγέθη/χρώματα'} χωρίς σωστό κωδικό: τον ίδιο κωδικό για ακριβώς αυτό το μέγεθος/χρώμα δείχνουν ${[...new Set(vars.flatMap(hostsOf))].length} ανεξάρτητα καταστήματα (${[...new Set(vars.flatMap(hostsOf))].slice(0, 3).join(', ')}).` + (vars.some((v) => v.was) ? ` (Οι τωρινοί «${vars.find((v) => v.was).was}…» είναι αυτόματοι αριθμοί ή διπλοί.)` : ''), source: { kind: 'web', label: vars[0].srcs[0].host + ' (ίδιο μέγεθος/χρώμα)', url: vars[0].srcs[0].url }, sources: vars[0].srcs.slice(1).map((x) => ({ kind: 'web', label: x.host + ' (ίδιο μέγεθος/χρώμα)', url: x.url })), level: 'high' }));
     }
     if (p.type === 'simple' && !p.ean) {
       // EAN: from the supplier (sure source) and from the shops with the same product; different EANs → nothing
@@ -841,7 +875,7 @@ function exportFile(site, by) {
   const row = (pid) => { if (!rows.has(pid)) rows.set(pid, { ID: pid }); return rows.get(pid); };
   const set = (r, k, v) => { r[k] = v; cols.add(k); };
   let xc = null;
-  const exportCtx = () => { if (!xc) { xc = { skus: { sf: new Set(), st: new Set() } }; for (const st2 of catalog.SITES) for (const x of catalog.load(st2).products) if (x.sku) xc.skus[st2].add(U.normSku(x.sku)); } return xc; };
+  const exportCtx = () => { if (!xc) { xc = { L: catalog.links(), skus: { sf: new Set(), st: new Set() } }; for (const st2 of catalog.SITES) for (const x of catalog.load(st2).products) if (x.sku) xc.skus[st2].add(U.normSku(x.sku)); } return xc; };
   const brandAttr = catalog.detectAttribute(site, 'brand');
   for (const c of items) {
     const p = byId.get(c.pid);
@@ -861,7 +895,9 @@ function exportFile(site, by) {
       // the sizes / colours: worked out again from THIS site's catalog (a change approved on SpecialForces and made by
       // itself on the ads site carries the other site's variations)
       const code = c.field === 'sku' ? c.to : p.sku;
-      if (p.type === 'variable' && code) for (const v of variationCodes(exportCtx(), site, p, code)) extraRows.push({ ID: v.id, SKU: v.sku });
+      // (the codes the approval saw, for this site's own variations; else worked out again from the same sources)
+      const vlist = (c.vars || []).length && c.site === site ? c.vars : p.type === 'variable' && code ? variationCodes(exportCtx(), site, p, code) : [];
+      for (const v of vlist) extraRows.push({ ID: v.id, SKU: v.sku });
     }
     else if (c.field === 'brand') { wx.setAttrs(r, [{ name: brandAttr, values: [c.to], visible: true, global: true }]); for (const k of ['Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global']) cols.add(k); }
     else if (c.field === 'price') {

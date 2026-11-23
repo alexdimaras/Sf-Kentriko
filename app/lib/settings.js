@@ -14,10 +14,9 @@ const DEFAULTS = {
   floorMargin: 25,
   // the price changes only when at least this many shops (in stock, not suspect) agree
   minShops: 2,
-  // sizes / colours of a product: 'suffix' = each its own code (what Google asks for the variants of a product: a
-  // distinct SKU per variant) — the maker's code of that colour when there is one, else the product's code with the
-  // colour / size at the end (K13079-SAND: the shop's own code, never an EAN, never a made-up maker's code);
-  // 'same' = the product's one code for all of them. (The owner's decision, 18/11/2026: like Google.)
+  // sizes / colours of a product: 'suffix' = each its own code — ONLY a real one, from sources (the supplier's code of
+  // that size, or the same code shown by two independent shops for that very size / colour); never made from ours
+  // (no K13079-SAND, no P-B-10-XL: the owner's test plan of 19/11/2026); 'same' = no codes for sizes / colours at all.
   variantSku: 'suffix',
   skuPolicy: 0,
   // a competitor price this many % under the others (or under the supplier's retail price) is suspect: old stock, mistake
