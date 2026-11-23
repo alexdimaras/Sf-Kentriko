@@ -32,7 +32,9 @@ const AGAIN_DAYS = 21;            // (old entries without a status: as before)
 const HIT_DAYS = 120;             // a shop page that showed the product counts for four months, unless read again and changed
 const PRICE_DAYS = 14;            // a price from the internet is looked up again after two weeks
 const STALE_DAYS = 60;            // a research older than this is «old»
-const FAILED = new Set(['blocked', 'search_failed', 'pages_failed', 'cancelled', 'error']);
+// coverage_limited: «nothing found» said by too few working search engines (Bing ok with 0, Yahoo error, DDG paused):
+// not «it does not exist» — kept apart, the old findings stay, asked again soon
+const FAILED = new Set(['blocked', 'search_failed', 'pages_failed', 'cancelled', 'error', 'coverage_limited']);
 const SUCCESS = new Set(['complete', 'partial', 'not_found', 'no_results', 'family_only']);
 const WEIGHT = { sku: 5, price: 4, ean: 3, images: 2, brand: 1 };
 const DEFAULT_LIMITS = { maxQueries: 12, pagesPerQuery: 8, perHost: 4, maxPages: 60, minQueries: 4, minShops: 4, fullQueries: 20, fullPages: 120, minImages: 3 };
@@ -97,7 +99,7 @@ function knownPages(key) {
 }
 function itemOf(site, p, prev, needs) {
   const k = site + ':' + p.id;
-  return { k, name: p.name, brand: p.brand || '', sku: p.sku || '', ean: p.ean || '', price: p.price || 0, inStock: p.inStock !== false, needs, round: (prev && prev.rounds) || 0, known: knownPages(k), aiQueries: (prev && prev.aiq && days(prev.aiq.at) < 60 ? prev.aiq.list : []) || [] };
+  return { k, name: p.name, brand: p.brand || '', cat: (p.catNames || [])[0] || '', sku: p.sku || '', ean: p.ean || '', price: p.price || 0, inStock: p.inStock !== false, needs, round: (prev && prev.rounds) || 0, known: knownPages(k), aiQueries: (prev && prev.aiq && days(prev.aiq.at) < 60 ? prev.aiq.list : []) || [] };
 }
 
 /** The products to look up, those with the most important gaps first (code, price, EAN, photos, brand; in stock; dearer). */
@@ -168,40 +170,76 @@ function kindEn(title) {
  * code-flat · mpn · english · latin · nobrand · codes · ai). it.round: later rounds put the other ways first;
  * it.aiQueries: searches the AI of a computer proposed (checked: never a search with a code that is not ours).
  */
+// brands written more than one way by the shops (the first is how we search it first)
+const BRAND_ALT = [[/^MORAKNIV$/i, ['Mora']], [/^MIL-?TEC$/i, ['Miltec', 'Mil-Tec']], [/^5\.?11( TACTICAL)?$/i, ['5.11 Tactical', '511']], [/^HELIKON(-TEX)?$/i, ['Helikon-Tex', 'Helikon']],
+  [/^MECHANIX( WEAR)?$/i, ['Mechanix Wear', 'Mechanix']], [/^NITE ?CORE$/i, ['Nitecore']], [/^LEATHERMAN$/i, []], [/^PENTAGON$/i, []]];
+function brandAlts(brand) {
+  const b = U.collapse(brand || '');
+  if (!b) return [];
+  const out = [];
+  for (const [re, alts] of BRAND_ALT) if (re.test(b)) out.push(...alts);
+  if (/-/.test(b)) out.push(b.replace(/-/g, ''), b.replace(/-/g, ' '));
+  const seen = new Set([U.foldKey(b)]);
+  return out.filter((x) => { const k = U.foldKey(x); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+/** The brand of a title filed without one: a known form (5.11 TACTICAL, MIL-TEC) or its first Latin word. */
+function brandOfTitle(title) {
+  const t = U.collapse(U.decodeEntities(title || ''));
+  const m = t.match(/(?:^|\s)(5\.11(?:\s+TACTICAL)?)(?=\s|$)/i);
+  if (m) return m[1];
+  return guessBrand(t);
+}
+
 function planOf(it, max) {
   const market = require('./market');
   const title = U.collapse(U.decodeEntities(it.name));
-  const brand = U.collapse(U.decodeEntities(it.brand || ''));
+  // no brand filed: the one the title writes (searched as such — never used as a code)
+  const brand = U.collapse(U.decodeEntities(it.brand || it.brandGuess || brandOfTitle(title) || ''));
+  const filed = !!(it.brand || it.brandGuess); // a brand only guessed from the title never goes before a code
   const withBrand = brand && !U.foldKey(title).includes(U.foldKey(brand)) ? brand + ' ' + title : title;
-  const f = market.features({ name: it.name, brand: it.brand });
-  const keys = f.keys.filter((k) => /[A-Z0-9]/.test(k));
-  const sku = U.collapse(it.sku || '');
+  const f = market.features({ name: it.name, brand });
+  const keys = f.keys.filter((k) => /[A-Z0-9]/.test(k) && U.foldKey(k) !== U.foldKey(brand).replace(/[^A-Z0-9]/g, ''));
+  // a code with a copy's date stamp is no code (Mora-1755379572): never searched
+  const sku = U.junkSku(it.sku) ? '' : U.collapse(it.sku || '');
   const skuFlat = U.normSku(sku);
   const ean = gtin(it.ean) ? String(it.ean).replace(/\D/g, '') : '';
-  const mpn = U.collapse(it.mpn || '');
-  const en = kindEn(title);
+  const mpn = U.junkSku(it.mpn) ? '' : U.collapse(it.mpn || '');
+  const en = kindEn(title) || kindEn(it.cat || '');
   const colours = [...market.coloursOf(it.name)].map((c) => c.toLowerCase());
   // the model as the shops write it, in Latin letters (no Greek type words, colours or sizes)
   const latin = title.split(/\s+/).filter((w) => !/[Ͱ-Ͽ]/.test(w)).join(' ');
   const model = keys.join(' ');
+  // the Greek kind of the product (its first word or its category): how Greek shops name it
+  const kindGr = /^[Α-ΩΆ-Ώ]{4,}$/.test(U.greekUpper(title.split(/\s+/)[0] || '')) ? title.split(/\s+/)[0] : (it.cat && /[Ͱ-Ͽ]/.test(it.cat) ? U.collapse(it.cat).split(/\s+/)[0] : '');
   const first = [], alt = [];
   const add = (list, q, why) => list.push({ q, why });
-  if (sku) add(first, `${brand} ${sku}`.trim(), 'code');
+  if (sku) add(first, `${filed ? brand : ''} ${sku}`.trim(), 'code');
   if (ean) add(first, ean, 'ean');
   if (brand && model && colours.length) add(first, `"${brand} ${model}" ${colours.join(' ')}`, 'exact');
   add(first, withBrand, 'title');
   if (brand && model) add(first, `${brand} ${model}`, 'model');
+  // the model in quotes, without colour or kind: the exact name of the model (finds the pages of all its shops)
+  if (brand && model) add(first, `"${brand} ${model}"`, 'exact-model');
+  // the model words without its codes («5.11 ALL HAZARDS AMMO MULE» of «… 56084»): the name the shops give it
+  const words = keys.filter((k) => !f.codes.some((c) => U.normSku(c) === U.normSku(k)) && !/^\d+$/.test(k));
+  if (brand && words.length >= 2 && words.length < keys.length) add(alt, `"${brand} ${words.join(' ')}"`, 'model-words');
+  // the Latin name of the title as written (WATERPROOF of «PORTWEST WATERPROOF PERFORMANCE SOCK» is kept), no colour
+  const latinNc = latin.split(/\s+/).filter((w) => !market.coloursOf(w).size && !/^\(.*\)$/.test(w)).join(' ');
+  if (brand && latinNc.split(/\s+/).length >= 3 && U.foldKey(latinNc).includes(U.foldKey(brand))) add(alt, `"${latinNc}"`, 'exact-title');
   if (sku && skuFlat.length >= 5 && /\d/.test(skuFlat)) { add(alt, sku, 'code-alone'); if (skuFlat !== sku.toUpperCase()) add(alt, skuFlat, 'code-flat'); }
   if (mpn && U.normSku(mpn) !== skuFlat) add(alt, `${brand} ${mpn}`.trim(), 'mpn');
   if (en && (brand || keys.length)) add(alt, `${brand} ${model} ${en} ${colours.join(' ')}`.replace(/\s+/g, ' ').trim(), 'english');
+  if (kindGr && brand && model && !U.foldKey(withBrand).startsWith(U.foldKey(kindGr) + ' ' + U.foldKey(brand))) add(alt, `${kindGr} ${brand} ${model}`, 'greek');
+  // the brand as other shops write it (MORAKNIV / Mora, MIL-TEC / Miltec)
+  for (const b of brandAlts(brand).slice(0, 2)) if (model) add(alt, `${b} ${model}${en ? ' ' + en : ''}`, 'brand-alt');
   // the model without its colour: finds the family (the other colours / sizes and their pages), never a value for ours
   if (brand && model && colours.length) add(alt, `"${brand} ${model}"${en ? ' ' + en : ''}`, 'family');
-  if (!brand) {
-    // no brand: the model words / codes of the title (a product without a brand is still searched in earnest)
+  if (!it.brand) {
+    // no brand filed: the model words / codes of the title (a product without a brand is still searched in earnest)
     if (latin && latin !== title) add(alt, latin, 'latin');
-    if (keys.length >= 2) add(alt, model + (en ? ' ' + en : ''), 'nobrand');
-  } else if (latin && U.foldKey(latin) !== U.foldKey(withBrand)) add(alt, latin.includes(brand) ? latin : `${brand} ${latin}`, 'latin');
-  for (const c of f.codes.slice(0, 2)) add(alt, brand ? `${brand} ${c}` : c, 'codes');
+    if (keys.filter((k) => /[A-Z]{2}/.test(k)).length >= 2) add(alt, model + (en ? ' ' + en : ''), 'nobrand');
+  } else if (latin && U.foldKey(latin) !== U.foldKey(withBrand)) add(alt, U.foldKey(latin).includes(U.foldKey(brand)) ? latin : `${brand} ${latin}`, 'latin');
+  for (const c of f.codes.slice(0, 2)) if (!U.junkSku(c)) add(alt, brand && filed ? `${brand} ${c}` : brand && U.normSku(c).length < 6 ? `${brand} ${c}` : c, 'codes');
   for (const q of (it.aiQueries || []).slice(0, 4)) add(alt, q, 'ai');
   const order = (it.round || 0) % 2 === 1 ? first.slice(0, 1).concat(alt, first.slice(1)) : first.concat(alt);
   const seen = new Set();
@@ -369,7 +407,8 @@ async function lookUp(it, io) {
   const tried = new Set(), perHost = new Map(), sameHost = new Set();
   const trace = { at: U.nowIso(), mode: full ? 'full' : 'auto', queries: [], results: [], pages: [] };
   const sum = { queries: 0, engines: {}, results: 0, opened: 0, read: 0, exact: 0, family: 0, rejected: 0, errors: 0, domains: 0, newShops: 0, reasons: {} };
-  let read = 0, queries = 0, status = '', engineOk = 0, engineErr = 0, stop = '';
+  let read = 0, queries = 0, status = '', engineOk = 0, engineErr = 0, stop = '', deadRun = 0;
+  const t0 = Date.now();
   const ourColours = market.coloursOf(it.name);
   const ourEan = gtin(it.ean);
   const our = { name: it.name, brand: it.brand, sku: it.sku || '', price: it.price, ean: it.ean || '' };
@@ -382,8 +421,11 @@ async function lookUp(it, io) {
   const known = (it.known || []).filter((x) => x && /^https?:\/\//.test(x.url));
   const steps = (known.length ? [{ q: '(κατάλογοι ανταγωνιστών)', why: 'catalog', known }] : []).concat(plan);
   for (const step of steps) {
-    if (io.cancelled && io.cancelled()) { status = 'cancelled'; break; }
+    if (io.cancelled && io.cancelled()) { status = 'cancelled'; stop = 'cancelled'; break; }
     if (sum.opened >= maxPages) { stop = 'pages'; break; }
+    if (io.maxMs && Date.now() - t0 > io.maxMs) { stop = 'time'; break; }
+    // three searches in a row that no engine answered: the engines are down, not the product missing
+    if (deadRun >= 3) { stop = 'engines'; break; }
     // enough (auto): the first searches done, what is missing confirmed, by enough shops
     const shops = new Set(hits.map((h) => h.host)).size;
     if (!full && queries >= L.minQueries && !openNeeds(needs, hits).length && shops >= Math.min(L.minShops, 2 + Math.floor(queries / 4))) { stop = 'enough'; break; }
@@ -393,10 +435,10 @@ async function lookUp(it, io) {
       try { results = await io.search(step.q); } catch (e) {
         if (e instanceof sfind.Blocked) {
           if (!queries) throw e; // nothing done yet: the job waits and asks again for this product
-          status = 'blocked'; trace.queries.push({ q: step.q, why: step.why, n: 0, engines: e.engines || null, error: 'οι μηχανές αναζήτησης ζήτησαν παύση' }); break;
+          status = 'blocked'; stop = 'blocked'; trace.queries.push({ q: step.q, why: step.why, n: 0, engines: e.engines || null, error: 'οι μηχανές αναζήτησης ζήτησαν παύση' }); break;
         }
-        if (e && e.cancelled) { status = 'cancelled'; break; }
-        engineErr++; sum.errors++;
+        if (e && e.cancelled) { status = 'cancelled'; stop = 'cancelled'; break; }
+        engineErr++; sum.errors++; deadRun++;
         trace.queries.push({ q: step.q, why: step.why, n: 0, error: String(e.message || e).slice(0, 140) });
         continue;
       }
@@ -405,6 +447,7 @@ async function lookUp(it, io) {
     const eng = (results && results.engines) || null;
     if (eng) for (const x of eng) { if (x.id === 'catalog') continue; sum.engines[x.id] = sum.engines[x.id] || { ok: 0, failed: 0, blocked: 0, results: 0 }; if (x.state === 'ok') { sum.engines[x.id].ok++; sum.engines[x.id].results += x.n || 0; engineOk++; } else if (x.state === 'blocked' || x.state === 'paused' || x.state === 'quota') sum.engines[x.id].blocked++; else { sum.engines[x.id].failed++; engineErr++; } }
     else if (!step.known) engineOk++;
+    if (eng && !step.known) deadRun = eng.some((x) => x.state === 'ok') ? 0 : deadRun + 1;
     const qi = trace.queries.length;
     trace.queries.push({ q: step.q, why: step.why, n: (results || []).length, engines: eng });
     sum.results += step.known ? 0 : (results || []).length;
@@ -420,7 +463,7 @@ async function lookUp(it, io) {
       if (!domains.has(host)) { domains.set(host, classify(host, ctx)); if (domains.get(host) === 'shop') sum.newShops++; }
       const cls = domains.get(host);
       const nu = normUrl(r.url);
-      const rec = { q: qi, url: String(r.url).slice(0, 300), host, title: String(r.title || '').slice(0, 120), engine: r.engine || '', rank: r.rank == null ? null : r.rank, cls, open: '' };
+      const rec = { q: qi, url: String(r.url).slice(0, 300), host, title: String(r.title || '').slice(0, 120), snippet: String(r.snippet || '').slice(0, 200), engine: r.engine || '', rank: r.rank == null ? null : r.rank, cls, open: '', at: U.nowIso() };
       if (trace.results.length < 400) trace.results.push(rec);
       if (tried.has(nu)) { rec.open = 'ήδη'; continue; }
       tried.add(nu);
@@ -513,11 +556,19 @@ async function lookUp(it, io) {
     });
   }
   if (!stop && !status) stop = 'plan';
+  // the coverage: how many engines really answered (one engine with 0 results while the others failed is no proof)
+  const engs = Object.entries(sum.engines);
+  const okEng = engs.filter(([, e]) => e.ok > 0).map(([id]) => id), badEng = engs.filter(([, e]) => !e.ok && (e.failed || e.blocked)).map(([id]) => id);
+  const planned = steps.filter((x) => !x.known).length;
+  const coverage = !engs.length ? 'unknown'
+    : (okEng.length >= 2 || (okEng.length === 1 && !badEng.length)) && queries >= Math.min(L.minQueries, planned) ? 'adequate' : 'limited';
+  trace.coverage = { level: coverage, ok: okEng, failed: badEng, queries, planned };
   if (!status) {
     const anyPages = sum.opened > 0;
     if (!queries && engineErr && !known.length) status = 'search_failed';
     else if (queries && !engineOk && engineErr && !hits.length) status = 'search_failed';
     else if (hits.length) status = openNeeds(needs, hits).length ? 'partial' : 'complete';
+    else if (coverage === 'limited' && !(anyPages && !read)) status = 'coverage_limited';
     else if (family.length) status = 'family_only';
     else if (anyPages && !read) status = 'pages_failed';
     else if (anyPages) status = 'not_found';
@@ -526,8 +577,9 @@ async function lookUp(it, io) {
   sum.queries = queries;
   sum.domains = domains.size;
   trace.stop = stop;
+  trace.ms = Date.now() - t0;
   trace.domains = [...domains].slice(0, 120).map(([host, cls]) => ({ host, cls }));
-  return { hits, family, read, queries, status, needsLeft: openNeeds(needs, hits), sum, trace, stop };
+  return { hits, family, read, queries, status, needsLeft: openNeeds(needs, hits), sum, trace, stop, coverage };
 }
 
 /** The pages of before and of now, together: a page found again is the new one; one not read again stays (4 months). */
@@ -566,7 +618,7 @@ function save(results) {
           rounds: ((prev && prev.rounds) || 0) + 1,
           fails: FAILED.has(r.status) ? ((prev && prev.fails) || 0) + 1 : 0,
           empties: ok && !gotNew ? ((prev && prev.empties) || 0) + 1 : 0,
-          runAt: (r.trace && r.trace.at) || now, mode: (r.trace && r.trace.mode) || 'auto', stop: r.stop || (r.trace && r.trace.stop) || '',
+          runAt: (r.trace && r.trace.at) || now, mode: (r.trace && r.trace.mode) || 'auto', stop: r.stop || (r.trace && r.trace.stop) || '', coverage: r.coverage || (r.trace && r.trace.coverage && r.trace.coverage.level) || '',
           // the other variants of the model seen on the way (kept apart: never a value of ours)
           family: (r.family || []).concat(((prev && prev.family) || []).filter((x) => !(r.family || []).some((y) => normUrl(y.url) === normUrl(x.url)) && days(x.at) <= HIT_DAYS)).slice(0, 20),
           ...(prev && prev.aiq ? { aiq: prev.aiq } : {}),
@@ -679,7 +731,11 @@ async function run(job, opts) {
 
 const STATUS_LABEL = { never: 'Δεν έχει ξεκινήσει', queued: 'Σε αναμονή', running: 'Σε εξέλιξη', complete: 'Ολοκληρώθηκε με αποτελέσματα', partial: 'Ολοκληρώθηκε με ελλείψεις', family_only: 'Βρέθηκε μόνο άλλη παραλλαγή του μοντέλου',
   not_found: 'Ολοκληρώθηκε: δεν βρέθηκε το ίδιο προϊόν', no_results: 'Ολοκληρώθηκε: καμία σελίδα καταστήματος', pages_failed: 'Δεν διαβάστηκαν οι σελίδες', search_failed: 'Απέτυχαν οι μηχανές αναζήτησης', blocked: 'Μπλοκαρίστηκε προσωρινά',
-  cancelled: 'Διακόπηκε', error: 'Σφάλμα', due: 'Χρειάζεται επανάληψη', stale: 'Παρωχημένη έρευνα' };
+  cancelled: 'Διακόπηκε', error: 'Σφάλμα', due: 'Χρειάζεται επανάληψη', stale: 'Παρωχημένη έρευνα',
+  coverage_limited: 'Περιορισμένη κάλυψη: λίγες μηχανές απάντησαν — όχι «δεν υπάρχει»' };
+// why a research stopped where it did
+const STOP_LABEL = { plan: 'έγιναν όλες οι αναζητήσεις του πλάνου', enough: 'αρκετά: βρέθηκαν όσα έλειπαν σε αρκετά καταστήματα', pages: 'έφτασε το όριο σελίδων',
+  time: 'έφτασε το όριο χρόνου', engines: 'οι μηχανές αναζήτησης δεν απαντούσαν (3 συνεχόμενες αναζητήσεις)', blocked: 'οι μηχανές ζήτησαν παύση', cancelled: 'διακόπηκε από εσένα ή από τον υπολογιστή' };
 
 /** What the shops of the web say about one of our products (for the proposals): only «the same variant». */
 function hitsFor(key) { const e = data().products[key]; return e ? e.hits || [] : []; }
@@ -707,6 +763,7 @@ function traceFor(key, q) {
     sum: (e && e.sum) || (t && t.sum) || null, queries: t ? t.queries : [],
     pages: slice(pages), results: slice(results), totals: { pages: pages.length, results: results.length }, page, per,
     domains: (t && t.domains) || [], error: t && t.error ? t.error : '', quality: e ? qualityOf(e) : [],
+    stopWord: STOP_LABEL[(e && e.stop) || (t && t.stop) || ''] || '', coverage: (t && t.coverage) || null, ms: (t && t.ms) || 0,
   };
 }
 /** The state of a research in one word (a research needing a new pass, or old, is said so). */
@@ -787,4 +844,4 @@ function status() {
   return { looked: all.filter((e) => !FAILED.has(e.status)).length, withCode: all.filter((e) => (e.hits || []).length).length, waiting: candidates(2000).length, byStatus: by, failed: all.filter((e) => FAILED.has(e.status)).length, sites: Object.keys(d.shops).length };
 }
 
-module.exports = { itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };
+module.exports = { STOP_LABEL, itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };

@@ -412,6 +412,11 @@ function decodeText(buf) {
 // ---- misc ----
 function uid(prefix) { return (prefix || '') + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } }
+/** A code with the date stamp of a copy at its end (Mora-1755379572, 58-1756480828): not a real code → { base } or null. */
+function junkSku(sku) {
+  const m = String(sku || '').trim().match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
+  return m ? { base: m[1].replace(/[-_.\s]+$/, '') } : null;
+}
 /** One «source»: the registrable domain of a host (shop.x.gr and www.x.gr = x.gr; x.com.gr / x.co.uk keep three parts). */
 function siteOf(h) {
   const x = String(h || '').toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/:\d+$/, '').replace(/^www\./, '');
@@ -433,5 +438,5 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 module.exports = {
   greekShare, stripTonos, collapse, greekUpper, foldKey, capsTitle, hasLowercase, spellSuggest, titleCase, learnAccents, accentMapFrom, greeklish, slugify, fixMixedScript, toGreekLetters,
   decodeEntities, repairEntities, untexturize, escapeHtml, stripTags, parseNumber, r2, money, roundPrice, roundDown, median,
-  toCSV, parseCSV, decodeText, uid, hostOf, siteOf, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
+  toCSV, parseCSV, decodeText, uid, hostOf, siteOf, junkSku, normUrl, normSku, nowIso, sleep, GREEK_ONLY, LATIN_ONLY,
 };

@@ -30,7 +30,7 @@
   const confPill = (c) => { const v = confOf(c); return h('span', { class: 'pill conf ' + (v >= 90 ? 'ok' : v >= 70 ? 'warn' : ''), title: 'Πόσο σίγουρο είναι ότι πρόκειται για το ίδιο ακριβώς προϊόν' + (c.web ? ' (βρέθηκε στο internet)' : '') }, v + '%'); };
   App.offerConfidence = confOf;
   // where the search on the internet stands for a product without a price
-  const WEBSTATE = { partial: 'ολοκληρώθηκε με ελλείψεις', complete: 'ολοκληρώθηκε', pages_failed: 'δεν διαβάστηκαν οι σελίδες', search_failed: 'απέτυχαν οι μηχανές', blocked: 'μπλοκαρίστηκε προσωρινά', cancelled: 'διακόπηκε', error: 'σφάλμα', due: 'χρειάζεται επανάληψη', stale: 'παλιά έρευνα' };
+  const WEBSTATE = { coverage_limited: 'περιορισμένη κάλυψη (ξαναδοκιμάζει)', partial: 'ολοκληρώθηκε με ελλείψεις', complete: 'ολοκληρώθηκε', pages_failed: 'δεν διαβάστηκαν οι σελίδες', search_failed: 'απέτυχαν οι μηχανές', blocked: 'μπλοκαρίστηκε προσωρινά', cancelled: 'διακόπηκε', error: 'σφάλμα', due: 'χρειάζεται επανάληψη', stale: 'παλιά έρευνα' };
   const webPill = (w) => {
     w = w || { state: 'never' };
     if (w.state === 'queued') return h('div', { class: 'pill warn', title: 'Περιμένει σειρά στους υπολογιστές που βοηθούν' }, 'σε σειρά για internet');

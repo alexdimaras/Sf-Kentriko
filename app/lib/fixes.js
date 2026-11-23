@@ -222,10 +222,7 @@ function variationsOf(C, site) {
  * A code that is not a code: a WordPress copy of a product writes the moment of the copy at its end
  * (K16107-1755357657, 58-1756480828: «-» + ten digits of a date between 2017 and 2033). → the code before it, or ''.
  */
-function junkSku(sku) {
-  const m = String(sku || '').trim().match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
-  return m ? { base: m[1].replace(/[-_.\s]+$/, '') } : null;
-}
+function junkSku(sku) { return U.junkSku(sku); }
 /** «Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο» → { size: '43UK812', colours: Set } (what a shop's variant must match). */
 function variantWant(label) {
   const parts = String(label || '').split(',').map((x) => x.trim()).filter(Boolean);

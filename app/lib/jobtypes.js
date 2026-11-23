@@ -138,7 +138,7 @@ function cleanResearch(r) {
     ...(h.ai && typeof h.ai === 'object' ? { ai: { verdict: str(h.ai.verdict, 12), reason: str(h.ai.reason, 160) } } : {}),
   })).filter((h) => h.host) };
   // what happened (a result from an older worker has none: it is kept as before)
-  const ST = ['complete', 'partial', 'family_only', 'not_found', 'no_results', 'pages_failed', 'search_failed', 'blocked', 'cancelled', 'error'];
+  const ST = ['complete', 'partial', 'family_only', 'not_found', 'no_results', 'pages_failed', 'search_failed', 'blocked', 'cancelled', 'error', 'coverage_limited'];
   if (ST.includes(r.status)) {
     out.status = r.status;
     out.queries = Number(r.queries) || 0;
@@ -151,12 +151,15 @@ function cleanResearch(r) {
     const t = r.trace && typeof r.trace === 'object' ? r.trace : null;
     if (t) out.trace = { at: str(t.at, 30), error: str(t.error, 200), mode: t.mode === 'full' ? 'full' : 'auto', stop: str(t.stop, 10),
       queries: (Array.isArray(t.queries) ? t.queries : []).slice(0, 40).map((q) => ({ q: str(q.q, 160), why: str(q.why, 12), n: Number(q.n) || 0, error: str(q.error, 140), engines: Array.isArray(q.engines) ? q.engines.slice(0, 8).map((e) => ({ id: str(e.id, 10), state: str(e.state, 10), n: Number(e.n) || 0, error: str(e.error, 120) })) : null })),
-      results: (Array.isArray(t.results) ? t.results : []).slice(0, 400).map((x) => ({ q: Number(x.q) || 0, url: url(x.url).slice(0, 300), host: str(x.host, 100), title: str(x.title, 120), engine: str(x.engine, 10), rank: Number.isFinite(x.rank) ? x.rank : null, cls: cls(x.cls), open: str(x.open, 30) })),
+      results: (Array.isArray(t.results) ? t.results : []).slice(0, 400).map((x) => ({ q: Number(x.q) || 0, url: url(x.url).slice(0, 300), host: str(x.host, 100), title: str(x.title, 120), snippet: str(x.snippet, 200), engine: str(x.engine, 10), rank: Number.isFinite(x.rank) ? x.rank : null, cls: cls(x.cls), open: str(x.open, 30), at: at(x.at) })),
       pages: (Array.isArray(t.pages) ? t.pages : []).slice(0, 200).map((x) => ({ url: url(x.url).slice(0, 300), host: str(x.host, 100), q: Number(x.q) || 0, cls: cls(x.cls), outcome: str(x.outcome, 16), why: str(x.why, 160), at: at(x.at), title: str(x.title, 120),
         ...(x.facts && typeof x.facts === 'object' ? { facts: { title: str(x.facts.title, 120), sku: str(x.facts.sku, 60), ean: String(x.facts.ean || '').replace(/\D/g, '').slice(0, 14), price: num(x.facts.price), avail: avail(x.facts.avail), colour: str(x.facts.colour, 40) } } : {}),
         ...(x.imgs != null ? { imgs: Number(x.imgs) || 0, imgHow: str(x.imgHow, 10) } : {}),
         ...(x.ai && typeof x.ai === 'object' ? { ai: { verdict: str(x.ai.verdict, 12), reason: str(x.ai.reason, 160), confidence: Number(x.ai.confidence) || 0 } } : {}) })),
-      domains: (Array.isArray(t.domains) ? t.domains : []).slice(0, 120).map((d) => ({ host: str(d.host, 100), cls: cls(d.cls) })).filter((d) => d.host) };
+      domains: (Array.isArray(t.domains) ? t.domains : []).slice(0, 120).map((d) => ({ host: str(d.host, 100), cls: cls(d.cls) })).filter((d) => d.host),
+      ms: Number(t.ms) || 0,
+      ...(t.coverage && typeof t.coverage === 'object' ? { coverage: { level: ['adequate', 'limited', 'unknown'].includes(t.coverage.level) ? t.coverage.level : 'unknown', ok: (Array.isArray(t.coverage.ok) ? t.coverage.ok : []).slice(0, 8).map((x) => str(x, 12)), failed: (Array.isArray(t.coverage.failed) ? t.coverage.failed : []).slice(0, 8).map((x) => str(x, 12)), queries: Number(t.coverage.queries) || 0, planned: Number(t.coverage.planned) || 0 } } : {}) };
+    if (['adequate', 'limited', 'unknown'].includes(r.coverage)) out.coverage = r.coverage;
   }
   return out;
 }
@@ -165,12 +168,17 @@ function registerCodes() {
   // ---- codes (SKU / EAN) of products without one, from the shops of the internet that show the same product ----
   // A shop's computer searches from its own connection (the search engines often turn a cloud machine away); when no
   // computer has been on for a while, the cloud does a few itself (coord.cloudTick), more slowly.
+  // the first worker revision whose research follows the plan of 19/11 (rich plan, coverage, stop reasons)
+  const MIN_RESEARCH_REV = '2026-11-23a';
   coord.register('codes.web', {
     label: 'Έρευνα στο internet (κωδικοί, EAN, φωτογραφίες, μάρκα, τιμή)',
     needs: { ramMB: 500 },
     cloudOk: true,
     cloudRamMB: 250,
     maxAttempts: 2,
+    // a computer with an older worker searches the old way (fewer searches, no coverage check): it does not take
+    // research until its folder is downloaded again (Ρυθμίσεις → Υπολογιστές says so); the cloud and new ones do
+    canTake(w) { return String((w.caps && w.caps.rev) || '') >= MIN_RESEARCH_REV; },
     // a group left waiting for days (all computers off, the cloud turned away by the engines): it ends, it is queued anew
     expireMs: 3 * 864e5,
     // a second attempt (the first computer went off): the products already handed in are not searched again

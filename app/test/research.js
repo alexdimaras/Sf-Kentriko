@@ -158,8 +158,12 @@ function page(o) {
   ok(half.status === 'blocked' && half.hits.length >= 1, 'a pause in the middle → what was found is kept, the status says «blocked» (done again soon)', JSON.stringify([half.status, half.hits.length]));
   const deadPages = await cf.lookUp(Object.assign({}, it, { k: 'sf:6' }), io({ page: async () => { throw new Error('ECONNRESET'); } }));
   ok(deadPages.status === 'pages_failed', 'no page opens → «pages failed»', deadPages.status);
-  const none = await cf.lookUp(Object.assign({}, it, { k: 'sf:7', name: 'ΣΑΚΙΔΙΟ PENTAGON EPSILON 20L', sku: '' }), io());
-  ok(none.status === 'not_found' && none.read > 0 && none.trace.pages.every((x) => x.outcome !== 'same'), 'pages read, none the same product → «not found», with the reasons', none.status);
+  // (two engines answered here: with one only and the other failing it would be «limited coverage», tested below)
+  const twoOk = async (q) => { const r = (RESULTS[q] || RESULTS.default).map((url) => ({ url })); r.engines = [{ id: 'ddg', state: 'ok', n: r.length }, { id: 'bing', state: 'ok', n: 0 }]; return r; };
+  const none = await cf.lookUp(Object.assign({}, it, { k: 'sf:7', name: 'ΣΑΚΙΔΙΟ PENTAGON EPSILON 20L', sku: '' }), io({ search: twoOk }));
+  const noneLim = await cf.lookUp(Object.assign({}, it, { k: 'sf:7b', name: 'ΣΑΚΙΔΙΟ PENTAGON EPSILON 20L', sku: '' }), io());
+  ok(noneLim.status === 'coverage_limited', 'the same with one engine answering and the other failing → «περιορισμένη κάλυψη»', noneLim.status);
+  ok(none.status === 'not_found' && none.read > 0 && none.trace.pages.every((x) => x.outcome !== 'same'), 'pages read, none the same product → «not found», with the reasons', JSON.stringify([none.status, none.trace.coverage, none.stop]));
   const empty = await cf.lookUp(Object.assign({}, it, { k: 'sf:8' }), io({ search: async () => [] }));
   ok(empty.status === 'no_results', 'the searches gave no shop page → «no results»', empty.status);
   const stopped = await cf.lookUp(Object.assign({}, it, { k: 'sf:9' }), io({ cancelled: () => true }));
@@ -180,6 +184,41 @@ function page(o) {
   ok(rt.trace.pages.some((x) => x.outcome === 'family' && /OLIVE/.test(x.why)) && rt.trace.pages.some((x) => /PRO/.test(x.why) && /έκδοση/.test(x.why)), 'and the reasons are written (the olive one: same family, another variant · the PRO: another version)', JSON.stringify(rt.trace.pages.map((x) => x.why)));
   const ru = await cf.lookUp({ k: 'sf:21', name: 'ΑΡΒΥΛΑ HAIX URBAN LINE ΜΑΥΡΟ', brand: 'HAIX', sku: '', price: 150, needs: ['sku'] }, io2);
   ok(!ru.hits.some((h) => h.host === 'urb.example'), '«URBAN» of a model name is not a colour that makes black = khaki');
+
+  section('Κάλυψη της έρευνας και λόγος διακοπής (πλάνο 19/11)');
+  {
+    // Bing answered with 0, Yahoo failed, DDG paused: «nothing found» is not proven → coverage_limited, never «not found»
+    const thin = async () => Object.assign([], { engines: [{ id: 'bing', state: 'ok', n: 0 }, { id: 'yahoo', state: 'error', error: 'HTTP 500' }, { id: 'ddg', state: 'paused' }] });
+    const rc = await cf.lookUp(Object.assign({}, it, { k: 'sf:30' }), io({ search: thin }));
+    ok(rc.status === 'coverage_limited' && rc.coverage === 'limited' && rc.trace.coverage.ok.join() === 'bing' && rc.trace.coverage.failed.sort().join() === 'ddg,yahoo', 'one engine ok with 0 results + the others failed/paused → «περιορισμένη κάλυψη», not «δεν βρέθηκε»', JSON.stringify([rc.status, rc.trace.coverage]));
+    ok(cf.FAILED.has('coverage_limited') && cf.dueAt({ status: 'coverage_limited', at: new Date().toISOString(), fails: 1 }) - Date.now() < 864e5, 'a limited research is asked again within hours (and keeps what was found before)');
+    // two engines answered (0 results each): that is a real «nothing»
+    const two = async () => Object.assign([], { engines: [{ id: 'bing', state: 'ok', n: 0 }, { id: 'ddg', state: 'ok', n: 0 }] });
+    const rn = await cf.lookUp(Object.assign({}, it, { k: 'sf:31' }), io({ search: two }));
+    ok(rn.status === 'no_results' && rn.coverage === 'adequate' && rn.stop === 'plan', 'two engines answered, nothing anywhere → «καμία σελίδα», the whole plan done (stop: plan)', JSON.stringify([rn.status, rn.coverage, rn.stop]));
+    // no engine answers at all, three times in a row → it stops and says why (not «not found»)
+    let calls = 0;
+    const dead = async () => { calls++; return Object.assign([], { engines: [{ id: 'bing', state: 'error' }, { id: 'ddg', state: 'blocked' }] }); };
+    const rd = await cf.lookUp(Object.assign({}, it, { k: 'sf:32' }), io({ search: dead }));
+    ok(rd.stop === 'engines' && calls === 3 && rd.status === 'search_failed' && /μηχανές/.test(cf.STOP_LABEL[rd.stop]), 'three searches no engine answered → stops (reason «engines»), status «search failed»', JSON.stringify([rd.stop, calls, rd.status]));
+    // a full research records where it stopped
+    const rf = await cf.lookUp(Object.assign({}, it, { k: 'sf:33', mode: 'full' }), io());
+    ok(rf.trace.mode === 'full' && ['plan', 'pages', 'time'].includes(rf.stop) && rf.trace.coverage && rf.trace.ms >= 0, 'the full research records its stop reason, coverage and time', JSON.stringify([rf.trace.mode, rf.stop]));
+  }
+  {
+    // the plan: richer, never a junk code, a guessed brand never before a code
+    const pl = (x) => cf.planOf(x);
+    const mora = pl({ name: 'ΜΑΧΑΙΡΙ MORAKNIV RISBERG HUNTING (S)', brand: 'Morakniv', sku: 'Mora-1755379572' });
+    ok(!mora.some((x) => /1755379572/.test(x.q)) && mora.some((x) => x.why === 'brand-alt' && /^Mora /.test(x.q)) && mora.length >= 5, 'a code with a copy\'s date stamp is never searched; the brand also as «Mora»', JSON.stringify(mora.map((x) => x.q)));
+    const lam = pl({ name: 'LAMBRO TORDO 30', cat: 'Φυσίγγια' });
+    ok(lam.length >= 4 && lam.some((x) => /shells/.test(x.q)) && lam.some((x) => x.why === 'exact-model'), 'LAMBRO TORDO 30 (no brand filed): ≥4 searches, the kind from its category', JSON.stringify(lam.map((x) => x.q)));
+    const mule = pl({ name: '5.11 TACTICAL ALL HAZARDS AMMO MULE 56084' });
+    ok(mule.some((x) => x.q === '"5.11 TACTICAL ALL HAZARDS AMMO MULE"') && mule.some((x) => /^5\.11 TACTICAL 56084$/.test(x.q)), '5.11 TACTICAL is read as the brand; the model without its code; code with the brand', JSON.stringify(mule.map((x) => x.q)));
+    const belt = pl({ name: 'ΖΩΝΗ ΕΞΑΡΤΗΣΗΣ SPECIAL FORCES ΜΑΥΡΗ', sku: 'P-B-10' });
+    ok(belt[0].q === 'P-B-10' && belt.length >= 5, 'a brand only guessed from the title does not go before the code', JSON.stringify(belt.map((x) => x.q)));
+    const sock = pl({ name: 'ΚΑΛΤΣΕΣ PORTWEST WATERPROOF PERFORMANCE SOCK', brand: 'Portwest', sku: 'SK25' });
+    ok(sock.some((x) => x.q === '"PORTWEST WATERPROOF PERFORMANCE SOCK"') && !sock.some((x) => /Portwest PORTWEST/i.test(x.q)), 'the Latin title as written (WATERPROOF kept), the brand not written twice', JSON.stringify(sock.map((x) => x.q)));
+  }
 
   section('Αποθήκευση και επανάληψη ανά πεδίο');
   W('catalog-sf', { syncedAt: now, source: 'api', products: [
@@ -240,7 +279,13 @@ function page(o) {
   coord.use(B);
   require(APP + '/lib/jobtypes').register();
   const pr = await coord.newPairing('t');
-  const w = await coord.pair(pr.code, 'PC', { cpus: 4, ramMB: 8000, types: ['codes.web'], slots: 2 });
+  // a computer with an older worker (it searches the old way) does not take the research; the current one does
+  const prOld = await coord.newPairing('t');
+  const wOld = await coord.pair(prOld.code, 'PC-old', { cpus: 4, ramMB: 8000, types: ['codes.web'], slots: 2, rev: '2026-11-18c' });
+  const jOld = await coord.enqueue('codes.web', { items: [{ k: 'sf:99', name: 'Y' }], own: [] }, {});
+  ok((await coord.claim(wOld.id, 1)).length === 0, 'a stale worker (older revision) is not given internet research', jOld.id);
+  await coord.cancel(jOld.id);
+  const w = await coord.pair(pr.code, 'PC', { cpus: 4, ramMB: 8000, types: ['codes.web'], slots: 2, rev: require(APP + '/lib/workerrev') });
   const items = [{ k: 'sf:1', name: it.name, brand: 'PENTAGON' }, { k: 'sf:2', name: 'ΦΑΚΟΣ NITECORE MH40', brand: 'NITECORE' }, { k: 'sf:3', name: 'X' }];
   const job = await coord.enqueue('codes.web', { items, own: [] }, {});
   const [c1] = await coord.claim(w.id, 1);
