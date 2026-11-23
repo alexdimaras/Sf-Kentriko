@@ -1,7 +1,8 @@
 # SF Κέντρο — Project
 
 > Εφαρμογή back office για **specialforces.gr** και **stratiotikaeidi.gr**.
-> Έκδοση **1.5.0** · Node 22 · χωρίς paid AI · τοπικά σε ένα PC **ή** ως κοινός διακομιστής (cloud / ένα PC) για όλους.
+> Έκδοση **1.6.0** · Node 22 · χωρίς paid AI · κοινός διακομιστής στο cloud (Render + Supabase) με υπολογιστές-βοηθούς, ή τοπικά σε ένα PC.
+> Τρέχουσα κατάσταση και γνωστά θέματα: **docs/STATE.md** · αποφάσεις: **docs/DECISIONS.md** · κίνδυνοι: **docs/BUGS.md** · τι κάνω όταν…: **docs/RUNBOOKS.md** · χάρτης για κάθε AI: **AGENTS.md**.
 
 ---
 
