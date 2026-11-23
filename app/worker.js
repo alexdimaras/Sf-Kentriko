@@ -8,6 +8,7 @@
 //   node worker.js                           works (in the background: low priority, steps aside on battery)
 //   node worker.js status [--all]            what it is (and, with --all, what it tells the cloud)
 //   node worker.js ai-test [model]           the AI (Ollama) of this computer, step by step, with a real answer
+//   node worker.js measure [N]               the internet research measured here, on N real products (report + summary to the program)
 //   node worker.js ollama <address|default>  where this computer's Ollama is (another PC of the shop, if needed)
 //
 // On Windows: SF-Kentro-Worker.cmd does the pairing and starts it with Windows, hidden, at low priority.
@@ -440,6 +441,60 @@ async function ensure(server, code) {
   await pair(url, code);
 }
 
+/**
+ * «node worker.js measure [N]» (phase 5 of the audit): the real internet research measured ON THIS COMPUTER, with the
+ * real search engines (DuckDuckGo / Bing / Yahoo, and the optional APIs): N products of specialforces.gr (public list,
+ * no password), the program's own research for each, and a report — how many searches answered, how many products
+ * found in other shops, codes / EAN / photos / prices found, wrong colours (must be 0). Polite: one product at a time.
+ * The report is written next to the worker's log and its summary goes to the program (Σύστημα → Συμβάντα).
+ */
+async function measure(n) {
+  const N = Math.max(5, Math.min(100, Number(n) || 30));
+  const http = require('./lib/http');
+  const catalog = require('./lib/catalog');
+  const cf = require('./lib/codefind');
+  const sfind = require('./lib/supplierfind');
+  const extract = require('./lib/extract');
+  const market = require('./lib/market');
+  const ours = [];
+  for (let page = 1; page <= 30 && ours.length < N * 4; page += 3) {
+    try { const r = await http.getJson(`https://www.specialforces.gr/wp-json/wc/store/v1/products?per_page=100&page=${page}`, { timeout: 60000, gap: 1500 }); for (const p of r.json || []) ours.push(catalog.fromStoreApi(p)); } catch (e) { console.log('λίστα προϊόντων: ' + e.message); }
+  }
+  // a spread of kinds: every few-th product of the list (not only the first category)
+  const pick = ours.filter((p) => p.type !== 'variation' && p.name).filter((_, i, a) => i % Math.max(1, Math.floor(a.length / N)) === 0).slice(0, N);
+  console.log(`Μέτρηση της έρευνας internet σε ${pick.length} προϊόντα (ένα τη φορά, με τις πραγματικές μηχανές αναζήτησης)…`);
+  const state = { blocked: new Set(), used: new Set() };
+  const io = { own: new Set(['specialforces.gr', 'stratiotikaeidi.gr']), compHosts: new Set(), supplierHosts: new Set(), search: (q) => sfind.searchWide(q, state), page: (url) => extract.fromUrl(url, { gap: 1500 }), parallel: 2 };
+  const M = { products: 0, found: 0, sku: 0, ean: 0, price: 0, images: 0, family: 0, statuses: {}, engines: {}, wrongColour: 0, ms: 0, rows: [] };
+  for (const p of pick) {
+    const it = { k: 'sf:' + p.id, name: p.name, brand: p.brand || '', sku: p.sku || '', ean: p.ean || '', price: p.price, needs: ['sku', 'ean', 'images', 'price'], mode: 'auto', cat: (p.catNames || [])[0] || '' };
+    const t0 = Date.now();
+    let r;
+    try { r = await cf.lookUp(it, io); } catch (e) { console.log(`  ✗ ${p.name}: ${e.message}`); M.statuses.error = (M.statuses.error || 0) + 1; continue; }
+    M.products++; M.ms += Date.now() - t0;
+    M.statuses[r.status] = (M.statuses[r.status] || 0) + 1;
+    for (const [id, e] of Object.entries(r.sum.engines || {})) { const x = M.engines[id] || (M.engines[id] = { ok: 0, failed: 0, blocked: 0 }); x.ok += e.ok; x.failed += e.failed; x.blocked += e.blocked; }
+    if (r.hits.length) M.found++;
+    if (r.hits.some((h) => h.code)) M.sku++;
+    if (r.hits.some((h) => market.gtinOf(h.ean))) M.ean++;
+    if (r.hits.some((h) => h.price > 0 && h.avail === 'in')) M.price++;
+    if (r.hits.some((h) => (h.images || []).length)) M.images++;
+    if (r.family.length) M.family++;
+    const ourC = market.coloursOf(p.name);
+    for (const h of r.hits) { const hc = market.coloursOf(h.name); if (ourC.size && hc.size && [...ourC].some((c) => !hc.has(c)) && [...hc].some((c) => !ourC.has(c))) M.wrongColour++; }
+    M.rows.push({ name: p.name, sku: p.sku, status: r.status, coverage: r.coverage, queries: r.queries, found: r.hits.map((h) => h.host), family: r.family.length });
+    console.log(`  ${r.hits.length ? '✓' : '·'} ${p.name.slice(0, 60)} — ${r.status} · ${r.queries} αναζητ. · ίδιο σε: ${r.hits.map((h) => h.host).join(', ') || '—'}`);
+  }
+  const pc = (x) => (M.products ? Math.round((100 * x) / M.products) : 0) + '%';
+  const summary = `Μέτρηση έρευνας (${M.products} προϊόντα, ${Math.round(M.ms / Math.max(1, M.products) / 1000)}″/προϊόν): βρέθηκε το ίδιο ${pc(M.found)} · κωδικός ${pc(M.sku)} · EAN ${pc(M.ean)} · τιμή διαθέσιμου ${pc(M.price)} · φωτο ${pc(M.images)} · λάθος χρώμα ${M.wrongColour} · καταστάσεις ${JSON.stringify(M.statuses)} · μηχανές ${Object.entries(M.engines).map(([k, e]) => `${k} ok ${e.ok}/σφάλμα ${e.failed}/παύση ${e.blocked}`).join(', ')}`;
+  console.log('\n' + summary);
+  const file = path.join(HOME, 'metrisi-erevnas-' + new Date().toISOString().slice(0, 10) + '.json');
+  try { fs.mkdirSync(HOME, { recursive: true }); fs.writeFileSync(file, JSON.stringify(M, null, 2)); console.log('Αναφορά: ' + file); } catch (_) { /* optional */ }
+  const c = readConf();
+  if (c && c.token) { try { await client(c).call('POST', '/api/worker/event', { code: 'SEARCH_QUALITY', severity: 'info', service: 'search', message: summary.slice(0, 300) }); console.log('Η σύνοψη στάλθηκε στο πρόγραμμα (Σύστημα → Συμβάντα).'); } catch (e) { console.log('Η σύνοψη δεν στάλθηκε: ' + e.message); } }
+  return 0;
+}
+
 /** «node worker.js ai-test»: the whole path of the AI on THIS computer, step by step, with a real answer. */
 async function aiTest() {
   const localai = require('./lib/localai');
@@ -492,6 +547,7 @@ else if (cmd === 'ollama') {
 else if (cmd === 'pair') pair(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'ensure') ensure(a1, a2).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'rev') console.log(require('./lib/workerrev'));
+else if (cmd === 'measure') measure(a1).then((code) => process.exit(code), (e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'status') { const c = readConf(); console.log(c ? `Σύζευξη: ${c.name} → ${c.server} (από ${c.pairedAt})` : 'Δεν έχει γίνει σύζευξη.'); if (a1 === '--all') console.log(JSON.stringify(caps(), null, 2)); else { const c2 = caps(); console.log(`${c2.cpus} πυρήνες · ${Math.round(c2.ramMB / 1024)} GB · έκδοση ${c2.version}`); } }
 else if (process.env.SFK_RUNNER) runnerLoop().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });
 else supervise().catch((e) => { log('τέλος: ' + e.message); process.exit(1); });

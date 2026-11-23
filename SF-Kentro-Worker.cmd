@@ -43,9 +43,11 @@ echo  2 = Nea syzeuxi ^(allo programma i neos kodikos^)
 echo  3 = Na stamatisei kai na mi ksekinaei pia
 echo  4 = Mono tora, se afto to parathyro (kleineis to parathyro = stamatai)
 echo  5 = Dokimi tou AI ^(Ollama^) se afton ton ypologisti, me pragmatiki apantisi
-echo  6 = Exodos
-choice /c 123456 /n /m "  Epilogi: "
-if errorlevel 6 exit /b 0
+echo  6 = Metrisi tis erevnas internet se 30 pragmatika proionta ^(10-30 lepta^)
+echo  7 = Exodos
+choice /c 1234567 /n /m "  Epilogi: "
+if errorlevel 7 exit /b 0
+if errorlevel 6 goto measure
 if errorlevel 5 goto aitest
 if errorlevel 4 goto once
 if errorlevel 3 goto remove
@@ -66,6 +68,13 @@ echo.
 echo  Etoimo. O ypologistis doulevei tora sto paraskinio, me xamili proteraiotita,
 echo  kai tha ksekinaei mono tou me ta Windows. Se mpataria den pairnei douleia.
 echo  Fainetai sto programma: Rythmiseis - Ypologistes.
+echo.
+pause
+exit /b 0
+
+:measure
+echo.
+"%NODE%" "%~dp0app\worker.js" measure 30
 echo.
 pause
 exit /b 0
