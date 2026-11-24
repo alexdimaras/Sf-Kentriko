@@ -207,7 +207,27 @@ function catFromStoreApi(c) {
 // plus a cheap count check to catch deleted / hidden products. A full read runs again every 7 days.
 const VAR_FIELDS = 'id,parent,type,variation,sku,prices,on_sale,is_in_stock,images,global_unique_id';
 const ENGINE = 2;
-const CONCURRENCY = 4;
+// our own sites are read gently: 4 requests at once, 0,12″ apart, from one cloud server looked like an attack to
+// Cloudflare (24/11: «specialforces.gr μπλόκαρε την ανάγνωση») — 2 at once, 0,5″ apart (~1 min for 10.000 products)
+const CONCURRENCY = 2;
+const GAP = 500;
+// a page refused by Cloudflare's rate limit / bot check is asked again after a pause, instead of losing the whole
+// reading; a rule of the site (firewall 1020) or a ban does not change by waiting: said at once, with what to do
+const CF_WAITS = (process.env.SFK_CF_WAITS || '60000,180000').split(',').map(Number).filter((x) => x >= 0);
+async function getPage(url, opts, hooks) {
+  for (let i = 0; ; i++) {
+    try { return await http.getJson(url, Object.assign({ gap: GAP, timeout: 60000 }, opts)); } catch (e) {
+      const cf = e && e.cf;
+      if (!cf || cf.kind === 'firewall' || cf.kind === 'banned' || i >= CF_WAITS.length || (hooks && hooks.cancelled && hooks.cancelled())) {
+        if (cf) try { require('./events').record({ severity: 'warn', service: 'engine', code: 'CLOUDFLARE_BLOCK', message: `${U.hostOf(url)}: ${cf.kind}${cf.code ? ' ' + cf.code : ''} (HTTP ${cf.status}${cf.ray ? ', Ray ' + cf.ray : ''}) — η ανάγνωση σταμάτησε${i ? ` μετά από ${i} αναμονές` : ''}` }); } catch (_) { /* log only */ }
+        throw e;
+      }
+      try { require('./events').record({ severity: 'info', service: 'engine', code: 'CLOUDFLARE_WAIT', message: `${U.hostOf(url)}: ${cf.kind}${cf.code ? ' ' + cf.code : ''} (HTTP ${cf.status}) — αναμονή ${Math.round(CF_WAITS[i] / 1000)}″ και ξανά` }); } catch (_) { /* log only */ }
+      hooks && hooks.onWait && hooks.onWait(CF_WAITS[i], cf);
+      await http.nap(CF_WAITS[i], opts && opts.signal);
+    }
+  }
+}
 
 function apiUrl(base, path, query, page) {
   return `${base}/wp-json/wc/store/v1/${path}?per_page=100&page=${page}${query ? '&' + query : ''}`;
@@ -216,7 +236,7 @@ function apiUrl(base, path, query, page) {
 /** Fetch every page of a Store API list. onTotal(total) once, onItems(n) per page. */
 async function fetchAll(base, path, query, hooks) {
   hooks = hooks || {};
-  const first = await http.getJson(apiUrl(base, path, query, 1), { gap: 120, timeout: 60000, signal: hooks.signal });
+  const first = await getPage(apiUrl(base, path, query, 1), { signal: hooks.signal }, hooks);
   if (!Array.isArray(first.json)) throw new Error('Μη αναμενόμενη απάντηση από ' + base);
   const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
   const total = parseInt(first.headers.get('x-wp-total') || '0', 10) || first.json.length;
@@ -236,7 +256,7 @@ async function fetchAll(base, path, query, hooks) {
   const rest = [];
   for (let p = 2; p <= pages; p++) rest.push(p);
   await http.pool(rest, CONCURRENCY, async (pg) => {
-    const r = await http.getJson(apiUrl(base, path, query, pg), { gap: 120, timeout: 60000, signal: hooks.signal });
+    const r = await getPage(apiUrl(base, path, query, pg), { signal: hooks.signal }, hooks);
     if (!Array.isArray(r.json)) throw new Error(`Το ${U.hostOf(base)} έστειλε λάθος απάντηση στη σελίδα ${pg} από ${pages}: η ανάγνωση σταμάτησε για να μη φυλαχτεί μισός κατάλογος.`);
     const n = r.json.length; for (const x of await conv(r.json)) out.push(x); hooks.onItems && hooks.onItems(n);
   }, hooks.cancelled);
@@ -342,7 +362,7 @@ async function syncSite(site, job, opts) {
   const categories = cats.items.map(catFromStoreApi);
   prog.note('');
 
-  const hooks = { onTotal: (n) => prog.addTotal(n), onItems: (n) => prog.add(n), cancelled, signal: job && job.signal };
+  const hooks = { onTotal: (n) => prog.addTotal(n), onItems: (n) => prog.add(n), cancelled, signal: job && job.signal, onWait: (ms, cf) => { prog.note(`Cloudflare (${cf.kind}): αναμονή ${Math.round(ms / 1000)}″ και συνέχεια…`); job && job.log(`${name}: το Cloudflare ζήτησε παύση (${cf.kind}${cf.code ? ' ' + cf.code : ''}) — αναμονή ${Math.round(ms / 1000)}″, μετά συνεχίζει από την ίδια σελίδα`); } };
   let products, mode, expected = 0, skipped = 0;
   if (full) {
     mode = 'full';
@@ -400,7 +420,7 @@ async function syncSite(site, job, opts) {
       for (const id of [...main.keys()]) if (!ids.has(id)) main.delete(id);
       const missing = [...ids].filter((id) => !main.has(id));
       for (let i = 0; i < missing.length; i += 100) {
-        const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${FIELDS}`, { gap: 120, timeout: 60000 });
+        const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=100&include=${missing.slice(i, i + 100).join(',')}&_fields=${FIELDS}`, { gap: GAP, timeout: 60000 });
         for (const p of r.json || []) main.set(p.id, fromStoreApiPacked(p));
       }
     }
@@ -415,7 +435,7 @@ async function syncSite(site, job, opts) {
       const unknown = [...wanted].filter((id) => !vars.has(id));
       for (let i = 0; i < unknown.length; i += 100) {
         if (cancelled()) return null;
-        const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=100&type=variation&include=${unknown.slice(i, i + 100).join(',')}&_fields=${VAR_FIELDS}`, { gap: 120, timeout: 60000 });
+        const r = await http.getJson(`${base}/wp-json/wc/store/v1/products?per_page=100&type=variation&include=${unknown.slice(i, i + 100).join(',')}&_fields=${VAR_FIELDS}`, { gap: GAP, timeout: 60000 });
         for (const v of r.json || []) vars.set(v.id, slimVariation(v));
       }
     }
@@ -1047,7 +1067,7 @@ function detectAttribute(site, kind) {
   return hit ? hit.name : (kind === 'brand' ? 'Κατασκευαστής' : kind === 'size' ? 'Μέγεθος' : 'Χρώμα');
 }
 
-module.exports = {
+module.exports = { fetchAll,
   warmLateGen, setBanned, warmBanned, warmLearned, warmLinks, setLazy, bothVer,
   readStatus, readStarted, readEnded, closeOpenReads,
   SITES, load, siteUrl, probe, syncSite, makeProgress, fetchAll, csvDetect, csvImport, summary, productsView, productDetail, links, setManualLink,

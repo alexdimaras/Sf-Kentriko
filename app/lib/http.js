@@ -90,12 +90,32 @@ async function pace(host, minGap, signal) {
   lastHit.set(host, Date.now());
 }
 
+/**
+ * Which Cloudflare mechanism refused us, from its own answer (24/11: «specialforces.gr μπλόκαρε την ανάγνωση» — the
+ * fix depends on WHICH one): rate (error 1015 / 429: too many requests — slower helps), firewall (1020: a rule of the
+ * site), challenge («Just a moment…», cf-mitigated: challenge — bot protection / Under Attack), banned (1010 / 1012),
+ * block (anything else). → { kind, code, ray } or null when it is not Cloudflare.
+ */
+function cloudflareOf(status, bodyStart, headers) {
+  const cf = /cloudflare/i.test(headers.get('server') || '') || /cf-ray|cf-mitigated/i.test([...headers.keys()].join(' '));
+  const body = String(bodyStart || '');
+  if (!cf || !(status === 403 || status === 503 || status === 429 || /challenge|just a moment|cf-chl|cf-error-details/i.test(body))) return null;
+  const code = (body.match(/(?:error|σφάλμα)(?:\s*code)?[\s:#]*(10\d\d)\b/i) || body.match(/\b(10(?:0\d|1\d|20))\b/) || [])[1] || '';
+  const kind = code === '1015' || status === 429 ? 'rate' : code === '1020' ? 'firewall' : code === '1010' || code === '1012' ? 'banned'
+    : /challenge/i.test(headers.get('cf-mitigated') || '') || /just a moment|cf-chl|challenge-platform/i.test(body) ? 'challenge' : 'block';
+  return { kind, code, ray: String(headers.get('cf-ray') || '').slice(0, 40), status };
+}
+const CF_WHY = {
+  rate: 'όριο ρυθμού του Cloudflare (1015): πολλές αιτήσεις στη σειρά — θα ξαναδοκιμάσει πιο αργά',
+  firewall: 'κανόνας firewall του Cloudflare (1020) του site',
+  challenge: 'έλεγχος «Just a moment…» του Cloudflare (προστασία από bots / Under Attack)',
+  banned: 'το Cloudflare απορρίπτει αυτόν τον υπολογιστή / server (1010)',
+  block: 'μπλοκ του Cloudflare',
+};
 function explain(status, url, bodyStart, headers) {
   const h = hostOf(url);
-  const cf = /cloudflare/i.test(headers.get('server') || '') || /cf-ray|cf-mitigated/i.test([...headers.keys()].join(' '));
-  if (cf && (status === 403 || status === 503 || /challenge|just a moment|cf-chl/i.test(bodyStart))) {
-    return `Το ${h} μπλόκαρε την ανάγνωση (Cloudflare). Δοκίμασε ξανά αργότερα ή χρησιμοποίησε εισαγωγή αρχείου CSV από το διαχειριστικό.`;
-  }
+  const c = cloudflareOf(status, bodyStart, headers);
+  if (c) return `Το ${h} μπλόκαρε την ανάγνωση: ${CF_WHY[c.kind]}${c.ray ? ` (Ray ${c.ray})` : ''}. Δοκίμασε ξανά αργότερα ή χρησιμοποίησε εισαγωγή αρχείου CSV από το διαχειριστικό.`;
   if (status === 401 || status === 403) return `Το ${h} δεν επιτρέπει πρόσβαση σε αυτά τα δεδομένα (σφάλμα ${status}).`;
   if (status === 404) return `Δεν βρέθηκε η διεύθυνση στο ${h} (404). Ίσως το site δεν είναι WooCommerce ή έχει κλειστό το δημόσιο API.`;
   if (status === 429) return `Το ${h} ζήτησε να κάνουμε πιο αργά αιτήματα (429).`;
@@ -158,11 +178,14 @@ async function get(url, opts) {
       const text = o.raw ? '' : buf.toString('utf8');
       if (res.status === 429 || res.status === 503) {
         const ra = parseInt(res.headers.get('retry-after') || '0', 10);
-        lastErr = new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status });
+        const cfx = cloudflareOf(res.status, text.slice(0, 2000), res.headers);
+        // (Cloudflare: never asked again at once — 3 quick tries in a row are what its rate limit punishes; the caller
+        // decides whether to wait and try again: lib/catalog.js getPage)
+        lastErr = new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status, cf: cfx, ...(cfx ? { fatal: true } : {}) });
         if (attempt < o.retries && !/Cloudflare/.test(lastErr.message)) { await nap(Math.min(30, ra || (attempt + 1) * 4) * 1000, o.signal); continue; }
         throw lastErr;
       }
-      if (res.status >= 400) throw new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status, fatal: res.status < 500 });
+      if (res.status >= 400) { const cfx = cloudflareOf(res.status, text.slice(0, 2000), res.headers); throw new HttpError(explain(res.status, url, text.slice(0, 2000), res.headers), { status: res.status, fatal: res.status < 500 || !!cfx, cf: cfx }); }
       if (o.signal) o.signal.removeEventListener('abort', onStop);
       const out = { status: res.status, headers: res.headers, text, buf, url: finalUrl || res.url || url };
       if (o.json) {
@@ -171,7 +194,7 @@ async function get(url, opts) {
           const cf = /challenge|just a moment|cf-chl|cloudflare/i.test(text.slice(0, 3000));
           throw new HttpError(cf
             ? `Το ${host} έδειξε σελίδα ελέγχου ασφαλείας (Cloudflare) αντί για δεδομένα. Χρησιμοποίησε εισαγωγή αρχείου CSV ή δοκίμασε αργότερα.`
-            : `Το ${host} δεν επέστρεψε δεδομένα προϊόντων (δεν είναι JSON). Ίσως δεν είναι WooCommerce ή το API είναι κλειστό.`, { status: res.status, fatal: true });
+            : `Το ${host} δεν επέστρεψε δεδομένα προϊόντων (δεν είναι JSON). Ίσως δεν είναι WooCommerce ή το API είναι κλειστό.`, { status: res.status, fatal: true, ...(cf ? { cf: { kind: 'challenge', code: '', ray: String(res.headers.get('cf-ray') || '').slice(0, 40), status: res.status } } : {}) });
         }
         try { out.json = JSON.parse(trimmed); } catch (e) { throw new HttpError(`Χαλασμένα δεδομένα από ${host}.`, { fatal: true }); }
       }
@@ -219,4 +242,4 @@ async function pool(items, limit, fn, shouldStop) {
   return results;
 }
 
-module.exports = { guardLookup, guardedDispatcher, assertPublic, privateIp, get, getJson, pool, nap, HttpError, UA };
+module.exports = { cloudflareOf, guardLookup, guardedDispatcher, assertPublic, privateIp, get, getJson, pool, nap, HttpError, UA };

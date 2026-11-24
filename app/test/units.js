@@ -49,6 +49,39 @@ const section = (t) => console.log('\n' + t);
   srv.close();
   ok(H.privateIp('10.1.2.3') && H.privateIp('169.254.169.254') && H.privateIp('::ffff:127.0.0.1') && !H.privateIp('93.184.216.34'), 'private ranges: LAN, the cloud\'s metadata, IPv6-mapped loopback — a public one passes');
 
+  section('Cloudflare: ποιο μπλοκ, και η ανάγνωση του δικού μας site δεν χάνεται σε ένα όριο ρυθμού');
+  {
+    const hdr = (o) => ({ get: (k) => o[k.toLowerCase()] || null, keys: () => Object.keys(o)[Symbol.iterator]() });
+    const cfh = { server: 'cloudflare', 'cf-ray': '8f00aa11bb22cc33-ATH' };
+    const k1 = H.cloudflareOf(429, '<title>Access denied</title> error code: 1015', hdr(cfh));
+    const k2 = H.cloudflareOf(403, '<h1>Error 1020</h1> Access denied', hdr(cfh));
+    const k3 = H.cloudflareOf(403, '<title>Just a moment...</title>', hdr(Object.assign({ 'cf-mitigated': 'challenge' }, cfh)));
+    const k4 = H.cloudflareOf(403, 'forbidden', hdr({ server: 'nginx' }));
+    ok(k1.kind === 'rate' && k1.code === '1015' && k1.ray === '8f00aa11bb22cc33-ATH' && k2.kind === 'firewall' && k3.kind === 'challenge' && k4 === null, 'which Cloudflare mechanism: rate limit (1015), a firewall rule (1020), the «Just a moment» check; not Cloudflare = nothing', JSON.stringify([k1, k2.kind, k3.kind, k4]));
+    process.env.SFK_ALLOW_PRIVATE = '1'; process.env.SFK_CF_WAITS = '50,50';
+    let hits = 0, page2 = 0;
+    const woo = http.createServer((q, r) => {
+      hits++;
+      const pg = Number(new URL(q.url, 'http://x').searchParams.get('page') || 1);
+      // page 2 is refused twice by the «rate limit», then given
+      if (pg === 2 && page2++ < 2) { r.writeHead(429, { server: 'cloudflare', 'cf-ray': 'abc-ATH', 'content-type': 'text/html' }); return r.end('<title>Access denied</title> error code: 1015'); }
+      r.writeHead(200, { 'content-type': 'application/json', 'x-wp-total': '250', 'x-wp-totalpages': '3' });
+      r.end(JSON.stringify(Array.from({ length: pg === 3 ? 50 : 100 }, (_, i) => ({ id: pg * 1000 + i }))));
+    });
+    await new Promise((r) => woo.listen(0, '127.0.0.1', r));
+    delete require.cache[require.resolve(APP + '/lib/catalog')];
+    const catalog = require(APP + '/lib/catalog');
+    const waits = [];
+    const res = await catalog.fetchAll(`http://127.0.0.1:${woo.address().port}`, 'products', '', { onWait: (ms, cf) => waits.push(cf.kind) });
+    ok(res.items.length === 250 && waits.join() === 'rate,rate' && page2 === 3, 'a page refused by the rate limit: a pause and the same page again — the whole reading is not lost', JSON.stringify([res.items.length, waits, page2]));
+    const fw = http.createServer((q, r) => { r.writeHead(403, { server: 'cloudflare', 'cf-ray': 'fw-ATH' }); r.end('<h1>Error 1020</h1> Access denied'); });
+    await new Promise((r) => fw.listen(0, '127.0.0.1', r));
+    let fe = null; const w2 = [];
+    try { await catalog.fetchAll(`http://127.0.0.1:${fw.address().port}`, 'products', '', { onWait: () => w2.push(1) }); } catch (e) { fe = e; }
+    ok(fe && fe.cf && fe.cf.kind === 'firewall' && !w2.length && /κανόνας firewall/.test(fe.message) && /fw-ATH/.test(fe.message), 'a firewall rule of the site (1020): said at once, with its Ray (waiting does not change it)', fe && fe.message);
+    woo.close(); fw.close(); delete process.env.SFK_ALLOW_PRIVATE; delete process.env.SFK_CF_WAITS;
+  }
+
   section('Διαφημίσεις: τι επιτρέπεται σε Google / Meta');
   const ad = require(APP + '/lib/adrules');
   const ev = (name, cats, brand) => ad.evaluate({ name, brand: brand || '' }, cats ? [cats.map((c) => ({ name: c, slug: c.toLowerCase() }))] : []);
