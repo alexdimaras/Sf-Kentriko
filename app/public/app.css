@@ -981,3 +981,40 @@ body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="f
 .lr-rule { margin-top: 4px; font-size: 12.5px; }
 .lr-hist { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; }
 .lr-hist-main { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+
+/* Τι κάνει τώρα (v-live.js) */
+.lv-q { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.lv-q-i { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 1px; }
+.lv-q-i b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.lv-q-i span { font-size: 12px; color: var(--ink-2); }
+.lv-q-i.ok b { color: var(--ok); } .lv-q-i.warn b { color: var(--amber); } .lv-q-i.crit { border-color: var(--signal); } .lv-q-i.crit b { color: var(--signal); }
+.lv-card { border-left: 4px solid var(--line); }
+.lv-card.ok { border-left-color: var(--ok); } .lv-card.warn { border-left-color: var(--amber); } .lv-card.crit { border-left-color: var(--signal); }
+.lv-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: flex-start; }
+.lv-head h3 { margin: 0; }
+.lv-gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.lv-gauge, .lv-ai { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; display: grid; gap: 2px; min-width: 0; }
+.lv-gauge span, .lv-ai span { font-size: 12px; color: var(--ink-2); }
+.lv-gauge b, .lv-ai b { font-size: 16px; }
+.lv-ai small { color: var(--ink-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-ai.ok b { color: var(--ok); } .lv-ai.warn b { color: var(--amber); }
+.lv-gauge.warm b { color: var(--amber); } .lv-gauge.hot b { color: var(--signal); }
+.lv-bar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.lv-bar i { display: block; height: 100%; background: var(--ok); }
+.lv-layers { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 3px; }
+.lv-layers li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.lv-layers li b { text-align: right; font-weight: 600; }
+.lv-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
+.lv-layers li.bad .lv-dot { background: var(--signal); } .lv-layers li.bad b { color: var(--signal); }
+.lv-job { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.lv-job.crit { border-color: var(--signal); } .lv-job.warn { border-color: var(--amber); }
+.lv-job summary { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; cursor: pointer; list-style: none; }
+.lv-job-what { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.lv-job-prog { color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 13px; }
+.lv-job .lv-bar { margin-top: 6px; }
+.lv-facts { margin: 6px 0 2px; padding-left: 16px; font-size: 13px; display: grid; gap: 2px; }
+.lv-tbl { width: 100%; margin-top: 6px; }
+@media (max-width: 560px) { .lv-q { grid-template-columns: repeat(2, minmax(0, 1fr)); } .lv-gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); } .lv-ai { grid-column: 1 / -1; } }
+.lv-layers li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; } .lv-layers li > span:nth-child(2) { flex: 1 1 150px; } .lv-layers li b { margin-left: auto; text-align: right; }
+.lv .tbl-wrap { overflow-x: auto; max-width: 100%; }
+.lv-card, .lv-job, .lv-facts li { min-width: 0; overflow-wrap: anywhere; }

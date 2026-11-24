@@ -646,6 +646,12 @@ const routes = {
   'GET /api/jobs': async () => jobs.recent().concat(coordReady ? await coord.recent(10) : []).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0)).slice(0, 15),
   'POST /api/jobs/cancel': (b) => (String(b.id || '').startsWith('q') && coordReady ? coord.cancel(b.id) : jobs.cancel(b.id)),
   // the computers of the shops (administrators)
+  // «τι κάνει τώρα»: every computer, every job, the queue and the outside services — ONE moment for every number
+  'GET /api/workers/live': async () => {
+    if (!coordReady) return { at: Date.now(), starting: true, computers: [], byKind: [], queue: {}, services: {} };
+    const snap = await coord.snapshot(80);
+    return require('./lib/liveview').build({ now: snap.at, snap, workers: await coord.workersView(), loads: workerLoad, active: workerActive, workerRev: WORKER_REV, services: servicesView() });
+  },
   'GET /api/workers': async () => {
     const ws = (await coord.workersView()).map((w) => { const l = workerLoad.get(w.id); return Object.assign({}, w, { active: workerActive(w), load: l && Date.now() - l.at < 20000 ? l : null }); });
     const lq = await coord.liveOf('codes.web');
@@ -714,7 +720,7 @@ const routes = {
 };
 // server mode: open without a session / only for administrators
 const PUBLIC_ROUTES = new Set(['GET /api/session', 'POST /api/login', 'POST /api/setup', 'POST /api/logout']);
-const ADMIN_ROUTES = new Set(['GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/system/repairs', 'POST /api/system/repair', 'POST /api/system/measure', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
+const ADMIN_ROUTES = new Set(['GET /api/workers/live', 'GET /api/search-keys', 'POST /api/search-keys', 'POST /api/workers/mode', 'POST /api/workers/perf', 'POST /api/workers/installer', 'POST /api/system/check', 'GET /api/diagnostics', 'GET /api/diagnostics/bundle', 'GET /api/system/repairs', 'POST /api/system/repair', 'POST /api/system/measure', 'GET /api/workers', 'POST /api/workers/pair', 'POST /api/workers/revoke', 'GET /api/audit', 'POST /api/cloud/save', 'POST /api/backup/make', 'POST /api/backup/upload', 'POST /api/unlock', 'POST /api/settings', 'POST /api/backups/restore', 'POST /api/security/pin', 'POST /api/security/remove', 'POST /api/security/minutes', 'GET /api/users', 'POST /api/users', 'POST /api/users/delete', 'POST /api/users/session-end', 'POST /api/users/logout-all', 'POST /api/competitors/delete']);
 
 const OPEN_WHEN_LOCKED = new Set(['GET /api/lock', 'POST /api/unlock', 'POST /api/shutdown', 'GET /api/session']);
 function safeEq(a, b) { a = Buffer.from(String(a || '')); b = Buffer.from(String(b || '')); return a.length === b.length && crypto.timingSafeEqual(a, b); }
@@ -879,7 +885,10 @@ function cleanLoad(l) {
     runners: lnum(l.runners, 64), slots: lnum(l.slots, 64), busy: lnum(l.busy, 64), battery: !!l.battery,
     jobs: (Array.isArray(l.jobs) ? l.jobs : []).slice(0, 16).map((x) => String(x || '').slice(0, 80)),
     // the jobs its runners hold now, with the try (a worker from 2026-11-24 on): the queue tells a slow «still working» from a lost job
-    ...(Array.isArray(l.held) ? { held: l.held.slice(0, 33).filter((x) => x && typeof x === 'object').map((x) => ({ id: String(x.id || '').slice(0, 40), attempt: Number(x.attempt) || 0 })) } : {}),
+    ...(Array.isArray(l.held) ? { held: l.held.slice(0, 33).filter((x) => x && typeof x === 'object').map((x) => ({ id: String(x.id || '').slice(0, 40), attempt: Number(x.attempt) || 0, runner: x.runner == null ? null : lnum(x.runner, 64), lane: String(x.lane || '').slice(0, 20), since: lnum(x.since, 1e14) })) } : {}),
+    // (a worker from 2026-11-25: every runner, and the AI of the computer busy or not)
+    ...(Array.isArray(l.runnerList) ? { runnerList: l.runnerList.slice(0, 40).filter((x) => x && typeof x === 'object').map((x) => ({ i: lnum(x.i, 64), lane: String(x.lane || '').slice(0, 20), job: String(x.job || '').slice(0, 40), paused: !!x.paused, rssMB: lnum(x.rssMB, 1e5) })) } : {}),
+    ...(l.ai && typeof l.ai === 'object' ? { ai: { busy: !!l.ai.busy, waiting: lnum(l.ai.waiting, 1000) } } : {}),
     perHour: { products: lnum(ph.products, 1e6), pages: lnum(ph.pages, 1e6), searches: lnum(ph.searches, 1e6), jobs: lnum(ph.jobs, 1e6) },
     engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok', yahoo: eng.yahoo === 'paused' ? 'paused' : 'ok' }, dormant: !!l.dormant,
     ...(l.perf && typeof l.perf === 'object' ? { perf: { profile: ['gentle', 'normal', 'boost'].includes(l.perf.profile) ? l.perf.profile : 'normal', used: ['gentle', 'normal', 'boost'].includes(l.perf.used) ? l.perf.used : 'normal', label: String(l.perf.label || '').slice(0, 20), slots: lnum(l.perf.slots, 64), max: lnum(l.perf.max, 64), pages: lnum(l.perf.pages, 10), domainGap: lnum(l.perf.domainGap, 60000), down: !!l.perf.down, reason: String(l.perf.reason || '').slice(0, 160) } } : {}),
@@ -1038,6 +1047,48 @@ async function aiWhy() {
   return { ok: false, state: noModel ? 'no_model' : 'unreachable', text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
 }
 /** One look at everything (fast, nothing is run): → { items: [{ id, label, ok, state, text }] } */
+/**
+ * The services outside the program, each apart: the search engines (they answer / give real results / paused / blocked /
+ * errors / their pages read — an HTTP 200 alone is not «works»), Ollama (per computer, in the cards), the database,
+ * the daily copy, the cloud machine itself, our two WooCommerce sites.
+ */
+function servicesView() {
+  const out = {};
+  const H = require('./lib/health').view();
+  out.db = H.db ? { state: H.db.level, text: H.db.text, at: H.db.at } : { state: 'unknown', text: 'Δεν έχει ελεγχθεί ακόμα' };
+  out.backup = H.backup ? { state: H.backup.level, text: H.backup.text, at: H.backup.at } : { state: 'unknown', text: 'Δεν έχει ελεγχθεί ακόμα' };
+  const m = process.memoryUsage();
+  out.cloud = { state: 'ok', text: `Render · έκδοση ${VERSION}${build.sha ? ' · ' + build.sha.slice(0, 7) : ''} · μνήμη ${Math.round(m.rss / 1048576)} MB · καθυστέρηση έως ${lagMax()} ms στο τελευταίο λεπτό`, lag: lagMax() };
+  // engines: what the research saw today and yesterday (all machines), and whether a computer has one paused now
+  let ev = {};
+  try { ev = require('./lib/codefind').engineView(); } catch (_) { ev = {}; }
+  const pausedNow = new Set([...workerLoad.values()].filter((l) => Date.now() - l.at < 60000).flatMap((l) => Object.entries(l.engines || {}).filter(([, v]) => v === 'paused').map(([k]) => k)));
+  const NAMES = { ddg: 'DuckDuckGo', bing: 'Bing', yahoo: 'Yahoo' };
+  out.engines = Object.keys(NAMES).map((id) => {
+    const x = ev[id] || {};
+    const asked = (x.ok || 0) + (x.failed || 0) + (x.blocked || 0) + (x.odd || 0);
+    let state, text;
+    if (pausedNow.has(id)) { state = 'paused'; text = 'Σε παύση τώρα (ζήτησε να κάνουμε πιο αργά)'; }
+    else if (!asked) { state = 'unknown'; text = 'Καμία αναζήτηση σήμερα / χθες'; }
+    else if ((x.results || 0) > 0) { state = 'ok'; text = `Δίνει αποτελέσματα: ${x.results} σε ${x.ok} αναζητήσεις`; }
+    else if ((x.odd || 0) > 0) { state = 'warn'; text = `Απαντά (HTTP 200) αλλά όχι με σελίδα αποτελεσμάτων (${x.odd} φορές): δεν μετράει ως λειτουργική`; }
+    else if ((x.ok || 0) > 0) { state = 'warn'; text = `Απαντά χωρίς κανένα αποτέλεσμα (${x.ok} αναζητήσεις)`; }
+    else if ((x.blocked || 0) > 0) { state = 'crit'; text = `Μπλοκάρει (${x.blocked} φορές)`; }
+    else { state = 'crit'; text = `Σφάλματα (${x.failed}: δίκτυο ${x.net || 0}, ανάγνωση ${x.parse || 0}, όριο ρυθμού ${x.rate || 0})`; }
+    return { id, name: NAMES[id], state, text, counts: { asked, ok: x.ok || 0, results: x.results || 0, blocked: x.blocked || 0, failed: x.failed || 0, odd: x.odd || 0, net: x.net || 0, parse: x.parse || 0, rate: x.rate || 0 } };
+  });
+  // our two sites: the last reading, and a Cloudflare refusal in the last day (said apart: a person's action may be needed)
+  const s = settings.all();
+  out.sites = ['sf', 'st'].map((site) => {
+    const c = catalog.load(site);
+    const host = U.hostOf((s.sites[site] || {}).url || '');
+    const cf = events.query({ code: 'CLOUDFLARE_BLOCK', since: new Date(Date.now() - 864e5).toISOString(), limit: 50 }).filter((e) => host && String(e.message || '').startsWith(host));
+    const hrs = c.syncedAt ? (Date.now() - new Date(c.syncedAt).getTime()) / 3600e3 : null;
+    const state = cf.length ? 'warn' : !c.syncedAt ? 'unknown' : hrs > 48 ? 'warn' : 'ok';
+    return { id: site, name: (s.sites[site] || {}).name || site, host, state, text: (c.syncedAt ? `Τελευταία ανάγνωση πριν από ${hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + ' λεπτά' : Math.round(hrs) + ' ώρες'} · ${c.products.filter((p) => p.type !== 'variation').length} προϊόντα` : 'Δεν έχει διαβαστεί') + (cf.length ? ` · το Cloudflare μπλόκαρε την ανάγνωση ${cf.length} φορές σήμερα (${String(cf[0].message || '').replace(host + ': ', '').slice(0, 80)})` : '') };
+  });
+  return out;
+}
 let packCheck = null;
 function updatePackCheck() {
   if (packCheck) return packCheck;

@@ -267,6 +267,8 @@
         sys.appendChild(h('p', { class: 'faint', style: { margin: '6px 0' } }, 'Ο υπολογιστής συνδέεται και ενημερώνεται μόνος του. Ξεκινά σταματημένος (δεν τρώει πόρους): τον ανοίγεις πιο κάτω με «Πάντα» ή «Μόνο με ανοιχτό πρόγραμμα».'));
         sys.appendChild(sysList);
         sys.appendChild(sysOut);
+        // «Τι κάνει τώρα»: every computer, every job, the services (public/js/v-live.js) — at the top, live
+        if (App.livePanel) box.appendChild(App.livePanel());
         box.appendChild(sys);
         // the program's log of what went wrong (one shape for every part) and the «πακέτο διάγνωσης για AI»
         const evList = h('ul', { class: 'todo-list ev-list' });

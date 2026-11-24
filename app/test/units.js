@@ -98,6 +98,40 @@ const section = (t) => console.log('\n' + t);
     fs.rmSync(img, { recursive: true, force: true });
   }
 
+  section('Τι κάνει τώρα ο υπολογιστής: online ≠ εργάτης ≠ εκτέλεση (μόνο από πραγματικές ενδείξεις)');
+  {
+    const LV = require(APP + '/lib/liveview');
+    const t = Date.now();
+    const j = (id, o) => Object.assign({ id, type: 'codes.web', label: 'Έρευνα', status: 'running', workerId: 'w1', worker: 'PC', attempts: 1, maxAttempts: 2, what: 'ΣΑΚΙΔΙΟ MIL-TEC', startedAt: t - 120000, beatAt: t - 5000, progressAt: t - 20000, leaseUntil: t + 60000, done: 3, total: 8, msg: 'αναζήτηση DuckDuckGo' }, o);
+    const live = [
+      j('a'),                                                           // a runner holds it, «still working» fresh, it moved: runs
+      j('b'),                                                           // handed out 2′ ago, no runner holds it: orphan
+      j('c', { beatAt: t - 200000 }),                                   // held, but no «still working» for 3′+: stalled
+      j('d', { progressAt: t - 10 * 60000 }),                           // held, alive, no progress for 10′: running, not moving
+      j('e', { startedAt: t - 3000 }),                                  // just handed out: starting
+      j('f', { status: 'queued', workerId: '', attempts: 1 }),          // again in line after a failure
+      j('g', { workerId: 'cloud', type: 'market.shop' }),
+    ];
+    const recent = [j('r1', { status: 'completed', endedAt: t - 3600e3 }), j('r2', { status: 'failed', endedAt: t - 7200e3, error: 'x' })];
+    const loads = new Map([['w1', { at: t - 2000, cpu: 40, ram: 50, runners: 6, slots: 4, perf: { slots: 4, label: 'Κανονική' }, held: ['a', 'c', 'd'].map((id, i) => ({ id, attempt: 1, runner: i, lane: '' })), runnerList: [0, 1, 2, 3].map((i) => ({ i, lane: '', job: ['a', 'c', 'd'][i] || '', paused: false, rssMB: 90 })).concat([{ i: 4, lane: 'ai.call', job: '', paused: false }, { i: 5, lane: 'codes.one', job: '', paused: false }]), ai: { busy: false, waiting: 0 }, engines: { ddg: 'ok' } }]]);
+    const workers = [{ id: 'w1', name: 'STUDIODESKTOP', online: true, lastSeen: new Date(t - 5000).toISOString(), mode: 'always', caps: { rev: '2026-11-25a', ollama: ['qwen2.5:7b'], ollamaInfo: { ok: true } } }];
+    const v = LV.build({ now: t, snap: { live, recent }, workers, loads, active: () => true, workerRev: '2026-11-25a' });
+    const c = v.computers[0];
+    const st = Object.fromEntries(c.jobs.map((x) => [x.id, x.state]));
+    ok(st.a === 'moving' && st.b === 'orphan' && st.c === 'stalled' && st.d === 'running' && st.e === 'starting', 'every job as it really is: runs and moves · NO runner (orphan) · held without «still working» · runs without progress · just handed out', JSON.stringify(st));
+    ok(c.jobs.find((x) => x.id === 'b').text === 'Ο υπολογιστής επικοινωνεί, αλλά η εργασία δεν εκτελείται από ενεργό εργάτη' && c.verdict.state === 'crit', 'said in words, and the card of the computer is red (it talks, but a job runs nowhere)', c.verdict.text);
+    ok(c.jobs.find((x) => x.id === 'a').runner === 0 && c.jobs.find((x) => x.id === 'a').via === 'DuckDuckGo', 'which runner runs it, and through what');
+    const L = Object.fromEntries(c.layers.map((x) => [x.id, x.ok]));
+    ok(L.online && L.worker && L.runners && !L.running, 'the layers apart: talks ✓ · worker ✓ · runners ✓ · «really running» ✗ (one orphan)', JSON.stringify(L));
+    ok(v.queue.assigned === 6 && v.queue.withRunner === 4 && v.queue.orphan === 1 && v.queue.queued === 1 && v.queue.failed24 === 1 && v.queue.done24 === 1, 'the queue in one moment: handed out 6, with a runner 4 (3 + the cloud), orphan 1, in line 1', JSON.stringify(v.queue));
+    ok(v.byKind.find((k) => k.id === 'web').retry === 1, 'by kind of work: «again after a failure» apart from «in line»');
+    const stale = LV.build({ now: t, snap: { live, recent }, workers, loads: new Map([['w1', Object.assign({}, loads.get('w1'), { at: t - 60000 })]]), active: () => true });
+    ok(stale.computers[0].jobs.every((x) => ['unknown', 'starting'].includes(x.state)) && stale.computers[0].verdict.state === 'unknown', 'no fresh report from the computer: «we do not know» — never «running»');
+    const off = LV.build({ now: t, snap: { live: [], recent: [] }, workers: [Object.assign({}, workers[0], { online: false })], loads: new Map(), active: () => true });
+    ok(off.computers[0].verdict.state === 'off' && !off.computers[0].layers[0].ok, 'switched off: said, nothing else claimed');
+    ok(c.ai.state === 'idle' && LV.aiOf(workers[0], { ai: { busy: true, waiting: 2 } }, []).state === 'busy' && LV.aiOf({ caps: { ollamaInfo: { ok: false, error: 'ECONNREFUSED' } } }, null, []).state === 'down', 'the AI: connected and idle · answering now · not answering');
+  }
+
   section('Διαφημίσεις: τι επιτρέπεται σε Google / Meta');
   const ad = require(APP + '/lib/adrules');
   const ev = (name, cats, brand) => ad.evaluate({ name, brand: brand || '' }, cats ? [cats.map((c) => ({ name: c, slug: c.toLowerCase() }))] : []);

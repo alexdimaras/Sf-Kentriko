@@ -324,12 +324,12 @@ async function supervise() {
   };
   const start = (i, lane) => {
     const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i), SFK_RUNNER_LANE: lane || '' }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
-    const r = { p, rss: 0, job: null };
+    const r = { p, rss: 0, job: null, lane: lane || '', jobAt: 0, paused: false };
     runners.set(i, r);
     p.on('message', (m) => {
       if (!m || typeof m !== 'object') return;
       if (m.t === 'mem') r.rss = Number(m.rss) || 0;
-      else if (m.t === 'job') r.job = m.job || null;
+      else if (m.t === 'job') { r.job = m.job || null; r.jobAt = r.job ? Date.now() : 0; }
       else if (m.t === 'count') counts.push([Date.now(), String(m.k)]);
       else if (m.t === 'blocked') { tell('SEARCH_BLOCKED_' + String(m.eng).toUpperCase().replace(/[^A-Z0-9]/g, ''), 'warn', `η μηχανή αναζήτησης ${m.eng} ζήτησε παύση (10 λεπτά, μετά πιο αργά)`, 'search'); pausedUntil[m.eng] = Date.now() + 10 * 60000; gapBy[m.eng] = Math.min(MAX_GAP, (gapBy[m.eng] || START_GAP) * 2); okSince = Date.now(); log(`η μηχανή αναζήτησης ${m.eng} ζήτησε παύση: 10 λεπτά, μετά πιο αργά (${gapBy[m.eng]} ms)`); }
       else if (m.t === 'ailock') { aiQueue.push([p, m.id]); nextAi(); }
@@ -357,7 +357,7 @@ async function supervise() {
       if (r.job && r.job.id && !r.stopped) api.call('POST', '/api/worker/fail', { id: r.job.id, attempt: r.job.attempt, error: `Ο εργάτης του υπολογιστή σταμάτησε απρόσμενα (κωδικός ${code}).`, retryable: true }).catch(() => {});
       setTimeout(() => start(i, lane), 5000);
     });
-    if (!lane) { if (paused || i >= Math.min(K, P.slots)) p.send({ t: 'pause', on: true }); p.send({ t: 'perf', pages: P.pages }); }
+    if (!lane) { if (paused || i >= Math.min(K, P.slots)) { r.paused = true; p.send({ t: 'pause', on: true }); } p.send({ t: 'perf', pages: P.pages }); }
   };
   // Stop runners (all, or those of `which`) — the jobs they hold go back to the queue AT ONCE, without using up a try
   // (before 2026-11-24a they were simply cut: the cloud waited 90 s, «stopped answering», and counted a try — seen
@@ -370,7 +370,7 @@ async function supervise() {
     if (held.length) log(`${held.length} εργασίες δόθηκαν πίσω στη σειρά (${why})`);
   };
   // a runner beyond the profile's number takes no new work (it ends what it does: nothing is lost)
-  const applyPerf = () => { for (const [i, r] of runners) if (i < K) { try { r.p.send({ t: 'pause', on: paused || i >= Math.min(K, P.slots) }); r.p.send({ t: 'perf', pages: P.pages }); } catch (_) { /* gone */ } } };
+  const applyPerf = () => { for (const [i, r] of runners) if (i < K) { r.paused = paused || i >= Math.min(K, P.slots); try { r.p.send({ t: 'pause', on: r.paused }); r.p.send({ t: 'perf', pages: P.pages }); } catch (_) { /* gone */ } } };
   for (let i = 0; i < K; i++) start(i);
   // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
   start(K, 'ai.call');
@@ -394,7 +394,10 @@ async function supervise() {
       procMB: Math.round(([...runners.values()].reduce((a, r) => a + r.rss, 0) + process.memoryUsage().rss) / 1048576),
       runners: runners.size, slots: K, busy: [...runners.values()].filter((r) => r.job).length,
       jobs: [...runners.values()].filter((r) => r.job).map((r) => r.job.label).slice(0, 16),
-      held: [...runners.values()].filter((r) => r.job && r.job.id).map((r) => ({ id: r.job.id, attempt: r.job.attempt || 0 })),
+      held: [...runners.entries()].filter(([, r]) => r.job && r.job.id).map(([i, r]) => ({ id: r.job.id, attempt: r.job.attempt || 0, runner: i, lane: r.lane || '', since: r.jobAt || 0 })),
+      // the runners one by one (alive = its process answers; free = no job), and the AI of this computer: busy or not
+      runnerList: [...runners.entries()].map(([i, r]) => ({ i, lane: r.lane || '', job: r.job ? r.job.id : '', paused: !!r.paused, rssMB: Math.round((r.rss || 0) / 1048576) })),
+      ai: { busy: aiBusy, waiting: aiQueue.length },
       perHour: { products: per('product'), pages: per('page'), searches: per('search'), jobs: per('job') },
       engines: Object.fromEntries(['ddg', 'bing', 'yahoo'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
       gaps: Object.assign({}, gapBy),

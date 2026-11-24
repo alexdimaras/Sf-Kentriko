@@ -130,7 +130,12 @@ async function heartbeat(workerId, jobId, progress, logLines, partial, attempt) 
   j.status = 'running';
   j.leaseUntil = now() + LEASE_MS;
   j.beatAt = now();
-  if (progress) j.progress = { done: Number(progress.done) || 0, total: Number(progress.total) || 0, msg: String(progress.msg || '').slice(0, 300) };
+  if (progress) {
+    const np = { done: Number(progress.done) || 0, total: Number(progress.total) || 0, msg: String(progress.msg || '').slice(0, 300) };
+    // (real progress: the count or the step changed — a «still working» alone is not progress)
+    if (!j.progress || np.done !== j.progress.done || np.msg !== j.progress.msg || np.total !== j.progress.total) j.progressAt = now();
+    j.progress = np;
+  }
   if (Array.isArray(logLines) && logLines.length) { j.log = (j.log || []).concat(logLines.map((l) => String(l).slice(0, 300))).slice(-100); }
   // a part of the result, handed in while the work goes on: taken in now (a computer that goes off loses nothing)
   let took = 0;
@@ -473,6 +478,19 @@ async function workersView() {
   for (const j of await backend.live()) if (j.workerId) { const a = jobsBy.get(j.workerId) || []; a.push(view(j)); jobsBy.set(j.workerId, a); }
   return (await backend.workers()).filter((w) => !w.revoked).map((w) => ({ id: w.id, name: w.name, caps: w.caps, mode: w.mode || 'off', perf: w.perf || 'normal', createdAt: w.createdAt, lastSeen: w.lastSeen, online: t - new Date(w.lastSeen || 0).getTime() < OFFLINE_MS, jobs: jobsBy.get(w.id) || [], done: w.done || 0, failed: w.failed || 0 }));
 }
+/**
+ * Everything the queue knows, read ONCE (one moment for every number of the screen «τι κάνει τώρα»): the live jobs as
+ * they are (with their times) and the last finished ones. → { at, live: [...], recent: [...] }
+ */
+async function snapshot(n) {
+  const at = now();
+  const what = (j) => { const p = j.payload || {}; if (p.comp && p.comp.name) return p.comp.name; const it = Array.isArray(p.items) ? p.items : []; return it.length ? (it[0].name || it[0].k || '') + (it.length > 1 ? ` (+${it.length - 1})` : '') : (p.what || ''); };
+  const row = (j) => ({ id: j.id, type: j.type, label: j.label || j.type, status: j.status, workerId: j.workerId || '', worker: j.workerName || '', attempts: j.attempts || 0, maxAttempts: j.maxAttempts || 0,
+    what: String(what(j)).slice(0, 120), createdAt: j.createdAt, startedAt: j.startedAt ? new Date(j.startedAt).getTime() : null, beatAt: j.beatAt || null, progressAt: j.progressAt || null,
+    leaseUntil: j.leaseUntil || 0, done: (j.progress || {}).done || 0, total: (j.progress || {}).total || 0, msg: (j.progress || {}).msg || '', error: j.error || '', cancel: !!j.cancel,
+    endedAt: j.completedAt ? new Date(j.completedAt).getTime() : null, auto: !!j.auto, notBefore: j.notBefore || 0 });
+  return { at, live: (await backend.live()).map(row), recent: (await backend.recent(n || 60)).map(row) };
+}
 /** For the health check: work stuck (its lease long gone), waiting for days, failed in the last day. */
 async function healthOf() {
   const t = now();
@@ -493,4 +511,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { _setStartedAt: (t) => { startedAt = t; }, heldBy, release, setAliveCheck, healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { snapshot, _setStartedAt: (t) => { startedAt = t; }, heldBy, release, setAliveCheck, healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
