@@ -115,10 +115,11 @@ const section = (t) => console.log('\n' + t);
     ok(smp.rows.length === 10 && smp.left === 24 && smp.rows.every((r) => r.prog.match === 'exact' && r.ours.name && r.theirs.url), 'the sample: 10 matches the program counts by itself (never the «similar» ones), at random, with ours next to theirs', JSON.stringify([smp.rows.length, smp.left]));
     // the owner checks: good.gr always right, bad.gr wrong 3 of 4
     for (let i = 0; i < 4; i++) acc.check({ k: 'sf:' + (100 + i), url: `https://good.gr/p${i}`, verdict: 'yes', sample: true }, 'alex');
-    for (let i = 0; i < 4; i++) acc.check({ k: 'sf:' + (100 + i), url: `https://bad.gr/p${i}`, verdict: i ? 'no' : 'yes', sample: true }, 'alex');
+    for (let i = 0; i < 4; i++) acc.check({ k: 'sf:' + (100 + i), url: `https://bad.gr/p${i}`, verdict: i ? 'no' : 'yes', reason: i === 1 ? 'variant' : 'other', sample: true }, 'alex');
     acc.check({ k: 'sf:104', url: 'https://good.gr/p4', verdict: 'unsure', sample: true }, 'alex');
     const sb = acc.scoreboard();
     ok(sb.sample.n === 8 && sb.sample.yes === 5 && sb.sample.unsure === 1 && sb.sample.p === 62.5 && sb.sample.low < 62.5 && sb.sample.high > 62.5, 'the answer: 5 of 8 right = 62.5%, with its margin (few checks = wide margin); «not sure» does not count', JSON.stringify(sb.sample));
+    ok(sb.wrongKinds.all === 3 && sb.wrongKinds.variant === 1, '«another colour / size» is a «no» (it counts as a mistake) and is told apart from «another product»', JSON.stringify(sb.wrongKinds));
     ok(acc.sample(30).rows.every((r) => !(r.k === 'sf:100' && /good\.gr/.test(r.theirs.url))), 'a checked match is not asked again');
     ok(sb.doubtShops.includes('bad.gr') && !sb.doubtShops.includes('good.gr'), 'it learns: a shop with 3 wrong of 4 is no longer believed by itself', JSON.stringify(sb.doubtShops));
     const e5 = market.compute('sf', catalog.byId('sf').get(105), store.read('market')['sf:105']);
@@ -160,6 +161,15 @@ const section = (t) => console.log('\n' + t);
     const cb2 = { site: 'sf', pid: 1, field: 'brand', to: 'X', level: 'high', source: { kind: 'competitor', label: 'x' }, sources: [{ kind: 'competitor' }] };
     fixes.finishForTest(cb2);
     ok(cb2.level === 'high' && !cb2.calibrated, 'a kind that is approved as often as said stays as it is (only ever more careful)');
+    // undo (asked 24/11): an answer taken back no longer counts, and the match is as the program had it
+    const before = acc.scoreboard().sample.n;
+    const hist = acc.recent(100);
+    ok(hist.length >= 9 && hist[0].product && hist.every((x, i) => !i || x.at <= hist[i - 1].at), 'the history: every answer, newest first, with the product', JSON.stringify(hist.slice(0, 2).map((x) => [x.product, x.verdict])));
+    const u = acc.undo({ k: 'sf:101', url: 'https://bad.gr/p1' }, 'alex');
+    const md2 = store.read('market-decisions');
+    const e1 = store.read('market')['sf:101'].competitors.find((c) => c.url === 'https://bad.gr/p1');
+    ok(u.was === 'no' && acc.scoreboard().sample.n === before - 1 && !(md2['sf:101'] && md2['sf:101'].no.includes('https://bad.gr/p1')) && e1 && !e1.ignored, 'undo: it no longer counts, «Όχι ίδιο» is taken off in Τιμές too, the page counts again as the program had it', JSON.stringify([u, e1 && e1.ignored]));
+    ok(!acc.recent(100).some((x) => x.k === 'sf:101' && x.url === 'https://bad.gr/p1'), 'and it leaves the history (it can be answered again)');
     ok(acc.wilson(98, 100).low > 92 && acc.wilson(3, 3).low < 45, 'the margin: 98 of 100 → at least ~93%; 3 of 3 says little (from ~44%)', JSON.stringify([acc.wilson(98, 100), acc.wilson(3, 3)]));
   }
 

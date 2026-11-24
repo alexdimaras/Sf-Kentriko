@@ -499,6 +499,8 @@ const routes = {
   'GET /api/learn/product': (q) => require('./lib/accuracy').dossier(q.site === 'st' ? 'st' : 'sf', q.id),
   'GET /api/learn/ai-doubts': (q) => ({ rows: require('./lib/accuracy').aiDoubts(q.n || 10) }),
   'POST /api/learn/ai': () => jobs.start('learn-ai', 'Έλεγχος αντιστοιχιών από το AI', async (job) => { job.progress(0, 1, 'Το AI ελέγχει 15 τυχαίες αντιστοιχίες…'); const r = await require('./lib/accuracy').aiRound(15); if (!r.judged && r.error) throw new Error('Το AI δεν απάντησε: ' + r.error); job.progress(1, 1, `Έλεγξε ${r.judged}`); return r; }),
+  'GET /api/learn/recent': (q) => ({ rows: require('./lib/accuracy').recent(q.n || 100) }),
+  'POST /api/learn/undo': (b, _, ctx) => require('./lib/accuracy').undo(b, ctx.user ? ctx.user.name : ''),
   'POST /api/learn/check': (b, _, ctx) => require('./lib/accuracy').check(b, ctx.user ? ctx.user.name : ''),
   'POST /api/market/decide': (b, _, ctx) => market.decide(b.site === 'st' ? 'st' : 'sf', b.id, String(b.url || ''), b.answer, { by: ctx.user ? ctx.user.name : '' }),
   'POST /api/market/export': (b) => {
@@ -840,7 +842,7 @@ function serveReport(req, res, url) {
 let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
-  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/learn/check': 'έλεγχος αντιστοιχίας (ίδιο / όχι)', 'POST /api/learn/ai': 'έλεγχος αντιστοιχιών από το AI', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/learn/check': 'έλεγχος αντιστοιχίας (ίδιο / όχι)', 'POST /api/learn/ai': 'έλεγχος αντιστοιχιών από το AI', 'POST /api/learn/undo': 'αναίρεση ελέγχου αντιστοιχίας', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων', 'POST /api/knowledge/forget': 'αναίρεση όσων έμαθε το πρόγραμμα',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',

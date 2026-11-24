@@ -10,6 +10,9 @@
   const pct = (t) => (t && t.p != null ? `${fmt.num(t.p)}%` : '—');
   const range = (t) => (t && t.n ? `περιθώριο ${fmt.num(t.low)}–${fmt.num(t.high)}% · ${fmt.num(t.n)} έλεγχοι` : 'κανένας έλεγχος ακόμα');
   const link = (url, text) => h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text);
+  const VERDICT = (c) => (c.verdict === 'yes' ? 'Ίδιο' : c.verdict === 'no' ? (c.reason === 'variant' ? 'Άλλο χρώμα / μέγεθος' : c.reason === 'other' ? 'Άλλο προϊόν' : 'Όχι ίδιο') : 'Δεν ξέρω');
+  // take an answer back: it no longer counts, and the match is as the program had it (neither «Ίδιο» nor «Όχι ίδιο»)
+  const undo = (k, url) => POST('/api/learn/undo', { k, url }).then((x) => { toast('Αναιρέθηκε' + (x.was ? ` («${x.was === 'yes' ? 'Ίδιο' : x.was === 'no' ? 'Όχι' : 'Δεν ξέρω'}»)` : '') + ': δεν μετράει πια.'); return x; }).catch((e) => { fail(e); throw e; });
 
   App.views.learn = {
     async render(main, p) {
@@ -17,10 +20,10 @@
       let tab = p.tab || 'score';
       const body = h('div', { class: 'stack' });
       const tabs = h('div', { class: 'tabs' });
-      const TABS = [['score', 'Μέτρηση'], ['sample', 'Έλεγχος δείγματος'], ['product', 'Ένα προϊόν'], ['how', 'Πώς δουλεύει']];
+      const TABS = [['score', 'Μέτρηση'], ['sample', 'Έλεγχος δείγματος'], ['history', 'Ιστορικό'], ['product', 'Ένα προϊόν'], ['how', 'Πώς δουλεύει']];
       const drawTabs = () => { clear(tabs); for (const [id, label] of TABS) tabs.appendChild(h('button', { 'aria-selected': String(tab === id), onclick: () => { tab = id; App.keep({ tab }); drawTabs(); show(); } }, label)); };
       main.appendChild(tabs); main.appendChild(body);
-      const show = () => { clear(body); (tab === 'sample' ? sample : tab === 'product' ? product : tab === 'how' ? how : score)(body, p); };
+      const show = () => { clear(body); (tab === 'sample' ? sample : tab === 'history' ? history : tab === 'product' ? product : tab === 'how' ? how : score)(body, p); };
       drawTabs(); show();
     },
   };
@@ -80,6 +83,7 @@
     // what it learned from the owner
     box.appendChild(h('div', { class: 'panel' }, h('h2', null, 'Τι έμαθε από σένα'),
       h('ul', { class: 'todo-list' },
+        s.wrongKinds && s.wrongKinds.all ? h('li', null, h('b', null, 'Τα λάθη του: '), `${fmt.num(s.wrongKinds.variant)} από ${fmt.num(s.wrongKinds.all)} ήταν το ίδιο μοντέλο σε άλλο χρώμα / μέγεθος (τα υπόλοιπα άλλο προϊόν).`) : null,
         h('li', null, h('b', null, 'Καταστήματα: '), s.doubtShops.length ? `σε ${fmt.num(s.doubtShops.length)} βρήκες λάθη συχνά (τουλάχιστον 1 στα 3): οι αντιστοιχίες τους δεν μετράνε πια μόνες τους, θέλουν το «ναι» σου — ${s.doubtShops.join(', ')}.` : 'κανένα κατάστημα με συχνά λάθη (χρειάζονται 3 έλεγχοι ενός καταστήματος και 1 στα 3 λάθος).'),
         h('li', null, h('b', null, 'Κάθε σελίδα που απάντησες: '), '«Όχι ίδιο» = η τιμή της δεν μετράει και δεν παίρνεται από αυτήν κωδικός, EAN ή φωτογραφία· «Ίδιο» = μετράει πάντα, ακόμα κι αν αλλάξει ο τίτλος της.'),
         h('li', null, h('b', null, 'Τίτλοι: '), `${fmt.num(s.naming.examples)} εγκεκριμένοι τίτλοι (παραδείγματα για το AI) · ${fmt.num(s.naming.rejections)} λέξεις είδους που απέρριψες (δεν ξαναπροτείνονται). `, h('a', { href: '#/settings?tab=words' }, 'Ρυθμίσεις → Λέξεις'))),
@@ -92,8 +96,9 @@
     const o = opts || {};
     const m = MATCH[r.prog.confirmed ? 'confirmed' : r.prog.match] || MATCH.none;
     const result = h('div', { class: 'lr-result' });
-    const answer = (verdict) => POST('/api/learn/check', { k: r.k, url: r.theirs.url, verdict, sample: !!o.sample }).then(() => {
-      clear(result).appendChild(h('span', { class: 'pill ' + (verdict === 'yes' ? 'ok' : verdict === 'no' ? 'crit' : '') }, verdict === 'yes' ? '✓ Ίδιο — το θυμάμαι' : verdict === 'no' ? '✗ Όχι ίδιο — δεν μετράει πια' : 'Δεν ξέρω — δεν μετράει στη μέτρηση'));
+    const answer = (verdict, reason) => POST('/api/learn/check', { k: r.k, url: r.theirs.url, verdict, reason, sample: !!o.sample }).then(() => {
+      clear(result).appendChild(h('span', { class: 'pill ' + (verdict === 'yes' ? 'ok' : verdict === 'no' ? 'crit' : '') }, verdict === 'yes' ? '✓ Ίδιο — το θυμάμαι' : reason === 'variant' ? '✗ Άλλο χρώμα / μέγεθος — η τιμή του δεν μετράει' : verdict === 'no' ? '✗ Όχι ίδιο — δεν μετράει πια' : 'Δεν ξέρω — δεν μετράει στη μέτρηση'));
+      result.appendChild(btn('Αναίρεση', { cls: 'sm ghost' }, () => undo(r.k, r.theirs.url).then(() => { clear(result); card.classList.remove('done'); })));
       card.classList.add('done'); if (o.onAnswer) o.onAnswer(verdict);
     }).catch(fail);
     const side = (title, x, url) => h('div', { class: 'lr-side' }, h('div', { class: 'faint' }, title),
@@ -108,11 +113,13 @@
       o.noOurs ? h('div', { class: 'lr-pair one' }, side('Δικό τους', r.theirs, r.theirs.url)) : h('div', { class: 'lr-pair' }, side('Δικό μας', r.ours, r.ours.url), side('Δικό τους', r.theirs, r.theirs.url)),
       h('div', { class: 'faint' }, h('b', null, 'Γιατί: '), [...new Set([HOW[r.prog.how] || '', r.prog.why || ''].concat(r.prog.ev || []).filter(Boolean).map((x) => x.replace(/^ίδιο EAN \(γραμμωτός κώδικας\)$/, 'ίδιο EAN')))].filter((x, i, a) => !(x === 'ίδιο EAN' && a.some((y) => y !== x && y.startsWith('ίδιο EAN')))).join(' · ') || '—'),
       r.note ? h('div', { class: 'faint' }, r.note) : null,
-      r.check ? h('div', { class: 'faint' }, `Απάντησες: ${r.check.verdict === 'yes' ? 'Ίδιο' : r.check.verdict === 'no' ? 'Όχι ίδιο' : 'Δεν ξέρω'} · ${fmt.ago(r.check.at)}${r.check.by ? ' · ' + r.check.by : ''}`) : null,
+      r.check ? h('div', { class: 'row tight', style: { flexWrap: 'wrap' } }, h('span', { class: 'faint' }, `Απάντησες: ${VERDICT(r.check)} · ${fmt.ago(r.check.at)}${r.check.by ? ' · ' + r.check.by : ''}`), btn('Αναίρεση', { cls: 'sm ghost' }, (e) => undo(r.k, r.theirs.url).then(() => { e.target.closest('.row').remove(); }))) : null,
       h('div', { class: 'row tight', style: { flexWrap: 'wrap', marginTop: '6px' } },
         btn('Ίδιο', { cls: 'sm primary', icon: 'check' }, () => answer('yes')),
-        btn('Όχι ίδιο', { cls: 'sm' }, () => answer('no')),
+        btn('Άλλο χρώμα / μέγεθος', { cls: 'sm', title: 'Ίδιο μοντέλο, αλλά άλλο χρώμα, μέγεθος, ποσότητα ή έκδοση: ΔΕΝ είναι ίδιο' }, () => answer('no', 'variant')),
+        btn('Άλλο προϊόν', { cls: 'sm' }, () => answer('no', 'other')),
         o.sample ? btn('Δεν ξέρω', { cls: 'sm ghost' }, () => answer('unsure')) : null),
+      h('div', { class: 'faint lr-rule' }, '«Ίδιο» = ίδιο μοντέλο ΚΑΙ ίδιο χρώμα, μέγεθος / ποσότητα, έκδοση. Αν γράφει «Παραλλαγή: …» με το δικό μας χρώμα, η τιμή είναι του δικού μας χρώματος: τότε είναι «Ίδιο».'),
       result);
     return card;
   }
@@ -147,6 +154,26 @@
     try { r = await GET('/api/learn/ai-doubts', { n: 10 }); } catch (e) { list.appendChild(h('div', { class: 'note crit' }, e.message)); return; }
     if (!r.rows.length) { list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Καμία διαφωνία'), h('p', null, 'Το AI δεν βρήκε αντιστοιχία που να μη μοιάζει σωστή (ή δεν έχει ελέγξει ακόμα).'))); return; }
     for (const x of r.rows) { const c = matchCard(x); c.insertBefore(h('div', { class: 'note warn', style: { margin: '6px 0' } }, h('b', null, 'AI: όχι ίδιο — '), x.ai.why || ''), c.children[1]); list.appendChild(c); }
+  }
+
+  // ---------- everything you answered, newest first: each one can be taken back ----------
+  async function history(box) {
+    box.appendChild(h('p', { class: 'faint' }, 'Ό,τι πάτησες, με τη σειρά (το πιο πρόσφατο πρώτο). «Αναίρεση» = σαν να μην το πάτησες ποτέ: δεν μετράει στη μέτρηση ούτε στην εκμάθηση, και η αντιστοιχία γυρίζει όπως την είχε το πρόγραμμα.'));
+    const list = h('div', { class: 'stack s' });
+    box.appendChild(list);
+    let r;
+    try { r = await GET('/api/learn/recent', { n: 150 }); } catch (e) { list.appendChild(h('div', { class: 'note crit' }, e.message)); return; }
+    if (!r.rows.length) { list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Τίποτα ακόμα'), h('p', null, 'Οι απαντήσεις σου («Ίδιο», «Άλλο χρώμα / μέγεθος», «Άλλο προϊόν», «Δεν ξέρω») εμφανίζονται εδώ.'))); return; }
+    for (const x of r.rows) {
+      const row = h('div', { class: 'panel lr-hist' },
+        x.img ? h('img', { src: x.img, alt: '', class: 'lr-thumb' }) : null,
+        h('div', { class: 'lr-hist-main' },
+          h('div', null, h('b', null, x.product)),
+          h('div', { class: 'faint' }, link(x.url, x.host), ` · ${fmt.ago(x.at)}${x.by ? ' · ' + x.by : ''}${x.sample ? ' · τυχαίο δείγμα' : ''}`)),
+        h('span', { class: 'pill ' + (x.verdict === 'yes' ? 'ok' : x.verdict === 'no' ? 'crit' : '') }, VERDICT(x)),
+        btn('Αναίρεση', { cls: 'sm ghost' }, () => undo(x.k, x.url).then(() => row.remove())));
+      list.appendChild(row);
+    }
   }
 
   // ---------- one product: every match with its reasons ----------

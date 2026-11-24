@@ -978,3 +978,6 @@ body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="f
 @media (max-width: 560px) { .lr-pair { grid-template-columns: 1fr; } .lr-big b { font-size: 38px; } }
 .lr-big.few b { color: var(--amber); }
 .lr-pair.one { grid-template-columns: 1fr; }
+.lr-rule { margin-top: 4px; font-size: 12.5px; }
+.lr-hist { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; }
+.lr-hist-main { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }

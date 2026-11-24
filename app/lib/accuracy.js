@@ -31,6 +31,8 @@ function record(o) {
     k: o.k, url: String(o.url).slice(0, 400), host: U.hostOf(o.url), kind: o.kind === 'web' ? 'web' : 'price',
     prog: { match: prog.match || '', how: prog.how || '', why: String(prog.why || '').slice(0, 160), score: Number(prog.score) || 0 },
     verdict: o.verdict, by: o.by || '', at: U.nowIso(), sample: !!o.sample,
+    // (why it is not the same: «variant» = the same model in another colour / size / edition — the commonest mistake)
+    ...(o.verdict === 'no' && ['variant', 'other'].includes(o.reason) ? { reason: o.reason } : {}),
   };
   store.update(KEY, {}, (d) => {
     d.items = d.items || {};
@@ -122,7 +124,7 @@ function check(input, by) {
   const e = market.results()[k];
   const c = e && (e.competitors || []).find((x) => x.url === url);
   const prog = c ? { match: c.match, how: c.how, why: c.why, score: c.score } : { match: input.match || '', how: input.how || '' };
-  const row = record({ k, url, kind: c && c.web ? 'web' : input.kind || 'price', prog, verdict, by, sample: !!input.sample });
+  const row = record({ k, url, kind: c && c.web ? 'web' : input.kind || 'price', prog, verdict, by, sample: !!input.sample, reason: input.reason });
   // (the market's own memory: a yes / no there is the same answer; «not sure» changes nothing)
   if (verdict !== 'unsure' && c) market.decide(site, Number(id), url, verdict, { by, noRecord: true });
   if (verdict === 'no') try { require('./fixes').invalidate(); } catch (_) { /* fixes not loaded */ }
@@ -194,7 +196,9 @@ function scoreboard() {
   const aiRows = Object.values(data().ai || {});
   const cal = calibration();
   const FIELDS = ['name', 'sku', 'varsku', 'gtin', 'images', 'brand', 'cats', 'desc', 'short', 'price'];
+  const wrong = rows.filter((r) => r.verdict === 'no' && r.prog.match === 'exact');
   return {
+    wrongKinds: { all: wrong.length, variant: wrong.filter((r) => r.reason === 'variant').length },
     ai: Object.assign(tally(aiRows), { agreement: aiAgreement(), last: aiRows.map((a) => a.at).sort().pop() || null, doubts: aiRows.filter((a) => a.verdict === 'no' && !data().items[a.k + '|' + a.url]).length }),
     calibration: FIELDS.map((f) => ({ field: f, high: cal[f + '|high'] || null, medium: cal[f + '|medium'] || null })).filter((x) => x.high || x.medium),
     calMin: CAL_MIN,
@@ -313,9 +317,33 @@ function calibrationFor(field, claimed) {
   return g;
 }
 
-/** What was answered lately (newest first) — it can be taken back from Τιμές («Ίδιο» / «Όχι ίδιο»). */
-function recent(n) {
-  return Object.values(data().items).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, Math.min(200, Number(n) || 50));
+/**
+ * Take an answer back (asked 24/11: «αναίρεση / ιστορικό»): the check is forgotten (it no longer counts in the
+ * numbers nor in what was learned) and the match is as the program had it — neither «Ίδιο» nor «Όχι ίδιο» in Τιμές.
+ */
+function undo(input, by) {
+  const k = String((input && input.k) || ''), url = String((input && input.url) || '');
+  const [site, id] = k.split(':');
+  if (!['sf', 'st'].includes(site) || !url) throw new Error('Λάθος απάντηση για αναίρεση.');
+  const key = k + '|' + url.slice(0, 400);
+  let had = null;
+  store.update(KEY, {}, (d) => { d.items = d.items || {}; had = d.items[key] || null; delete d.items[key]; d.undone = (d.undone || []).concat([{ k, url, verdict: had && had.verdict, by: by || '', at: U.nowIso() }]).slice(-200); return d; });
+  changed();
+  const market = require('./market');
+  const e = market.results()[k];
+  if (e && (e.competitors || []).some((c) => c.url === url)) market.decide(site, Number(id), url, '', { by, noRecord: true });
+  try { require('./fixes').invalidate(); } catch (_) { /* fixes not loaded */ }
+  return { ok: true, was: had ? had.verdict : null };
 }
 
-module.exports = { aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };
+/** What was answered lately (newest first), with the product and the shop — each one can be taken back (undo). */
+function recent(n) {
+  const catalog = require('./catalog');
+  return Object.values(data().items).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, Math.min(300, Number(n) || 100)).map((r) => {
+    const [site, id] = r.k.split(':');
+    const p = catalog.byId(site).get(Number(id));
+    return Object.assign({}, r, { product: p ? p.name : '(δεν υπάρχει πια)', img: p ? p.thumb || (p.images || [])[0] || '' : '' });
+  });
+}
+
+module.exports = { undo, aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };
