@@ -418,6 +418,9 @@ const routes = {
   'GET /api/knowledge': () => require('./lib/knowledge').terms().rules,
   'POST /api/knowledge/rule': (b, _, ctx) => { const r = require('./lib/knowledge').addRule(b, ctx.user ? ctx.user.name : ''); checks.invalidate(); fixes.invalidate(); return r; },
   'POST /api/knowledge/remove': (b, _, ctx) => { const ok = require('./lib/knowledge').removeRule(String(b.id || ''), ctx.user ? ctx.user.name : ''); checks.invalidate(); fixes.invalidate(); return { ok }; },
+  // what the program learned from the decisions on titles (approved examples, refused kind words) — taken back by id
+  'GET /api/knowledge/learned': () => require('./lib/knowledge').learned(50),
+  'POST /api/knowledge/forget': (b, _, ctx) => { const ok = require('./lib/knowledge').forget(String(b.id || ''), ctx.user ? ctx.user.name : ''); checks.invalidate(); return { ok }; },
   'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
   // families: the same model sold as separate products, one per colour — proposals, a yes, then the files of the change
   'GET /api/families': (q) => require('./lib/families').list(q.site === 'st' ? 'st' : 'sf'),
@@ -819,7 +822,7 @@ const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
   'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
-  'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων',
+  'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων', 'POST /api/knowledge/forget': 'αναίρεση όσων έμαθε το πρόγραμμα',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',
@@ -1064,7 +1067,7 @@ async function systemStatus() {
       const useful = ids.reduce((a, k) => a + (ev[k].results > 0 ? ev[k].ok : 0), 0);
       const poor = tot >= 30 && ids.every((k) => ev[k].results < Math.max(1, ev[k].ok) * 0.5);
       const NAME = { ddg: 'DuckDuckGo', bing: 'Bing', yahoo: 'Yahoo', searxng: 'SearXNG', brave: 'Brave', google: 'Google' };
-      add('engines', 'Μηχανές αναζήτησης (24 ώρες)', !poor, poor ? 'warn' : 'ok', ids.map((k) => { const e = ev[k]; return `${NAME[k] || k}: ${e.ok} απάντησαν (${e.results} αποτελέσματα)` + (e.failed ? ` · ${e.failed} σφάλμα` + (e.odd ? ` (${e.odd} χωρίς σελίδα αποτελεσμάτων)` : '') : '') + (e.blocked ? ` · ${e.blocked} σε παύση` : ''); }).join(' · ') + (poor ? ' — οι μηχανές δίνουν λίγα αποτελέσματα. Δωρεάν λύση: δικός σας SearXNG (Ρυθμίσεις → Τιμές → Προαιρετικοί πάροχοι αναζήτησης· docs/RUNBOOKS.md).' : '') + ` (${useful} από ${tot} με αποτελέσματα)`);
+      add('engines', 'Μηχανές αναζήτησης (24 ώρες)', !poor, poor ? 'warn' : 'ok', ids.map((k) => { const e = ev[k]; return `${NAME[k] || k}: ${e.ok} απάντησαν (${e.results} αποτελέσματα)` + (e.failed ? ` · ${e.failed} σφάλμα (` + [e.net ? e.net + ' δίκτυο' : '', e.odd ? e.odd + ' χωρίς σελίδα αποτελεσμάτων' : '', e.parse ? e.parse + ' ανάγνωση' : ''].filter(Boolean).join(', ') + ')' : '').replace(' ()', '') + (e.blocked ? ` · ${e.blocked} σε παύση` + (e.rate ? ` (${e.rate} όριο ρυθμού)` : '') : ''); }).join(' · ') + (poor ? ' — οι μηχανές δίνουν λίγα αποτελέσματα. Δωρεάν λύση: δικός σας SearXNG (Ρυθμίσεις → Τιμές → Προαιρετικοί πάροχοι αναζήτησης· docs/RUNBOOKS.md).' : '') + ` (${useful} από ${tot} με αποτελέσματα)`);
     }
   } catch (_) { /* not counted yet */ }
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down

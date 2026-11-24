@@ -449,7 +449,7 @@ async function lookUp(it, io) {
       queries++;
     }
     const eng = (results && results.engines) || null;
-    if (eng) for (const x of eng) { if (x.id === 'catalog') continue; sum.engines[x.id] = sum.engines[x.id] || { ok: 0, failed: 0, blocked: 0, results: 0, odd: 0 }; if (x.state === 'ok') { sum.engines[x.id].ok++; sum.engines[x.id].results += x.n || 0; engineOk++; } else if (x.state === 'blocked' || x.state === 'paused' || x.state === 'quota') sum.engines[x.id].blocked++; else { sum.engines[x.id].failed++; if (x.state === 'unrecognized') sum.engines[x.id].odd = (sum.engines[x.id].odd || 0) + 1; engineErr++; } }
+    if (eng) for (const x of eng) { if (x.id === 'catalog') continue; const E = sum.engines[x.id] = sum.engines[x.id] || { ok: 0, failed: 0, blocked: 0, results: 0, odd: 0, net: 0, parse: 0, rate: 0 }; if (x.state === 'ok') { E.ok++; E.results += x.n || 0; engineOk++; } else if (x.state === 'blocked' || x.state === 'paused' || x.state === 'quota') { E.blocked++; if (x.why === 'ratelimit') E.rate = (E.rate || 0) + 1; } else { E.failed++; if (x.state === 'unrecognized') E.odd = (E.odd || 0) + 1; if (x.kind === 'network') E.net = (E.net || 0) + 1; if (x.kind === 'parser') E.parse = (E.parse || 0) + 1; engineErr++; } }
     else if (!step.known) engineOk++;
     if (eng && !step.known) deadRun = eng.some((x) => x.state === 'ok') ? 0 : deadRun + 1;
     const qi = trace.queries.length;
@@ -701,15 +701,15 @@ function engineStats(results) {
     const en = r && r.sum && r.sum.engines;
     if (!en || (r.run && r.run.measured)) continue;
     for (const [id, e] of Object.entries(en)) {
-      const a = add[id] || (add[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 });
-      a.ok += e.ok || 0; a.results += e.results || 0; a.failed += e.failed || 0; a.blocked += e.blocked || 0; a.odd += e.odd || 0; a.products++;
+      const a = add[id] || (add[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, net: 0, parse: 0, rate: 0, products: 0 });
+      a.ok += e.ok || 0; a.results += e.results || 0; a.failed += e.failed || 0; a.blocked += e.blocked || 0; a.odd += e.odd || 0; a.net += e.net || 0; a.parse += e.parse || 0; a.rate += e.rate || 0; a.products++;
     }
   }
   if (!Object.keys(add).length) return;
   store.update(ENGINE_KEY, { days: {} }, (s) => {
     s.days = s.days || {};
     const d = s.days[dayK] || (s.days[dayK] = {});
-    for (const [id, a] of Object.entries(add)) { const x = d[id] || (d[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 }); for (const k of Object.keys(a)) x[k] += a[k]; }
+    for (const [id, a] of Object.entries(add)) { const x = d[id] || (d[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, net: 0, parse: 0, rate: 0, products: 0 }); for (const k of Object.keys(a)) x[k] = (x[k] || 0) + a[k]; }
     for (const k of Object.keys(s.days).sort().slice(0, -14)) delete s.days[k];
     return s;
   });
@@ -719,7 +719,7 @@ function engineView() {
   const s = store.read(ENGINE_KEY, { days: {} });
   const days = Object.keys(s.days || {}).sort().slice(-2);
   const out = {};
-  for (const k of days) for (const [id, x] of Object.entries(s.days[k])) { const o = out[id] || (out[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 }); for (const f of Object.keys(o)) o[f] += x[f] || 0; }
+  for (const k of days) for (const [id, x] of Object.entries(s.days[k])) { const o = out[id] || (out[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, net: 0, parse: 0, rate: 0, products: 0 }); for (const f of Object.keys(o)) o[f] += x[f] || 0; }
   return out;
 }
 function ownHosts() { const s = require('./settings').all(); return new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean)); }

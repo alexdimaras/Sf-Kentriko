@@ -189,6 +189,17 @@
           h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, btn('Προσθήκη', { cls: 'primary', icon: 'check' }, () => POST('/api/knowledge/rule', { kind: kindSel.value, to: to.value, from: from.value.split(',').map((x) => x.trim()).filter(Boolean) }).then(() => { to.value = ''; from.value = ''; toast('Προστέθηκε. Οι προτάσεις υπολογίζονται ξανά.'); draw(); }).catch(fail)))));
         box.appendChild(list);
         await draw();
+        // what it learned from your decisions on titles: approved examples, and kind words you refused (taken back here)
+        const lb = h('div', { class: 'stack s' });
+        box.appendChild(h('div', { class: 'panel' }, h('h3', { style: { margin: 0 } }, 'Τι έμαθε από τις αποφάσεις σου'), h('p', { class: 'hint', style: { margin: '4px 0 8px' } }, 'Οι εγκρίσεις/αλλαγές τίτλων γίνονται παραδείγματα για το AI· μια λέξη είδους που απορρίπτεις 2 φορές σε μια κατηγορία δεν ξαναπροτείνεται εκεί.'), lb));
+        const drawL = async () => {
+          const L = await GET('/api/knowledge/learned');
+          clear(lb);
+          lb.appendChild(h('p', { class: 'faint', style: { margin: 0 } }, `${fmt.num(L.counts.examples)} εγκεκριμένα παραδείγματα · ${fmt.num(L.counts.rejections)} απορρίψεις`));
+          for (const r of L.rejections.slice(0, 20)) lb.appendChild(h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } }, h('span', null, h('b', null, '«' + r.word + '» όχι'), ' για «', r.from, '»', h('span', { class: 'faint' }, ' · ' + (r.by || '') + ' · ' + fmt.ago(r.at))), btn('Αναίρεση', { cls: 'sm ghost' }, () => POST('/api/knowledge/forget', { id: r.id }).then(drawL).catch(fail))));
+          for (const x of L.examples.slice(0, 10)) lb.appendChild(h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } }, h('span', null, x.title, h('span', { class: 'faint' }, ' · ' + (x.how === 'edited' ? 'δική σου αλλαγή' : 'έγκριση') + ' · ' + fmt.ago(x.at))), btn('Αναίρεση', { cls: 'sm ghost' }, () => POST('/api/knowledge/forget', { id: x.id }).then(drawL).catch(fail))));
+        };
+        await drawL();
       }
 
       if (tab === 'ai') {

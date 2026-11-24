@@ -78,7 +78,7 @@ function suggestPrompt(p, facts) {
 Χαρακτηριστικά: σύντομες γραμμές, μόνο ό,τι αναφέρεται στα στοιχεία. Μην επινοήσεις αριθμούς, υλικά ή πιστοποιήσεις.
 Απάντησε μόνο σε JSON.
 
-Τίτλος σήμερα: ${p.name}
+${(() => { try { const ex = require('./knowledge').examplesFor(p.cats || [], 3); return ex.length ? 'Εγκεκριμένοι τίτλοι παρόμοιων προϊόντων του καταστήματος (το ίδιο ύφος): ' + ex.join(' · ') + '\n' : ''; } catch (_) { return ''; } })()}Τίτλος σήμερα: ${p.name}
 Μάρκα: ${p.brand || '-'}
 Κατηγορία σήμερα: ${(p.catNames || []).join(', ') || '-'}
 Στοιχεία από πηγές:
@@ -203,4 +203,4 @@ async function judgeFor(our, page, det) {
   return Object.assign({ model: a.model, ms: a.ms }, a.data);
 }
 
-module.exports = { forWorker, suggestFor, judgeFor, cleanQueries, cleanJudge, cleanSuggest, queryPrompt, judgePrompt, QUERY_SCHEMA, JUDGE_SCHEMA, SUGGEST_SCHEMA, withLock };
+module.exports = { suggestPrompt, forWorker, suggestFor, judgeFor, cleanQueries, cleanJudge, cleanSuggest, queryPrompt, judgePrompt, QUERY_SCHEMA, JUDGE_SCHEMA, SUGGEST_SCHEMA, withLock };

@@ -44,6 +44,8 @@ const products = [
   P('ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068', [900], { sku: 'K05001-2.0-MC-1' }),
   // a word seen with a kind only a few times (TRACER: a model of jackets) is no proof for a power bank
   ...Array.from({ length: 6 }, (_, i) => P('ΜΠΟΥΦΑΝ PENTAGON TRACER ' + i, [1000])), P('POWERBANK TRACER 30000MAH 2A ΜΑΥΡΟ', [1100]),
+  // two products of the jackets' category whose titles start with the brand (the «similar products» proposal)
+  P('PENTAGON HYDRA RAIN SHELL', [1000]), P('PENTAGON ATLAS RAIN SHELL', [1000]), P('PENTAGON ORION RAIN SHELL', [1000]),
 ];
 const cat = (cid, name) => ({ id: cid, name, slug: 'c' + cid, parent: 0, count: 1, url: '' });
 W('catalog-sf', { syncedAt: now, source: 'api', products, categories: [cat(3461, '5.11 TACTICAL'), cat(3398, 'ΕΞΟΠΛΙΣΜΟΣ - ΘΗΚΕΣ - ΑΞΕΣΟΥΑΡ'), cat(500, 'ΓΙΛΕΚΑ'), cat(600, 'ΜΑΧΑΙΡΙΑ'), cat(700, 'ΡΑΦΤΑ ΣΗΜΑΤΑ'), cat(800, 'ΘΕΡΜΙΚΗ ΑΠΕΙΚΟΝΙΣΗ'), cat(900, 'ΟΠΛΑ'), cat(1000, 'ΜΠΟΥΦΑΝ'), cat(1100, 'POWER BANKS')], info: {}, lastFullAt: now, engine: 2, mode: 'full' });
@@ -90,6 +92,20 @@ W('settings', { firstRunDone: true });
   ok(K.removeRule(r.id, 'alex') && !K.terms().foreign.has('GAITERS'), '…and taken back');
   let bad = null; try { K.addRule({ kind: 'preferred', from: ['X'], to: 'PATCH' }); } catch (e) { bad = e; }
   ok(bad && /ελληνικά/.test(bad.message), 'the shop\'s word is a Greek word (a foreign one is refused)');
+
+  section('Μαθαίνει από τις αποφάσεις σου (με αναίρεση)');
+  const hy = byName('PENTAGON HYDRA RAIN SHELL'), at = byName('PENTAGON ATLAS RAIN SHELL'), or = byName('PENTAGON ORION RAIN SHELL');
+  ok(/^ΜΠΟΥΦΑΝ PENTAGON ORION/.test(ck.titleFix(or, ck.titleContext('sf')).fix), 'before: «similar products» propose ΜΠΟΥΦΑΝ for the rain shells');
+  const r1 = K.learn({ site: 'sf', pid: hy.id, cats: hy.cats, from: hy.name, to: 'ΜΠΟΥΦΑΝ ' + hy.name, status: 'rejected', by: 'alex' });
+  K.learn({ site: 'sf', pid: at.id, cats: at.cats, from: at.name, to: 'ΜΠΟΥΦΑΝ ' + at.name, status: 'rejected', by: 'alex' });
+  const after = ck.titleFix(or, ck.titleContext('sf'));
+  ok(r1 && r1.word === 'ΜΠΟΥΦΑΝ' && !/^ΜΠΟΥΦΑΝ/.test(after.fix), 'two «no» to «ΜΠΟΥΦΑΝ» in this category: it is not proposed there again', JSON.stringify(after));
+  K.forget(r1.id, 'alex');
+  ok(/^ΜΠΟΥΦΑΝ PENTAGON ORION/.test(ck.titleFix(or, ck.titleContext('sf')).fix), '…and taken back: proposed again');
+  K.learn({ site: 'sf', pid: or.id, cats: or.cats, from: or.name, to: 'ΜΠΟΥΦΑΝ ' + or.name, status: 'approved', edited: 'ΑΔΙΑΒΡΟΧΟ ΜΠΟΥΦΑΝ PENTAGON ORION RAIN SHELL', by: 'alex' });
+  ok(K.examplesFor([1000], 3)[0] === 'ΑΔΙΑΒΡΟΧΟ ΜΠΟΥΦΑΝ PENTAGON ORION RAIN SHELL' && K.learned().counts.examples === 1, 'a title you changed and approved is an example for the same category (the AI gets it)');
+  const ai = require(APP + '/lib/airesearch');
+  ok(/ΑΔΙΑΒΡΟΧΟ ΜΠΟΥΦΑΝ PENTAGON ORION/.test(ai.suggestPrompt ? ai.suggestPrompt(Object.assign({}, hy, { catNames: [] }), '-') : ''), 'the AI\'s question carries the approved examples of the category and the shop\'s words');
 
   console.log(`\n${passes} ok, ${fails} failed`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }

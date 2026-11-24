@@ -344,6 +344,15 @@ function page(o) {
     const r = await sfw.searchWide('nitecore mh40', { blocked: new Set(), used: new Set() });
     const st = Object.fromEntries((r.engines || []).map((e) => [e.id, e.state]));
     ok(st.ddg === 'ok' && st.bing === 'ok' && st.yahoo === 'unrecognized', 'search engines: results · its own «no results» page (ok, 0) · a page that is not one of results → «unrecognized», not ok', JSON.stringify(r.engines));
+    // what went wrong, in kinds (spec 2.0 P1): a network that did not connect · a limit of the rate · an answer
+    const lim = http.createServer((q, res) => { res.writeHead(429, { 'Content-Type': 'text/html' }); res.end('slow down'); });
+    await new Promise((x) => lim.listen(0, '127.0.0.1', x));
+    const oldY = process.env.SFK_SEARCH_YAHOO, oldB = process.env.SFK_SEARCH_BING;
+    process.env.SFK_SEARCH_YAHOO = 'http://127.0.0.1:9/closed'; process.env.SFK_SEARCH_BING = 'http://127.0.0.1:' + lim.address().port + '/bing';
+    const r2 = await sfw.searchWide('nitecore mh40 b', { blocked: new Set(), used: new Set() });
+    process.env.SFK_SEARCH_YAHOO = oldY; process.env.SFK_SEARCH_BING = oldB; lim.close();
+    const by = Object.fromEntries((r2.engines || []).map((e) => [e.id, e]));
+    ok(by.yahoo && by.yahoo.state === 'error' && by.yahoo.kind === 'network' && by.bing && by.bing.state === 'blocked' && by.bing.why === 'ratelimit' && by.ddg.state === 'ok', 'an engine that does not connect → «network» · one that answers 429 → «rate limit» (paused) · one that answers → ok', JSON.stringify(r2.engines));
   }
   W('web-codes', {}); store.forget('web-codes');
   // the computer was last seen long ago (offline)

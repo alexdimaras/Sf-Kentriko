@@ -129,6 +129,8 @@ function typeSuggester(site) {
       for (const [t, v] of votes) if (v > bn) { bn = v; best = t; }
     }
     if (best) { const sp = spell.check(best, wordStats().freq); if (sp && sp.fix) best = sp.fix; }
+    // (a person said «no» to this word for products of this category twice: it is not proposed from «similar» again)
+    if (best && (require('./knowledge').refusedIn(p.cats).get(best) || 0) >= 2) return { fix: '', why: `Η λέξη «${best}» απορρίφθηκε για παρόμοια προϊόντα: γράψε το είδος μπροστά`, how: '', refused: best };
     return best ? { fix: best + ' ' + U.collapse(p.name), why: `Πρόταση: «${best}» πρώτο (έτσι λέγονται παρόμοια προϊόντα — έλεγξέ το)`, how: 'similar' } : { fix: '', why: 'Δεν βρέθηκε πρόταση — γράψε το είδος μπροστά', how: '' };
   };
 }

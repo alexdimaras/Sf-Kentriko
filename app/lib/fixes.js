@@ -960,7 +960,20 @@ function view(q) {
   };
 }
 
+// (a title approved, changed or refused teaches the shop's naming: lib/knowledge.js — written after the decision)
+const learnQueue = [];
 function decide(ids, status, by, edited) {
+  try { return decide0(ids, status, by, edited); } finally {
+    if (learnQueue.length) {
+      const catalog = require('./catalog'), K = require('./knowledge');
+      let refused = false;
+      for (const x of learnQueue.splice(0)) { try { const p = catalog.byId(x.site).get(Number(x.pid)); const r = K.learn(Object.assign({}, x, { cats: p ? p.cats || [] : [] })); if (r && r.word) refused = true; } catch (_) { /* learning never stops a decision */ } }
+      // (only a refusal changes what is proposed: the checks are built again then — an approval is only remembered)
+      if (refused) { try { require('./checks').invalidate(); } catch (_) { /* fine */ } }
+    }
+  }
+}
+function decide0(ids, status, by, edited) {
   if (!['approved', 'rejected', 'pending'].includes(status)) throw new Error('Λάθος κατάσταση.');
   const items = new Map(compute().items.map((c) => [c.id, c]));
   let n = 0;
@@ -973,6 +986,7 @@ function decide(ids, status, by, edited) {
       d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '' };
       if (edited !== undefined && ids.length === 1) d[id].edited = editedValue(c, edited);
       else if (prev.edited !== undefined) d[id].edited = prev.edited;
+      if (c.field === 'name') learnQueue.push({ site: c.site, pid: c.pid, from: c.from, to: c.to, status, edited: d[id].edited, by });
       n++;
     }
     return d;

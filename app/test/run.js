@@ -133,6 +133,7 @@ function supplierSite() {
   ok(one('st', 203, 'published') && one('st', 203, 'published').to === -1, 'weapons become drafts on the ads site');
   const sure = fixes.approveSure('', '', 'test');
   ok(sure.count >= 6, 'approve all sure fixes in one go', String(sure.count));
+  ok(require(APP + '/lib/knowledge').learned().counts.examples >= 1, 'approved titles are kept as examples of the shop\'s naming (Ρυθμίσεις → Λέξεις καταστήματος)', JSON.stringify(require(APP + '/lib/knowledge').learned().counts));
   const ex = fixes.exportFile('sf', 'test');
   ok(/^\uFEFFID,Name,/.test(ex.csv) && ex.csv.includes('Cordura 500D') && ex.csv.includes('GTIN, UPC, EAN, or ISBN'), 'one WooCommerce update file with only the changed columns');
   ok(fixes.compute().items.filter((c) => c.status === 'exported').length === sure.count - fixes.compute().items.filter((c) => c.site === 'st' && c.status === 'approved').length, 'exported fixes are marked');

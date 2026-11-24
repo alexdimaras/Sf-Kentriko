@@ -229,7 +229,8 @@ async function searchWide(q, state) {
         await paced(eng, state);
         const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
         if (r.status === 202) throw new Blocked(eng.name);
-        res = eng.parse(r.text);
+        // (a page the reader cannot take apart is told apart from a network error: «parser»)
+        try { res = eng.parse(r.text); } catch (pe) { if (pe instanceof Blocked) throw pe; throw Object.assign(new Error('η σελίδα αποτελεσμάτων δεν διαβάστηκε: ' + pe.message), { parser: true }); }
         if (!res.length && eng.known && !eng.known.test(String(r.text || ''))) { engines.push({ id: eng.id, state: 'unrecognized', error: `απάντηση ${r.status} χωρίς σελίδα αποτελεσμάτων (${String(r.text || '').length} bytes)` }); return; }
       }
       any = true;
@@ -239,8 +240,10 @@ async function searchWide(q, state) {
       engines.push({ id: eng.id, state: 'ok', n: res.length });
     } catch (e) {
       if (e.quota) engines.push({ id: eng.id, state: 'quota', error: e.message });
-      else if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused && !eng.api) tellBlocked(eng.id); engines.push({ id: eng.id, state: 'blocked' }); }
-      else engines.push({ id: eng.id, state: 'error', error: String(e.message || e).slice(0, 120) });
+      // what went wrong, in kinds (spec 2.0 P1): a limit of the rate (429) apart from a refusal, a network that did not
+      // connect apart from an answer of the engine, a page that could not be read
+      else if (e instanceof Blocked || (e.status && [403, 429, 503, 202].includes(e.status))) { state.blocked.add(eng.id); if (!e.paused && !eng.api) tellBlocked(eng.id); engines.push({ id: eng.id, state: 'blocked', why: e.status === 429 ? 'ratelimit' : e.paused ? 'paused' : 'refused' }); }
+      else engines.push({ id: eng.id, state: 'error', kind: e.parser ? 'parser' : e.network || /άργησε|σύνδεση|δεν βρέθηκε το/i.test(String(e.message)) ? 'network' : e.status ? 'http' : 'other', error: String(e.message || e).slice(0, 120) });
       if (state.signal && state.signal.aborted) throw Object.assign(new Error('Σταμάτησε.'), { cancelled: true });
     }
   }));
