@@ -290,9 +290,20 @@ function web() {
     const aud = await get('/api/audit');
     ok(Array.isArray(aud) && aud.some((a) => a.action === 'αφαίρεση υπολογιστή') && aud.some((a) => a.action === 'κωδικός σύζευξης υπολογιστή'), 'the audit log keeps who paired and removed computers', JSON.stringify((aud || []).slice(0, 3).map((a) => a.action)));
 
+    // (audit 23/11: «restore from a copy in database mode has no test of its own») — a copy taken, a setting changed,
+    // the copy put back: after a restart (the data come from the database) the restored value is what is there
+    const before = (await get('/api/settings')).minShops;
+    const bk = await post('/api/backup/make');
+    const gz = Buffer.from(await (await fetch(base + bk.url, { headers: H })).arrayBuffer());
+    await post('/api/settings', { minShops: before + 3 });
+    ok((await get('/api/settings')).minShops === before + 3, 'a setting changed after the copy');
+    const rs = await post('/api/backup/upload', { base64: gz.toString('base64') });
+    ok(rs && rs.files > 3 && (await get('/api/settings')).minShops === before, 'the copy put back: the setting as it was', JSON.stringify([rs && rs.files, (await get('/api/settings')).minShops]));
+
     section('Επανεκκίνηση του cloud');
     server.kill('SIGTERM'); await sleep(1500);
     await startServer(); await login();
+    ok((await get('/api/settings')).minShops === before, 'after a restart the restored data are still there' + (process.env.COORD_PG ? ' (read back from the database)' : ''), String((await get('/api/settings')).minShops));
     ws = await get('/api/workers');
     const mk3 = await get('/api/market?site=sf');
     ok(ws.workers.length === 1 && mk3.rows.filter((r) => r.competitors.length).length >= 5, 'after a restart the computers and the results are still there' + (process.env.COORD_PG ? ' (from the database)' : ''), JSON.stringify([ws.workers.length, mk3.rows.length]));

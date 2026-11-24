@@ -50,6 +50,35 @@ async function assertPublic(url) {
   okHosts.set(host, Date.now());
 }
 
+/**
+ * The address checked IS the address connected to (audit 23/11, «DNS rebinding»): the name is looked up once more at
+ * the moment of the connection, inside the connection itself, and a private address is refused there too — a name
+ * that answers «public» to the check and «127.0.0.1» to the connection gets nothing. (Node's own fetch: a dispatcher
+ * of the same kind as its global one, with this lookup — no extra package.)
+ */
+function guardLookup(host, opts, cb) {
+  const o = Object.assign({}, opts || {});
+  dns.lookup(host, Object.assign({}, o, { all: true }), (e, addrs) => {
+    if (e) return cb(e);
+    const list = Array.isArray(addrs) ? addrs : [{ address: addrs, family: o.family || 4 }];
+    if (!list.length || list.some((a) => privateIp(a.address))) { const er = new Error(`Η διεύθυνση ${host} οδηγεί σε εσωτερικό δίκτυο: δεν επιτρέπεται.`); er.code = 'EPRIVATE'; return cb(er); }
+    if (o.all) return cb(null, list);
+    return cb(null, list[0].address, list[0].family);
+  });
+}
+let guarded;
+async function guardedDispatcher() {
+  if (process.env.SFK_ALLOW_PRIVATE === '1' || process.env.SFK_TREAT_PUBLIC) return undefined;
+  if (guarded !== undefined) return guarded || undefined;
+  try {
+    const sym = Symbol.for('undici.globalDispatcher.1');
+    if (!globalThis[sym]) { const c = new AbortController(); c.abort(); await fetch('http://127.0.0.1:9/', { signal: c.signal }).catch(() => {}); }
+    const G = globalThis[sym];
+    guarded = G && typeof G.constructor === 'function' ? new G.constructor({ connect: { lookup: guardLookup } }) : null;
+  } catch (_) { guarded = null; }
+  return guarded || undefined;
+}
+
 async function pace(host, minGap, signal) {
   if (!minGap) return;
   for (;;) {
@@ -98,7 +127,8 @@ async function get(url, opts) {
         let at = url, r = null;
         for (let hop = 0; ; hop++) {
           await assertPublic(at);
-          r = await fetch(at, {
+          const dispatcher = await guardedDispatcher();
+          r = await fetch(at, Object.assign(dispatcher ? { dispatcher } : {}, {
             redirect: 'manual',
             signal: ctl.signal,
             headers: Object.assign({
@@ -106,7 +136,7 @@ async function get(url, opts) {
               'Accept': o.accept || (o.json ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
               'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
             }, o.headers || {}),
-          });
+          }));
           const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
           if (!loc) break;
           if (hop >= 8) throw new HttpError(`Πάρα πολλές ανακατευθύνσεις από το ${host}.`, { fatal: true });
@@ -159,6 +189,7 @@ async function get(url, opts) {
         if (e.name === 'AbortError') msg = `Το ${host} άργησε να απαντήσει.`;
         else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') msg = `Δεν βρέθηκε το ${host}. Έλεγξε τη διεύθυνση ή τη σύνδεση στο internet.`;
         else if (code === 'ECONNREFUSED') msg = `Το ${host} αρνήθηκε τη σύνδεση.`;
+        else if (code === 'EPRIVATE' || (e.cause && e.cause.code === 'EPRIVATE')) throw new HttpError(`Η διεύθυνση ${host} οδηγεί σε εσωτερικό δίκτυο: δεν επιτρέπεται.`, { fatal: true, private: true });
         else if (/CERT|SSL|TLS/i.test(String(code) + e.message)) msg = `Πρόβλημα πιστοποιητικού ασφαλείας με το ${host}.`;
         else msg = `Αποτυχία σύνδεσης με ${host}: ${e.message}`;
         lastErr = new HttpError(msg, { network: true });
@@ -188,4 +219,4 @@ async function pool(items, limit, fn, shouldStop) {
   return results;
 }
 
-module.exports = { assertPublic, privateIp, get, getJson, pool, nap, HttpError, UA };
+module.exports = { guardLookup, guardedDispatcher, assertPublic, privateIp, get, getJson, pool, nap, HttpError, UA };
