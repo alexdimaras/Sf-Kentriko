@@ -142,6 +142,23 @@ function page(o) {
   ok(r.family.some((x) => x.host === 'shop-a.gr' && /MULTICAM/.test(x.colour)) && !r.hits.some((h) => /multicam/.test(h.url)), 'the multicam page is kept as «another variant of the model», never as ours');
   ok(r.trace.queries.length >= 1 && r.trace.queries.length < 8 && r.trace.queries[0].engines.some((e) => e.state === 'error') && r.sum.engines.bing.failed >= 1, 'the searches and what each engine did (Bing failed, DuckDuckGo answered); it stopped as soon as all it missed was found', JSON.stringify(r.sum.engines));
 
+  // the small cloud machine (no computer on): a lighter plan, the same answer — it stops at 2 independent shops
+  {
+    const LL = cf.lightLimits({ maxPages: 60, fullPages: 120 });
+    ok(LL.maxPages === 12 && LL.fullPages === 40 && LL.minShops === 2 && LL.maxQueries === 5 && LL.light, 'cloud plan: 12 pages (40 in full), up to 5 searches, enough at 2 shops', JSON.stringify(LL));
+    const keep = process.env.SFK_LIGHT; delete process.env.RENDER;
+    process.env.SFK_LIGHT = '0'; const off = cf.lightMachine(); process.env.SFK_LIGHT = '1'; const on = cf.lightMachine();
+    if (keep === undefined) delete process.env.SFK_LIGHT; else process.env.SFK_LIGHT = keep;
+    ok(!off && on && !cf.lightMachine(), 'only on the cloud machine (Render) or when asked (SFK_LIGHT=1); a computer searches the whole plan');
+    reads = [];
+    const rl = await cf.lookUp(Object.assign({}, it, { k: 'sf:1L' }), io({ limits: LL }));
+    ok(rl.status === 'complete' && rl.trace.light && rl.hits.some((h) => h.host === 'shop-a.gr') && rl.hits.some((h) => h.host === 'shop-b.gr') && reads.length <= LL.maxPages,
+      'the lighter plan finds the same product in the same 2 shops (complete), opening at most 12 pages', JSON.stringify([rl.status, rl.stop, rl.needsLeft, reads, rl.trace.queries.length, rl.hits.map((h) => h.host)]));
+    const at = new Date().toISOString();
+    ok(cf.dueAt({ at, status: 'partial', light: true }) - Date.now() < 2.1 * 864e5 && cf.dueAt({ at, status: 'partial' }) - Date.now() > 9 * 864e5,
+      'something left open by the light plan: again in 2 days (not 10), to be done whole');
+  }
+
   // our EAN: the surest proof, whatever the titles
   reads = [];
   const rE = await cf.lookUp(Object.assign({}, it, { k: 'sf:2', ean: gtin('521234567890'), needs: ['sku'] }), io());

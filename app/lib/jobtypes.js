@@ -225,7 +225,9 @@ function registerCodes() {
       const state = { blocked: new Set(), used: new Set(), signal: api.signal };
       // the optional search APIs: their keys come on the computer's own line, never inside the job (io.searchKeys)
       try { state.apis = api.cloud ? require('./searchkeys').config() : (io0 && io0.searchKeys ? await io0.searchKeys() : null); } catch (_) { state.apis = null; }
-      const io = { own: new Set(payload.own || []), compHosts: new Set(payload.compHosts || []), supplierHosts: new Set(payload.supplierHosts || []), limits: payload.limits || null,
+      const io = { own: new Set(payload.own || []), compHosts: new Set(payload.compHosts || []), supplierHosts: new Set(payload.supplierHosts || []),
+        // the small cloud machine searches lighter (lib/codefind.js LIGHT); a computer, the whole plan
+        limits: api.cloud && cf.lightMachine() ? cf.lightLimits(payload.limits) : payload.limits || null,
         search: (q) => sfind.searchWide(q, state),
         // on a computer: one page of a shop at a time for all its runners, at the pace of its profile (Ρυθμίσεις → Υπολογιστές)
         page: async (url) => { if (process.env.SFK_RUNNER && process.send) await sfind.askPermit('site:' + U.siteOf(U.hostOf(url))); return extract.fromUrl(url, { gap: 1500, signal: state.signal }); },

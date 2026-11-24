@@ -121,11 +121,12 @@ function oldEngine() {
   fs.writeFileSync(f, src);
   return require(f);
 }
-async function measure(cf, label) {
+async function measure(cf, label, limits) {
   searches = 0; opened = 0;
   seed = 777; // the same failures for both
   for (const p of world.pages) if (p.truthOf) p.fails = (p.url.length * 7) % 9 === 0;
   const io = makeIO();
+  if (limits) io.limits = limits;
   const m = { label, products: world.ours.length, trueShops: 0, foundTrue: 0, hits: 0, correct: 0, wrong: 0, wrongList: [], newSku: 0, wrongSku: 0, newEan: 0, wrongEan: 0, newPhotos: 0, complete: 0, partial: 0, none: 0, withHit: 0 };
   const cfNew = require(path.join(APP, 'lib', 'codefind'));
   for (const o of world.ours) {
@@ -155,7 +156,9 @@ async function measure(cf, label) {
 
 (async () => {
   require(path.join(APP, 'lib', 'store')).init();
-  const res = [await measure(oldEngine(), `παλιά μηχανή (${oldRev})`), await measure(require(path.join(APP, 'lib', 'codefind')), 'νέα μηχανή')];
+  const cfNow = require(path.join(APP, 'lib', 'codefind'));
+  // --light: also the lighter plan of the small cloud machine (lib/codefind.js LIGHT)
+  const res = [await measure(oldEngine(), `παλιά μηχανή (${oldRev})`), await measure(cfNow, 'νέα μηχανή')].concat(args.includes('--light') ? [await measure(cfNow, 'νέα, ελαφριά (cloud)', cfNow.lightLimits())] : []);
   if (asJson) { console.log(JSON.stringify(res, null, 2)); return; }
   const rows = [
     ['Προϊόντα', 'products'], ['Καταστήματα που έχουν πραγματικά το ίδιο', 'trueShops'], ['Βρέθηκαν (σωστά καταστήματα)', 'foundTrue'], ['Recall %', 'recall'], ['Αντιστοιχίσεις «ίδιο»', 'hits'], ['Σωστές', 'correct'],

@@ -211,7 +211,7 @@
         if (rb) box.appendChild(rb);
         if (t.shown) box.appendChild(h('p', { class: 'faint', style: { margin: '4px 0' } }, 'Οι λεπτομέρειες είναι της ' + (t.shown.origin === 'manual' ? 'έρευνας που ξεκίνησες' + (t.shown.by ? ' (' + t.shown.by + ')' : '') : 'αυτόματης έρευνας') + ' · ' + fmt.ago(t.shown.endedAt)));
         const st = RS[t.status] || [t.status, ''];
-        box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]), t.mode === 'full' ? h('span', { class: 'pill' }, 'πλήρης') : null,
+        box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]), t.mode === 'full' ? h('span', { class: 'pill' }, 'πλήρης') : null, t.light ? h('span', { class: 'pill', title: 'Την έκανε το cloud (ο υπολογιστής ήταν κλειστός): λιγότερες σελίδες, σταματά στις 2 ανεξάρτητες πηγές. Ό,τι έμεινε ανοιχτό ξαναψάχνεται σε 2 μέρες ολόκληρο από υπολογιστή.' }, 'ελαφριά (cloud)') : null,
           t.at ? h('span', { class: 'faint' }, 'Τελευταία: ' + fmt.ago(t.at)) : null, t.okAt ? h('span', { class: 'faint' }, '· επιτυχής: ' + fmt.ago(t.okAt)) : null,
           (t.needsLeft || []).length ? h('span', { class: 'faint' }, '· λείπουν ακόμα: ' + t.needsLeft.map((x) => NEED[x] || x).join(', ')) : null));
         if (t.status === 'never') { box.appendChild(h('p', { class: 'faint' }, 'Πάτα «Πλήρης έρευνα Internet»: αναζητήσεις σε όλο το internet (όχι μόνο στους ανταγωνιστές), με κάθε πηγή εδώ.')); return; }

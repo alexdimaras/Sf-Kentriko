@@ -43,6 +43,19 @@ function data() { const d = store.read(KEY, null) || {}; d.products = d.products
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } }
 const gtin = (v) => require('./market').gtinOf(v);
 const days = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 864e5 : Infinity);
+// The small cloud machine (Render free: 1/10 of a core, one research at a time) when no computer is on: a lighter plan —
+// fewer searches and pages, and it stops as soon as what is missing is confirmed by 2 independent shops (the rule for
+// «sure»). A product left partial is searched again in full by a computer later (`dueAt`). SFK_LIGHT=1 / 0 forces it.
+// Measured 24/11 (test/bench/research-bench.js --light, a world with a known answer): searches −46%, pages −55% (about
+// twice as fast); right shops found 60.9% → 57.6%, new codes 9 → 7, photos 33 → 30, EANs the same, no wrong match more.
+const LIGHT = { maxQueries: 5, pagesPerQuery: 4, perHost: 2, maxPages: 12, minQueries: 2, minShops: 2, fullQueries: 12, fullPages: 40 };
+function lightMachine() { if (process.env.SFK_LIGHT === '0') return false; return process.env.SFK_LIGHT === '1' || !!process.env.RENDER; }
+function lightLimits(lim) {
+  const o = Object.assign({}, DEFAULT_LIMITS, lim || {});
+  for (const [k, v] of Object.entries(LIGHT)) o[k] = Math.min(Number(o[k]) || v, v);
+  o.light = true;
+  return o;
+}
 function limits() { try { return Object.assign({}, DEFAULT_LIMITS, require('./settings').all().webResearch || {}); } catch (_) { return Object.assign({}, DEFAULT_LIMITS); } }
 
 /** What a product misses that the internet can give (photos: fewer than `minImages`, not only none). */
@@ -88,6 +101,8 @@ function dueAt(prev) {
     return at + again * 864e5;
   }
   if (FAILED.has(prev.status)) return at + Math.min(3 * 864e5, 6 * 36e5 * Math.pow(2, Math.max(0, (prev.fails || 1) - 1)));
+  // the lighter research of the small cloud machine left something open: again in 2 days (a computer then does the whole plan)
+  if (prev.light && prev.status === 'partial') return at + 2 * 864e5;
   if (prev.status === 'not_found' || prev.status === 'no_results' || prev.status === 'family_only') return at + [7, 14, 30][Math.min(2, Math.max(0, (prev.empties || 1) - 1))] * 864e5;
   return at + 10 * 864e5; // something found, something still missing
 }
@@ -409,7 +424,7 @@ async function lookUp(it, io) {
   const needs = Array.isArray(it.needs) && it.needs.length ? it.needs : ['sku', 'images', 'brand', 'price'];
   const hits = [], family = [];
   const tried = new Set(), perHost = new Map(), sameHost = new Set();
-  const trace = { at: U.nowIso(), mode: full ? 'full' : 'auto', queries: [], results: [], pages: [] };
+  const trace = { at: U.nowIso(), mode: full ? 'full' : 'auto', light: !!L.light, queries: [], results: [], pages: [] };
   const sum = { queries: 0, engines: {}, results: 0, opened: 0, read: 0, exact: 0, family: 0, rejected: 0, errors: 0, domains: 0, newShops: 0, reasons: {} };
   let read = 0, queries = 0, status = '', engineOk = 0, engineErr = 0, stop = '', deadRun = 0;
   const t0 = Date.now();
@@ -470,12 +485,13 @@ async function lookUp(it, io) {
       const rec = { q: qi, url: String(r.url).slice(0, 300), host, title: String(r.title || '').slice(0, 120), snippet: String(r.snippet || '').slice(0, 200), engine: r.engine || '', rank: r.rank == null ? null : r.rank, cls, open: '', at: U.nowIso() };
       if (trace.results.length < 400) trace.results.push(rec);
       if (tried.has(nu)) { rec.open = 'ήδη'; continue; }
-      tried.add(nu);
       // our own sites, marketplaces and unrelated sites: recorded, not read
-      if (cls === 'own' || cls === 'marketplace' || cls === 'irrelevant') { rec.open = cls; continue; }
-      if (NOT_PRODUCT.test(r.url)) { rec.open = 'όχι σελίδα προϊόντος'; continue; }
-      if ((perHost.get(host) || 0) >= L.perHost) { rec.open = 'όριο σελίδων του site'; continue; }
+      if (cls === 'own' || cls === 'marketplace' || cls === 'irrelevant') { tried.add(nu); rec.open = cls; continue; }
+      if (NOT_PRODUCT.test(r.url)) { tried.add(nu); rec.open = 'όχι σελίδα προϊόντος'; continue; }
+      if ((perHost.get(host) || 0) >= L.perHost) { tried.add(nu); rec.open = 'όριο σελίδων του site'; continue; }
+      // over this search's limit: NOT marked as tried — the next search that brings it may open it (it used to be lost)
       if (pages.length >= L.pagesPerQuery || sum.opened + pages.length >= maxPages) { rec.open = 'όριο σελίδων'; continue; }
+      tried.add(nu);
       perHost.set(host, (perHost.get(host) || 0) + 1);
       rec.open = 'ναι';
       pages.push({ host, url: r.url, qi });
@@ -631,7 +647,7 @@ function save(results) {
           rounds: ((prev && prev.rounds) || 0) + 1,
           fails: FAILED.has(r.status) ? ((prev && prev.fails) || 0) + 1 : 0,
           empties: ok && !gotNew ? ((prev && prev.empties) || 0) + 1 : 0,
-          runAt: (r.trace && r.trace.at) || now, mode: (r.trace && r.trace.mode) || 'auto', stop: r.stop || (r.trace && r.trace.stop) || '', coverage: r.coverage || (r.trace && r.trace.coverage && r.trace.coverage.level) || '',
+          runAt: (r.trace && r.trace.at) || now, mode: (r.trace && r.trace.mode) || 'auto', light: !!(r.trace && r.trace.light), stop: r.stop || (r.trace && r.trace.stop) || '', coverage: r.coverage || (r.trace && r.trace.coverage && r.trace.coverage.level) || '',
           // the other variants of the model seen on the way (kept apart: never a value of ours)
           family: (r.family || []).concat(((prev && prev.family) || []).filter((x) => !(r.family || []).some((y) => normUrl(y.url) === normUrl(x.url)) && days(x.at) <= HIT_DAYS)).slice(0, 20),
           ...(prev && prev.aiq ? { aiq: prev.aiq } : {}),
@@ -739,7 +755,7 @@ function localIO(signal, job) {
   try { state.apis = require('./searchkeys').config(); } catch (_) { /* none */ }
   const ch = contextHosts();
   return {
-    own: ownHosts(), compHosts: new Set(ch.compHosts), supplierHosts: new Set(ch.supplierHosts), limits: limits(),
+    own: ownHosts(), compHosts: new Set(ch.compHosts), supplierHosts: new Set(ch.supplierHosts), limits: lightMachine() ? lightLimits(limits()) : limits(),
     search: (q) => sfind.searchWide(q, state),
     page: (url) => extract.fromUrl(url, { gap: 1500, signal }),
     cancelled: () => !!(job && job.cancelled()),
@@ -816,7 +832,7 @@ function traceFor(key, q) {
   const slice = (a) => a.slice((page - 1) * per, page * per);
   const ds = data().shops;
   return {
-    at: e ? e.at : t.at, okAt: e ? e.okAt || null : null, status: stateWord(e) || (t && t.status) || 'never', mode: (e && e.mode) || (t && t.mode) || 'auto', stop: (e && e.stop) || (t && t.stop) || '',
+    at: e ? e.at : t.at, okAt: e ? e.okAt || null : null, status: stateWord(e) || (t && t.status) || 'never', mode: (e && e.mode) || (t && t.mode) || 'auto', light: !!((e && e.light) || (t && t.light)), stop: (e && e.stop) || (t && t.stop) || '',
     needsLeft: e ? e.needsLeft || [] : [], nextAt: e ? new Date(dueAt(e)).toISOString() : null,
     hits: e ? (e.hits || []).map((h) => ({ host: h.host, url: h.url, name: h.name, code: h.code, ean: h.ean, price: h.price, avail: h.avail || 'unknown', how: h.how, match: h.match, images: h.images || [], imgHow: h.imgHow || '', at: h.at, cls: h.cls || (ds[h.host] && ds[h.host].kind) || '', proof: h.proof || '' })) : [],
     family: e ? e.family || [] : [],
@@ -906,4 +922,4 @@ function status() {
   return { looked: all.filter((e) => !FAILED.has(e.status)).length, withCode: all.filter((e) => (e.hits || []).length).length, waiting: candidates(2000).length, byStatus: by, failed: all.filter((e) => FAILED.has(e.status)).length, sites: Object.keys(d.shops).length };
 }
 
-module.exports = { engineView, engineStats, STOP_LABEL, itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };
+module.exports = { lightMachine, lightLimits, LIGHT, engineView, engineStats, STOP_LABEL, itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };
