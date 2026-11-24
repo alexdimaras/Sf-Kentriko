@@ -30,10 +30,12 @@ function cmdText({ server, code, zip, until }) {
     'echo  SF Kentro - egkatastasi ston ypologisti (aytomata, 2-5 lepta)',
     'echo  ============================================================',
     'call :stop',
-    'if exist "%DEST%\\runtime\\node.exe" if exist "%DEST%\\app\\worker.js" goto connect',
-    'echo  1/3 Katevasma tou programmatos...',
+    // ALWAYS the current program, also over an older installation (seen 24/11: an installed computer kept its worker
+    // 2026-11-23b because this step was skipped when the folder existed — «run the installer once» changed nothing)
+    'timeout /t 2 /nobreak >nul',
+    'echo  1/3 Katevasma tis trexousas ekdosis tou programmatos...',
     'powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference=\'Stop\'; $ProgressPreference=\'SilentlyContinue\'; [Net.ServicePointManager]::SecurityProtocol=\'Tls12\'; Invoke-WebRequest -UseBasicParsing -Uri $env:ZIPURL -OutFile $env:TMPZ; if (Test-Path $env:TMPD) { Remove-Item -Recurse -Force $env:TMPD }; Expand-Archive -Force -LiteralPath $env:TMPZ -DestinationPath $env:TMPD; $src = Get-ChildItem $env:TMPD | Select-Object -First 1; New-Item -ItemType Directory -Force -Path $env:DEST | Out-Null; Copy-Item -Recurse -Force (Join-Path $src.FullName \'*\') $env:DEST"',
-    'if errorlevel 1 goto fail',
+    'if errorlevel 1 goto nodl',
     'del /q "%TMPZ%" >nul 2>&1',
     'rmdir /s /q "%TMPD%" >nul 2>&1',
     ':connect',
@@ -56,6 +58,11 @@ function cmdText({ server, code, zip, until }) {
     'echo.',
     'pause',
     'exit /b 0',
+    ':nodl',
+    // the download failed: an installed program still runs (said plainly: it is NOT the new version)
+    'if not exist "%DEST%\\app\\worker.js" goto fail',
+    'echo  PROSOXI: i nea ekdosi den katevike (internet;). Synexizei me tin palia - ksanatrexe to arxeio argotera.',
+    'goto connect',
     ':fail',
     'echo.',
     'echo  Den oloklirothike. Elegxe to internet kai ksanatrexe to arxeio.',

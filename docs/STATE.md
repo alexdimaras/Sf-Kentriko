@@ -4,9 +4,9 @@
 |---|---|
 | Έκδοση εφαρμογής | 1.6.0 |
 | Branch | `claude/friendly-sagan-bfjrkj` (κάθε push = deploy στο Render) |
-| Worker (υπολογιστές) | rev `2026-11-24a` — ενημερώνεται μόνος του (και το μενού `SF-Kentro-Worker.cmd`) |
+| Worker (υπολογιστές) | rev `2026-11-24b` — ενημερώνεται μόνος του (και το μενού `SF-Kentro-Worker.cmd`) |
 | CI | `.github/workflows/test.yml`: `npm test` + ουρά/workers/βάση σε PostgreSQL 16 |
-| Τεστ | run 89 · rules 103 · jobs 36 · integrity 43 · coord 68 · workers 46 · ai 40 · research 83 · variants 62 · db 11 |
+| Τεστ | run 89 · rules 103 · jobs 36 · integrity 43 · coord 69 · workers 46 · ai 40 · research 83 · variants 62 · db 11 |
 | Πώς βλέπω τι τρέχει | `https://sf-kentro.onrender.com/ping` → `sha`, `workerRev`, `ready`, `busy`, `step` |
 
 ## Τι λειτουργεί και έχει αποδειχθεί (τεστ ή μέτρηση)

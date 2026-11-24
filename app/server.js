@@ -910,9 +910,9 @@ async function handleWorker(req, res, url, q, key0) {
       // a computer that stays on an older worker (its update failed by itself): said in the log after 20 minutes
       const rv = String((b.caps && b.caps.rev) || '');
       const sent = updateSent.get(w.id);
-      if (sent && rv && rv <= sent.from && Date.now() - sent.at > 3 * 60000 && !sent.told) { sent.told = true; events.record({ severity: 'warn', service: 'worker', code: 'WORKER_UPDATE_NOT_APPLIED', message: `${w.name}: κατέβασε την ενημέρωση αλλά τρέχει ακόμα την ${rv} — δεν μπόρεσε να γράψει τα αρχεία ή δεν ξεκίνησε ξανά. Λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά.` }); }
+      if (sent && rv && rv <= sent.from && Date.now() - sent.at > 3 * 60000 && !sent.told) { sent.told = true; events.record({ severity: 'warn', service: 'worker', code: 'WORKER_UPDATE_NOT_APPLIED', message: `${w.name}: κατέβασε την ενημέρωση αλλά τρέχει ακόμα την ${rv} — δεν μπόρεσε να γράψει τα αρχεία ή δεν ξεκίνησε ξανά. Λύση: «Αρχείο εγκατάστασης υπολογιστή» (Ρυθμίσεις → Σύστημα) → διπλό κλικ στο PC.` }); }
       if (sent && rv && rv > sent.from) { events.record({ severity: 'info', service: 'worker', code: 'WORKER_UPDATED', message: `${w.name}: ενημερώθηκε ${sent.from} → ${rv}` }); updateSent.delete(w.id); }
-      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000 && !(staleTold.get(w.id) > Date.now() - 3600e3)) staleTold.set(w.id, Date.now()) && events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — ${sent ? 'κατέβασε την ενημέρωση ' + new Date(sent.at).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ' αλλά δεν την εφάρμοσε' : 'δεν ζήτησε καν την ενημέρωση από τότε που ξεκίνησε το cloud (' + new Date(STARTED_AT).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + '): ο worker του δοκιμάζει ξανά μόνο κάθε 6 ώρες μετά από αποτυχία'}· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
+      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000 && !(staleTold.get(w.id) > Date.now() - 3600e3)) staleTold.set(w.id, Date.now()) && events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — ${sent ? 'κατέβασε την ενημέρωση ' + new Date(sent.at).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ' αλλά δεν την εφάρμοσε' : 'δεν ζήτησε καν την ενημέρωση από τότε που ξεκίνησε το cloud (' + new Date(STARTED_AT).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + '): ο worker του δοκιμάζει ξανά μόνο κάθε 6 ώρες μετά από αποτυχία'}· λύση: «Αρχείο εγκατάστασης υπολογιστή» (Ρυθμίσεις → Σύστημα) → διπλό κλικ στο PC (κατεβάζει πάντα τη νέα έκδοση)` }); } else staleSince.delete(w.id);
       await coord.hello(w.id, b.caps);
       // «active» to the computer: it takes new work only when it should (claim), but a job it already holds is never cut
       // in the middle — its worker (also an older one, which stops all its runners at once when told «not active») goes on
@@ -1020,7 +1020,7 @@ async function systemStatus() {
     const old = on.filter((w) => (w.caps.rev || '') < WORKER_REV);
     const act = on.filter((w) => workerActive(w));
     add('computer', 'Υπολογιστής', !old.length, old.length ? 'updating' : act.length ? 'working' : 'stopped',
-      on.map((w) => { const u = updateSent.get(w.id); return `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'} · έκδοση ${w.caps.rev || '—'}${(w.caps.rev || '') < WORKER_REV ? (u && u.told ? ` — ΔΕΝ εφάρμοσε την ενημέρωση ${WORKER_REV}: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` : ` · ενημερώνεται μόνος του σε ${WORKER_REV}`) : ''}`; }).join(' · '));
+      on.map((w) => { const u = updateSent.get(w.id); return `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'} · έκδοση ${w.caps.rev || '—'}${(w.caps.rev || '') < WORKER_REV ? updateWord(w, u) : ''}`; }).join(' · '));
   }
   const s = settings.all();
   if (!(s.localAI && s.localAI.enabled)) add('ai', 'AI (Ollama)', false, 'disabled', 'Κλειστό (Ρυθμίσεις → AI → «Ενεργό»).');
@@ -1047,6 +1047,19 @@ async function systemStatus() {
   try { const R = require('./lib/repair').ACTIONS; const d = repairDeps(); for (const x of items) for (const [id, a] of Object.entries(R)) if (a.check === x.id && a.when(H, d)) x.repair = { id, label: a.label }; } catch (_) { /* fine */ }
   const level = require('./lib/health').worst(items.map((x) => x.level));
   return { at: new Date().toISOString(), level, ok: level === 'ok', items };
+}
+/**
+ * What happens with the update of a computer on an older worker — only what is known (seen 24/11: «ενημερώνεται μόνος
+ * του» was shown for hours while the computer did not even ask for the new version).
+ */
+function updateWord(w, u) {
+  const since = staleSince.get(w.id);
+  const t = (ms) => new Date(ms).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens', hour: '2-digit', minute: '2-digit' });
+  const fix = '«Αρχείο εγκατάστασης υπολογιστή» (Ρυθμίσεις → Σύστημα) → διπλό κλικ στο PC: κατεβάζει τη νέα έκδοση και την ξεκινά';
+  if (u && u.told) return ` — κατέβασε την ${WORKER_REV} (${t(u.at)}) αλλά ΔΕΝ την εφάρμοσε: ${fix}`;
+  if (u) return ` · κατεβάζει την ${WORKER_REV} τώρα (${t(u.at)})`;
+  if (!since || Date.now() - since < 5 * 60000) return ` · θα ενημερωθεί μόνος του σε ${WORKER_REV} (σε λίγα λεπτά)`;
+  return ` — ΔΕΝ ζήτησε την ενημέρωση ${WORKER_REV} από τις ${t(since)} (ο παλιός worker ξαναδοκιμάζει μόνο κάθε 6 ώρες μετά από αποτυχία): ${fix}`;
 }
 function act0(ws) { return ws.some((w) => w.online && workerActive(w)); }
 /** The check of everything, for real: the data store answers, the AI writes an answer through the computer. */

@@ -189,6 +189,8 @@ async function makeBackend() {
     const inst = require(APP + '/lib/installer');
     const txt = inst.cmdText({ server: 'https://sf-kentro.onrender.com', code: 'ABCD-EF23', zip: 'https://github.com/a/b/archive/refs/heads/x.zip', until: '24/11' });
     ok(/set "CODE=ABCD-EF23"/.test(txt) && /worker\.js" ensure/.test(txt) && /SF-Kentro-Worker\.vbs/.test(txt) && /\r\n/.test(txt) && /STAMATIMENOS/.test(txt), 'installer: address + one-time code, «ensure» (no second pairing), starts with Windows, says it starts stopped');
+    // (seen 24/11: run again on an installed computer, it did not download — the old worker stayed)
+    ok(!/goto connect\r\n[\s\S]*Katevasma/.test(txt.split(':connect')[0].replace(/:nodl[\s\S]*/, '')) && !/if exist "%DEST%\\runtime\\node\.exe" if exist/.test(txt) && txt.indexOf('Invoke-WebRequest') < txt.indexOf(':connect'), 'installer: always downloads the current program, also over an older installation');
     let bad = null; try { inst.cmdText({ server: 'https://x.gr" & del *', code: 'A', zip: 'https://github.com/a' }); } catch (e) { bad = e; }
     ok(bad, 'installer: a value that could break out of the script is refused');
     let bad2 = null; try { inst.cmdText({ server: 'https://x.gr', code: 'ABCD', zip: 'https://evil.example/x.zip' }); } catch (e) { bad2 = e; }
@@ -197,7 +199,7 @@ async function makeBackend() {
     const su = require(APP + '/lib/selfupdate');
     const rev = require(APP + '/lib/workerrev');
     ok(su.shouldUpdate('2026-11-18c', rev).ok && !su.shouldUpdate(rev, rev).ok && !su.shouldUpdate('2026-12-01a', rev).ok, 'update: newer → yes · same → no · never back to an older one');
-    ok(!su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 3600e3 }).ok && su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 7 * 3600e3 }).ok, 'a revision that failed is tried again after 6 hours, not before');
+    ok(!su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 20 * 60000 }).ok && su.shouldUpdate('2026-11-18c', rev, { [rev]: Date.now() - 61 * 60000 }).ok, 'a revision that failed is tried again after 1 hour, not before (was 6 hours)');
     // (seen 23/11: a worker of 2026-11-23b refused a pack with the computer's menu file — an older one gets only what it knows)
     const OLD_NAMES = /^(worker\.js|package\.json|lib\/[\w.-]+\.js|vendor\/[\w.-]+\.js)$/;
     const pOld = JSON.parse(require('zlib').gunzipSync(su.build(APP, { forRev: '2026-11-23b' }).buf));

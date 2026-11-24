@@ -6,7 +6,7 @@
 //   worker — on its «hello» it learns the cloud's revision; a newer one → apply(): every name checked (only these
 //            folders, never «..»), every file checked against its SHA-256, the new worker.js checked by Node
 //            (`node --check`) BEFORE anything is replaced; then it ends with code 4 and its starter starts it again.
-//   Never older (no downgrade); a revision that failed is not tried again for 6 hours.
+//   Never older (no downgrade); a revision that failed is tried again after 1 hour.
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -42,6 +42,14 @@ function build(appDir, opts) {
   return { rev, buf: zlib.gzipSync(Buffer.from(JSON.stringify({ rev, files }))) };
 }
 
+function copyRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { return fs.copyFileSync(from, to); } catch (e) {
+      if (i >= 5 || !['EBUSY', 'EPERM', 'EACCES'].includes(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300 * (i + 1));
+    }
+  }
+}
 /** Should this worker update now? → { ok, why } (pure: the tests check it alone). */
 function shouldUpdate(mine, theirs, tried, now) {
   const t = String(theirs || ''), m = String(mine || '');
@@ -50,7 +58,7 @@ function shouldUpdate(mine, theirs, tried, now) {
   if (t === m) return { ok: false, why: 'ίδια έκδοση' };
   if (t < m) return { ok: false, why: 'το cloud έχει παλιότερη έκδοση (ποτέ προς τα πίσω)' };
   const last = tried && tried[t];
-  if (last && (now || Date.now()) - last < 6 * 3600e3) return { ok: false, why: 'απέτυχε πριν από λίγο: ξανά σε 6 ώρες' };
+  if (last && (now || Date.now()) - last < 3600e3) return { ok: false, why: 'απέτυχε πριν από λίγο: ξανά σε 1 ώρα' };
   return { ok: true, why: `νέα έκδοση ${t} (τρέχει ${m || '—'})` };
 }
 
@@ -84,16 +92,19 @@ function apply(buf, appDir, opts) {
         if (r.status !== 0) throw new Error('Η νέα έκδοση δεν περνά τον έλεγχο (' + n + '): ' + String(r.stderr || '').split('\n')[0].slice(0, 160));
       }
     }
-    // 3. in place, file by file (a .js read by Node is not locked, also on Windows)
-    for (const n of names) {
+    // 3. in place, file by file (a .js read by Node is not locked, also on Windows) — the revision LAST: a copy cut in
+    // the middle never says «new version» (it is tried again); a file held a moment (antivirus) is tried again 5 times
+    const order = names.filter((x) => x !== 'lib/workerrev.js').concat(['lib/workerrev.js']);
+    for (const n of order) {
       const to = target(appDir, n);
       // (the computer's menu only where it already is: never a new file outside the worker's folders)
       if (n.startsWith('root/') && !fs.existsSync(to)) continue;
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.copyFileSync(path.join(stage, n), to);
+      copyRetry(path.join(stage, n), to);
     }
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+    // (a folder Windows still holds is left for the next time: never a reason to call a done update «failed»)
+    try { fs.rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (_) { /* left behind */ }
   }
   return { rev: pack.rev, files: names.length };
 }
