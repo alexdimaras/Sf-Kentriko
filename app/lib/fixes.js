@@ -699,9 +699,11 @@ function proposalsFor0(site, p, C) {
       const top = ranked[0];
       // two sources that disagree (and neither is clearly ahead): nothing is proposed — a wrong brand is worse than none
       if (top && !(ranked[1] && ranked[1].n >= top.n)) {
-        const exportable = attrBrands && p.type === 'simple' && !(p.attrs || []).length;
+        // a shop with WooCommerce «Brands»: the importer takes a «Brands» column (WooCommerce documentation, checked 24/11
+        // — it used to have none); a shop with a «Κατασκευαστής» attribute: only where it does not touch other attributes
+        const exportable = !attrBrands || (p.type === 'simple' && !(p.attrs || []).length);
         const sure = top.n >= 2 && (top.known || top.srcs.some((x) => x.kind === 'supplier'));
-        add(Object.assign({}, base, { field: 'brand', from: '', to: top.name, why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (top.srcs.length > 1 ? ` Συμφωνούν ${top.srcs.length} πηγές.` : '') + (top.known ? '' : ' (Νέα μάρκα για το κατάστημα: έλεγξε τη γραφή.)') + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium', exportable }));
+        add(Object.assign({}, base, { field: 'brand', from: '', to: top.name, why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (top.srcs.length > 1 ? ` Συμφωνούν ${top.srcs.length} πηγές.` : '') + (top.known ? '' : ' (Νέα μάρκα για το κατάστημα: έλεγξε τη γραφή.)') + (exportable ? (attrBrands ? '' : ' (Μπαίνει στο αρχείο στη στήλη «Brands» του WooCommerce.)') : ' (Δεν μπαίνει στο αρχείο: το προϊόν έχει ήδη ιδιότητες/μεγέθη — βάλ’ τη από τη μαζική επεξεργασία.)'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium', exportable }));
       }
     }
     const copy = copiedFrom(C, site, p);
@@ -1081,6 +1083,7 @@ function exportFile(site, by) {
   let xc = null;
   const exportCtx = () => { if (!xc) { xc = { L: catalog.links(), skus: { sf: new Set(), st: new Set() } }; for (const st2 of catalog.SITES) for (const x of catalog.load(st2).products) if (x.sku) xc.skus[st2].add(U.normSku(x.sku)); } return xc; };
   const brandAttr = catalog.detectAttribute(site, 'brand');
+  const brandTax = wx.usesBrandTaxonomy(site);
   for (const c of items) {
     const p = byId.get(c.pid);
     if (!p) continue;
@@ -1103,6 +1106,7 @@ function exportFile(site, by) {
       const vlist = (c.vars || []).length && c.site === site ? c.vars : p.type === 'variable' && code ? variationCodes(exportCtx(), site, p, code) : [];
       for (const v of vlist) extraRows.push({ ID: v.id, SKU: v.sku });
     }
+    else if (c.field === 'brand' && brandTax) set(r, 'Brands', String(c.to).replace(/,/g, '\\,')); // (a comma in a name is escaped)
     else if (c.field === 'brand') { wx.setAttrs(r, [{ name: brandAttr, values: [c.to], visible: true, global: true }]); for (const k of ['Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global']) cols.add(k); }
     else if (c.field === 'price') {
       if (p.type === 'variable') {
@@ -1118,7 +1122,7 @@ function exportFile(site, by) {
       } else { set(r, 'Regular price', Number(c.to.regular).toFixed(2)); set(r, 'Sale price', c.to.sale ? Number(c.to.sale).toFixed(2) : ''); }
     }
   }
-  const order = ['SKU', 'Name', 'Published', 'Short description', 'Description', 'Regular price', 'Sale price', 'Categories', 'Images', 'GTIN, UPC, EAN, or ISBN', 'Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global'];
+  const order = ['SKU', 'Name', 'Published', 'Short description', 'Description', 'Regular price', 'Sale price', 'Categories', 'Brands', 'Images', 'GTIN, UPC, EAN, or ISBN', 'Attribute 1 name', 'Attribute 1 value(s)', 'Attribute 1 visible', 'Attribute 1 global'];
   const columns = order.filter((k) => cols.has(k)).concat([...cols].filter((k) => !order.includes(k)));
   const all = [...rows.values()].filter((r) => Object.keys(r).length > 1).concat(extraRows);
   if (!all.length) throw new Error('Δεν βγήκε καμία γραμμή για το αρχείο.');

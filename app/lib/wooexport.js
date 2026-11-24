@@ -47,8 +47,8 @@ function finalize(rows, site, extra) {
   const cols = BASE_COLS.slice();
   const seo = seoColumns(seoMode(site));
   if (seo) cols.push(seo.desc, seo.kw);
-  // Brands: the WooCommerce importer has no column for the brand taxonomy, so the brand goes in the
-  // "Κατασκευαστής" attribute (what the shop already uses); Products → Bulk edit sets the brand term.
+  // Brands: the brand goes in the "Κατασκευαστής" attribute (what the shop already uses). (The WooCommerce importer
+  // now also takes a «Brands» column for the brand taxonomy — used by the files of Διορθώσεις, lib/fixes.js.)
   for (const e of extra || []) if (!cols.includes(e)) cols.push(e);
   // drop attribute columns nobody uses
   const used = cols.filter((c) => !/^Attribute \d/.test(c) || rows.some((r) => r[c.replace(/ (value\(s\)|visible|global)$/, ' name')]));

@@ -270,6 +270,20 @@ function shop() {
     const b14 = pick(14, 'brand');
     ok(b14 && /^lumos$/i.test(b14.to) && b14.source.kind === 'competitor' && (b14.sources || []).length === 1, 'a missing brand comes from the shops that have the same product (same code), each one named as a source', JSON.stringify(b14 && [b14.to, b14.source, b14.sources]));
     ok(b14 && b14.level === 'medium' && /Νέα μάρκα/.test(b14.why), 'a brand the shop has never used is only «look at it», even when two shops agree', b14 && b14.level);
+    // a shop with WooCommerce «Brands» (24/11: «δεν εγκρίνει μάρκα»): the brand goes into the «Brands» column of the file
+    {
+      const sfp = catalog.load('sf').products; const keepSrc = sfp.map((x) => x.brandSource);
+      for (const x of sfp) if (x.brand) x.brandSource = 'brands';
+      const keepDec = store.read('fixes', {});
+      fixes.invalidate();
+      const bb = fixes.compute().items.find((c) => c.site === 'sf' && c.pid === 14 && c.field === 'brand');
+      ok(bb && bb.exportable !== false && /στήλη «Brands»/.test(bb.why), 'with WooCommerce «Brands»: the brand proposal can be approved (it used to be «only to look at»)', JSON.stringify(bb && [bb.exportable, bb.why]));
+      fixes.decide([bb.id], 'approved', 'test');
+      const ex = fixes.exportFile('sf', 'test');
+      const head = ex.csv.split('\n')[0];
+      ok(/\bBrands\b/.test(head) && /Lumos|LUMOS/.test(ex.csv) && !/Attribute 1 name/.test(head), 'the file has a «Brands» column with the brand (not an attribute)', head);
+      store.write('fixes', keepDec); sfp.forEach((x, i) => { x.brandSource = keepSrc[i]; }); fixes.invalidate();
+    }
     const g14 = pick(14, 'gtin');
     ok(g14 && g14.to === '4046872358951' && g14.level === 'high' && /2 πηγές/.test(g14.why), 'the same EAN at two shops with the same code → sure', JSON.stringify(g14 && [g14.to, g14.level]));
     const i14 = pick(14, 'images');
