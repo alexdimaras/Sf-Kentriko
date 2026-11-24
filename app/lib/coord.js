@@ -96,7 +96,8 @@ function fits(w, j) {
  * priority, what a person asked for before what the program queued, the oldest.
  */
 // quick work (a question to the AI of a computer): a lane of its own on each computer, never behind the long jobs
-const QUICK = new Set(['ai.call']);
+// (and the research of ONE product a person waits for: its own lane too — codes.one, lib/jobtypes.js)
+const QUICK = new Set(['ai.call', 'codes.one']);
 async function claim(workerId, max, types) {
   const w = await backend.worker(workerId);
   if (!w || w.revoked) return [];
@@ -332,7 +333,7 @@ async function setMode(id, mode) {
   await backend.saveWorker(w);
   // switched off by a person: what it was doing goes back to the queue now (another computer or the cloud takes it),
   // without using up a try; its runners learn it at their next «still working» and stop
-  if (w.mode === 'off') for (const j of await backend.byWorker(id)) if (!QUICK.has(j.type)) await release(id, j.id, null, 'Ο υπολογιστής σταμάτησε από τις Ρυθμίσεις.');
+  if (w.mode === 'off') for (const j of await backend.byWorker(id)) if (j.type !== 'ai.call') await release(id, j.id, null, 'Ο υπολογιστής σταμάτησε από τις Ρυθμίσεις.');
   changed();
   return true;
 }
@@ -444,7 +445,7 @@ async function job(id) { return view(await backend.job(id)); }
 async function rawJob(id) { return backend ? backend.job(id) : null; }
 /** The waiting / running jobs of one type, as they are (with their payload): for whoever keeps the queue fed. */
 /** How many jobs (not the quick questions to the AI) a computer holds now — it finishes them before it rests. */
-async function heldBy(workerId) { return (await backend.byWorker(workerId)).filter((j) => !QUICK.has(j.type) && (j.status === 'assigned' || j.status === 'running') && !j.cancel).length; }
+async function heldBy(workerId) { return (await backend.byWorker(workerId)).filter((j) => j.type !== 'ai.call' && (j.status === 'assigned' || j.status === 'running') && !j.cancel).length; }
 async function liveOf(type) { return (await backend.live()).filter((j) => j.type === type); }
 async function live() { return (await backend.live()).sort(order).map(view); }
 async function recent(n) { return (await backend.recent(n || 20)).map(view); }

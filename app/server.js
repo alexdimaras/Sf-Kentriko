@@ -379,7 +379,7 @@ const routes = {
   },
   'GET /api/market': (q) => market.overview(q.site === 'st' ? 'st' : 'sf', q),
   // codes (SKU / EAN) from the internet: one product now, or the next ones without a code
-  'POST /api/codes/find': (b) => {
+  'POST /api/codes/find': (b, _, ctx) => {
     const cf = require('./lib/codefind');
     if (b.site && b.id) {
       const p = catalog.byId(b.site === 'st' ? 'st' : 'sf').get(Number(b.id));
@@ -391,8 +391,10 @@ const routes = {
       return (async () => {
         // a computer that searches is on: it goes first in its queue (a person is waiting); else it is done here
         const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web') && workerActive(w)) : [];
-        if (ws.length) { const j = await coord.enqueue('codes.web', webPayload(items), { priority: 40, label, by: 'person' }); return coord.job(j.id); }
-        return jobs.start('codes', label, (job) => webCodes(job, { items }));
+        // (a computer with the quick lane: the research of this one product does not wait behind the long batches)
+        const type = ws.some((w) => (w.caps.types || []).includes('codes.one') && coord.handler('codes.one').canTake(w)) ? 'codes.one' : 'codes.web';
+        if (ws.length) { const j = await coord.enqueue(type, webPayload(items, { origin: 'manual', kind: mode ? 'full' : 'button', by: ctx && ctx.user ? ctx.user.name : '', reason: 'πάτησες «' + (mode ? 'Πλήρης έρευνα Internet' : 'Έρευνα') + '»' }), { priority: 40, label, by: 'person' }); return coord.job(j.id); }
+        return jobs.start('codes', label, (job) => webCodes(job, { items, run: { id: U.uid('r'), at: new Date().toISOString(), origin: 'manual', kind: mode ? 'full' : 'button', by: ctx && ctx.user ? ctx.user.name : '', reason: 'πάτησες «' + (mode ? 'Πλήρης έρευνα Internet' : 'Έρευνα') + '»' } }));
       })();
     }
     if (Array.isArray(b.keys) && b.keys.length) {
@@ -402,7 +404,7 @@ const routes = {
       return (async () => {
         const ws = coordReady ? (await coord.workersView()).filter((w) => w.online && (w.caps.types || []).includes('codes.web')) : [];
         if (ws.length) {
-          for (let i = 0; i < items.length; i += 10) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 10)), { dedupKey: 'codes.web:pick:' + items[i].k + ':' + Date.now(), priority: 20, auto: true });
+          for (let i = 0; i < items.length; i += 10) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 10), { origin: 'manual', kind: 'button', by: ctx && ctx.user ? ctx.user.name : '', reason: 'επέλεξες προϊόντα για έρευνα' }), { dedupKey: 'codes.web:pick:' + items[i].k + ':' + Date.now(), priority: 20, auto: true });
           await feedWebResearch();
           return { queued: items.length, computers: ws.length };
         }
@@ -447,7 +449,10 @@ const routes = {
       try {
         const cf = require('./lib/codefind');
         const items = cf.itemsFor([site + ':' + r.id], '');
-        if (items.length) { await coord.enqueue('codes.web', webPayload(items), { dedupKey: 'codes.web:open:' + site + ':' + r.id, priority: 30, auto: true, label: 'Έρευνα στο internet: ' + String(r.name).slice(0, 60) }); r.statuses.research.autoQueued = true; }
+        // (on the quick lane when a computer has it: opening a product and seeing what it lacks is a person waiting)
+        const ws = (await coord.workersView()).filter((w) => w.online && workerActive(w) && (w.caps.types || []).includes('codes.one') && coord.handler('codes.one').canTake(w));
+        const type = ws.length ? 'codes.one' : 'codes.web';
+        if (items.length) { await coord.enqueue(type, webPayload(items, { origin: 'automatic', kind: 'gap-fill', reason: 'άνοιξες το προϊόν· λείπει: ' + (r.missing || []).join(', ') }), { dedupKey: type + ':open:' + site + ':' + r.id, priority: 30, auto: true, label: 'Έρευνα στο internet: ' + String(r.name).slice(0, 60) }); r.statuses.research.autoQueued = true; }
       } catch (e) { r.statuses.research.autoError = e.message; }
     }
     return r;
@@ -961,21 +966,23 @@ async function webCodes(job, opts) {
     const items = cf.candidates((o.max || 200) + busy.size).filter((x) => !busy.has(x.k)).slice(0, o.max || 200);
     const day = market.localDay(new Date());
     let n = 0;
-    for (let i = 0; i < items.length; i += 20) { await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20)), { dedupKey: `codes.web:${day}:${i / 20}`, auto: !!o.auto, priority: o.auto ? 0 : 5 }); n++; }
+    for (let i = 0; i < items.length; i += 20) { await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20), { origin: o.auto ? 'automatic' : 'manual', kind: o.auto ? 'scheduled' : 'button', reason: o.auto ? 'ημερήσια ανανέωση' : 'ξεκίνησε από την οθόνη' }), { dedupKey: `codes.web:${day}:${i / 20}`, auto: !!o.auto, priority: o.auto ? 0 : 5 }); n++; }
     job && job.log(`Κωδικοί από το internet: ${items.length} προϊόντα σε ${n} ομάδες, στους υπολογιστές των μαγαζιών.`);
     return { queued: items.length };
   }
-  return cf.run(job, { max: o.max || 25, items: o.items });
+  return cf.run(job, { max: o.max || 25, items: o.items, run: o.run || { id: U.uid('r'), at: new Date().toISOString(), origin: o.auto ? 'automatic' : 'manual', kind: o.auto ? 'scheduled' : 'button', reason: o.auto ? 'ημερήσια ανανέωση (στο cloud)' : 'ξεκίνησε από την οθόνη (στο cloud)' } });
 }
 /**
  * A group of products for the research on the internet, with what the computer needs to class the sites and to stay
  * within the limits of the settings (no key of a search API: those it asks for on its own line).
  */
-function webPayload(items) {
+function webPayload(items, run) {
   const cf = require('./lib/codefind');
   const s = settings.all();
   const ch = cf.contextHosts();
-  return { items, own: [...cf.ownHosts()], compHosts: ch.compHosts, supplierHosts: ch.supplierHosts, limits: s.webResearch, ai: !!(s.localAI && s.localAI.enabled && s.localAI.research !== false), aiModel: (s.localAI && s.localAI.model) || '' };
+  // (run: who / why this research was started — kept with each product's research: «mine» apart from the program's)
+  const meta = Object.assign({ id: U.uid('r'), at: new Date().toISOString(), origin: 'automatic', kind: 'auto', by: '', reason: '' }, run || {});
+  return { items, own: [...cf.ownHosts()], compHosts: ch.compHosts, supplierHosts: ch.supplierHosts, limits: s.webResearch, ai: !!(s.localAI && s.localAI.enabled && s.localAI.research !== false), aiModel: (s.localAI && s.localAI.model) || '', run: meta };
 }
 /**
  * The free AI (Ollama) in server mode: the cloud has none, so a question goes to a shop's computer that has it
@@ -1156,7 +1163,7 @@ async function feedWebResearch() {
   const cf = require('./lib/codefind');
   const items = cf.candidates(400).filter((x) => !busy.has(x.k)).slice(0, want * 20);
   if (!items.length) return;
-  for (let i = 0; i < items.length; i += 20) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20)), { dedupKey: 'codes.web:' + items[i].k + ':' + Date.now(), auto: true, priority: 0 });
+  for (let i = 0; i < items.length; i += 20) await coord.enqueue('codes.web', webPayload(items.slice(i, i + 20), { origin: 'automatic', kind: 'auto', reason: 'συνεχής έρευνα όσων μένουν' }), { dedupKey: 'codes.web:' + items[i].k + ':' + Date.now(), auto: true, priority: 0 });
 }
 async function useWorkers() { return SERVER && coordReady && (await coord.workersView()).length > 0; }
 /**

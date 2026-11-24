@@ -951,3 +951,5 @@ body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="f
 /* Συμβάντα: μία γραμμή ανά είδος, το μήνυμα σε έως 2 γραμμές */
 .ev-list .ev-one { padding: 6px 0; }
 .ev-list .ev-msg { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; color: var(--muted, inherit); }
+/* καρτέλα προϊόντος: δύο λίστες ερευνών (δικές μου / του συστήματος) — μία στήλη σε κινητό */
+@media (max-width: 640px) { .grid2.runs { grid-template-columns: minmax(0, 1fr); } }

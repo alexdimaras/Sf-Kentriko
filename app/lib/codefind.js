@@ -637,8 +637,14 @@ function save(results) {
         if (r.aiq) e.aiq = r.aiq;
         // a failed or cut research changes nothing of what was found before
         if (FAILED.has(r.status) && prev) e.hits = mergeHits(prev, { status: r.status, hits: r.hits || [], trace: null });
-        if (r.trace) traces[k] = Object.assign({ status: r.status }, r.trace, { sum: r.sum || null });
+        if (r.trace) traces[k] = Object.assign({ status: r.status }, r.trace, { sum: r.sum || null }, r.run ? { run: r.run } : {});
       }
+      // every research of the product, in a line: a person's (last 10) apart from the program's (last 3)
+      if (r.run) {
+        const row = { i: String(r.run.id || '').slice(0, 40), o: r.run.origin === 'manual' ? 'm' : 'a', k: String(r.run.kind || '').slice(0, 12), b: String(r.run.by || '').slice(0, 40), r: String(r.run.reason || '').slice(0, 100), t0: r.run.at || '', t: r.run.endedAt || now, s: r.status || '', f: (r.hits || []).length, q: r.queries || 0, w: String(r.run.worker || '').slice(0, 40) };
+        const before = ((prev && prev.runs) || []).filter((x) => x.i !== row.i);
+        e.runs = before.filter((x) => x.o === 'm').concat(row.o === 'm' ? [row] : []).slice(-10).concat(before.filter((x) => x.o !== 'm').concat(row.o !== 'm' ? [row] : []).slice(-3)).sort((a, b) => String(a.t).localeCompare(String(b.t)));
+      } else if (prev && prev.runs) e.runs = prev.runs;
       d.products[k] = e;
       // every site seen: what kind it is, how often, with which of our products («the same» or only met)
       const doms = (r.trace && r.trace.domains) || [];
@@ -667,7 +673,12 @@ function save(results) {
   for (const [shard, items] of Object.entries(byShard)) {
     store.update(shard, {}, (t) => {
       t.items = t.items || {}; t.order = (t.order || []).filter((k) => !items[k]);
-      for (const [k, v] of Object.entries(items)) { t.items[k] = v; t.order.push(k); }
+      for (const [k, v] of Object.entries(items)) {
+        // the whole detail of the last research a PERSON started is kept apart: an automatic one after it never wipes
+        // it out (24/11) — 40 per shard (≈1.300 products), the oldest go first
+        if (v.run && v.run.origin === 'manual') { t.mine = t.mine || {}; delete t.mine[k]; t.mine[k] = v; const ks = Object.keys(t.mine); for (const x of ks.slice(0, Math.max(0, ks.length - 40))) delete t.mine[x]; }
+        t.items[k] = v; t.order.push(k);
+      }
       while (t.order.length > TRACE_PER_SHARD) delete t.items[t.order.shift()];
       return t;
     });
@@ -721,6 +732,7 @@ async function run(job, opts) {
     if (job && job.cancelled()) break;
     try {
       const r = await lookUp(it, io);
+      if (opts.run) r.run = Object.assign({ origin: 'automatic', kind: 'auto', by: '', reason: '' }, opts.run, { endedAt: U.nowIso(), worker: 'cloud' });
       results[it.k] = r;
       looked++;
       if (r.hits.length) withCode++;
@@ -762,6 +774,9 @@ function traceFor(key, q) {
   const e = data().products[key] || null;
   const shard = store.read(shardOf(key), null);
   let t = shard && shard.items ? shard.items[key] || null : null;
+  const runs = ((e && e.runs) || []).map((x) => ({ id: x.i, origin: x.o === 'm' ? 'manual' : 'automatic', kind: x.k, by: x.b, reason: x.r, startedAt: x.t0, endedAt: x.t, status: x.s, found: x.f, queries: x.q, worker: x.w }));
+  // (?run=mine: the last research a person started, whole, even after automatic ones)
+  if (o.run === 'mine' && shard && shard.mine && shard.mine[key]) t = shard.mine[key];
   store.forget(shardOf(key));
   if (!t) t = ((store.read(TRACE_KEY, null) || {}).items || {})[key] || null; // (kept by an older version)
   if (!e && !t) return null;
@@ -777,6 +792,8 @@ function traceFor(key, q) {
     pages: slice(pages), results: slice(results), totals: { pages: pages.length, results: results.length }, page, per,
     domains: (t && t.domains) || [], error: t && t.error ? t.error : '', quality: e ? qualityOf(e) : [],
     stopWord: STOP_LABEL[(e && e.stop) || (t && t.stop) || ''] || '', coverage: (t && t.coverage) || null, ms: (t && t.ms) || 0,
+    // every research of this product, newest first: «mine» (a person started it) and «the program's»
+    runs: runs.slice().reverse(), shown: (t && t.run) || null,
   };
 }
 /** The state of a research in one word (a research needing a new pass, or old, is said so). */

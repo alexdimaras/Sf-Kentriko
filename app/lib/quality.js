@@ -209,6 +209,14 @@ function report(site, id) {
   // every area points to its waiting proposals (the fix is there, for a yes)
   const FIELD = { name: ['name'], desc: ['desc', 'description'], short: ['short'], brand: ['brand'], sku: ['sku'], ean: ['ean', 'gtin'], images: ['images'], variations: ['varsku', 'variations'], price: ['price', 'sale', 'regular'], cats: ['cats', 'categories'], attrs: ['attrs'] };
   for (const a of areas) { const fs = FIELD[a.field] || []; a.fixes = pending.filter((c) => fs.includes(c.field)).map((c) => c.id); }
+  // (asked 24/11: «it says what is missing and gives no proposal — why?») — when nothing is proposed, said why and what brings it
+  const NOFIX = {
+    short: 'Δεν υπάρχει ακόμα πρόταση: η σύντομη περιγραφή φτιάχνεται από τα χαρακτηριστικά του αντιπροσώπου ή μιας σελίδας του ίδιου προϊόντος. Η έρευνα στο internet ξεκινά μόνη της όταν ανοίγεις το προϊόν· ή γράψ\' την εδώ.',
+    desc: 'Δεν υπάρχει ακόμα πρόταση: χρειάζεται κείμενο από αντιπρόσωπο, το άλλο σας site ή σελίδα του ίδιου προϊόντος (η έρευνα ξεκινά μόνη της).',
+    ean: 'Δεν βρέθηκε ακόμα EAN με απόδειξη (αντιπρόσωπος, ή 2 καταστήματα για την ίδια ακριβώς παραλλαγή). Η έρευνα ξεκινά μόνη της.',
+    images: 'Δεν βρέθηκαν ακόμα φωτογραφίες του ίδιου προϊόντος (και του ίδιου χρώματος). Η έρευνα ξεκινά μόνη της.',
+  };
+  for (const a of areas) if (!a.fixes.length && a.level !== 'ok' && NOFIX[a.field]) a.fix = NOFIX[a.field];
   const ORDER = { crit: 0, warn: 1, info: 2, ok: 3 };
   areas.sort((a, b) => ORDER[a.level] - ORDER[b.level]);
   const counts = { crit: 0, warn: 0, info: 0, ok: 0 };
@@ -222,8 +230,10 @@ function report(site, id) {
     areas, counts,
     // the full research is proposed (never started) when it is old / never done, or something important is missing
     needsResearch: rStale || (critMissing && !['complete', 'running', 'queued'].includes(rs)),
-    // no real code, and the research never done / due again: it is queued by itself on opening (the normal plan)
-    autoResearch: (!sku || !!U.junkSku(sku)) && ['never', 'due', 'stale'].includes(rs),
+    // something the internet can give is missing (code, EAN, photos, text, brand) and the research is never done / due
+    // again: it is queued by itself on opening, on the quick lane (asked 24/11: «automatic, with priority, fast»)
+    autoResearch: ['never', 'due', 'stale'].includes(rs) && (!sku || !!U.junkSku(sku) || areas.some((a) => a.level !== 'ok' && ['sku', 'ean', 'images', 'desc', 'short', 'brand'].includes(a.field))),
+    missing: areas.filter((a) => a.level !== 'ok' && a.level !== 'info' && ['sku', 'ean', 'images', 'desc', 'short', 'brand'].includes(a.field)).map((a) => a.area).slice(0, 6),
     proposals: pending.map((c) => ({ id: c.id, field: c.field, label: c.label, level: c.level, confidence: c.confidence || 0, from: show(c, c.from), to: show(c, c.to), manual: !!c.manual, editable: ['name', 'short', 'desc'].includes(c.field), html: c.field === 'desc' && c.to && c.to.html ? String(c.to.html).slice(0, 20000) : c.field === 'short' && typeof c.to === 'string' ? c.to.slice(0, 4000) : '', why: String(c.why || '').slice(0, 300), source: c.source ? { kind: c.source.kind || '', label: String(c.source.label || '').slice(0, 120), url: c.source.url || '' } : null })),
   };
 }

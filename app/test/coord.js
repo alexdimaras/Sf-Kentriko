@@ -263,6 +263,17 @@ async function makeBackend() {
     jj = await coord.job(fj.id);
     ok(jj.status !== 'assigned' && /κανένας εργάτης του/.test(jj.error), 'the computer answers but none of its runners has the job: said so (not «stopped answering»)', jj.error);
     coord.setAliveCheck(null);
+    // (24/11: a click on «Έρευνα» waited for a free runner) — the research of ONE product has a lane of its own:
+    // a computer full of long batches still takes it at once
+    coord.register('codes.one', { label: 'Ένα προϊόν', apply: (j2, r2) => r2 });
+    await coord.setMode(pcA.id, 'always');
+    const fill = [];
+    for (let i = 0; i < 4; i++) fill.push(await coord.enqueue('test.fence', { n: 100 + i }, {}));
+    await coord.claim(pcA.id, 4, ['test.fence']);
+    ok((await coord.claim(pcA.id, 1, ['test.fence'])).length === 0, 'the computer is full of long work (4 of 4)');
+    const one = await coord.enqueue('codes.one', { items: [{ k: 'sf:1' }] }, { priority: 40, by: 'person' });
+    const q = await coord.claim(pcA.id, 1, ['codes.one']);
+    ok(q.length === 1 && q[0].id === one.id, 'the research of one product a person asked for is taken at once on the quick lane', JSON.stringify(q.map((x) => x.type)));
     await coord.revoke(pcA.id);
   }
 

@@ -202,7 +202,7 @@ function registerCodes() {
   // computer has been on for a while, the cloud does a few itself (coord.cloudTick), more slowly.
   // the first worker revision whose research follows the plan of 19/11 (rich plan, coverage, stop reasons)
   const MIN_RESEARCH_REV = '2026-11-23a';
-  coord.register('codes.web', {
+  const WEB = {
     label: 'Έρευνα στο internet (κωδικοί, EAN, φωτογραφίες, μάρκα, τιμή)',
     needs: { ramMB: 500 },
     cloudOk: true,
@@ -277,6 +277,9 @@ function registerCodes() {
       for (const [k, r] of Object.entries((result && result.results) || {})) {
         if (!KEY_RE.test(k) || !want.has(k) || done.has(k) || !r || !Array.isArray(r.hits)) continue;
         clean[k] = cleanResearch(r);
+        // who / why / when this research ran (study 24/11 §8): «mine» kept apart from the program's own
+        const run = (job.payload && job.payload.run) || {};
+        clean[k].run = { id: String(run.id || job.id).slice(0, 40), job: job.id, origin: run.origin === 'manual' ? 'manual' : 'automatic', kind: String(run.kind || (job.auto ? 'auto' : 'button')).slice(0, 20), by: String(run.by || '').slice(0, 60), reason: String(run.reason || job.label || '').slice(0, 160), at: String(run.at || job.createdAt || '').slice(0, 30), endedAt: U.nowIso(), worker: String(job.workerName || '').slice(0, 60) };
       }
       if (Object.keys(clean).length) require('./codefind').save(clean);
       return Object.keys(clean);
@@ -287,8 +290,19 @@ function registerCodes() {
       const keys = Object.keys(res).filter((k) => KEY_RE.test(k) && res[k] && Array.isArray(res[k].hits));
       return { products: keys.length, withCode: keys.filter((k) => (res[k].hits || []).some((h) => h.code || h.ean)).length, failed: keys.filter((k) => require('./codefind').FAILED.has(res[k].status)).length };
     },
-  });
+  };
+  coord.register('codes.web', WEB);
+  // ONE product a person is waiting for (a click on «Έρευνα», or opening a product with something missing): the same
+  // research, on the computers' quick lane — a runner of its own, never behind the long batches, and first in the
+  // search engines' line (study 24/11 §8: a click used to wait up to ~25 minutes for a free runner)
+  coord.register('codes.one', Object.assign({}, WEB, {
+    label: 'Έρευνα ενός προϊόντος (με προτεραιότητα)',
+    maxAttempts: 2,
+    canTake(w) { return String((w.caps && w.caps.rev) || '') >= QUICK_REV; },
+  }));
 }
+// the first worker with the quick lane of the research of one product
+const QUICK_REV = '2026-11-24d';
 
 /** The data a computer may fetch for a job it holds: the pack, and the catalog of that job's competitor. */
 async function packFor() { return require('./research').matchPack(); }

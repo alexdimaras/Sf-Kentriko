@@ -188,10 +188,28 @@
       h('div', { class: 'row tight', style: { flexWrap: 'wrap' } },
         btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search', title: 'Όλο το πλάνο αναζητήσεων, σε κάθε κατάστημα του internet (και όταν έχει ήδη κωδικό / EAN)' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι στις Διορθώσεις και στις Τιμές, για έγκριση.'); refresh(); } })).catch(fail)))), box);
     const pageOf = { pages: 1, results: 1 };
+    let which = ''; // '' = the last research · 'mine' = the last one I started
+    // the researches of this product, in two lists (asked 24/11): the ones a person started, and the program's own
+    const runsBox = (t) => {
+      const runs = t.runs || [];
+      if (!runs.length) return null;
+      const KIND = { full: 'πλήρης', button: 'κουμπί', auto: 'αυτόματη', scheduled: 'προγραμματισμένη', 'gap-fill': 'για ό,τι λείπει' };
+      const row = (r) => h('li', null, h('b', null, fmt.ago(r.endedAt)), ' · ', KIND[r.kind] || r.kind || '', r.by ? ' · ' + r.by : '', ' · ', (RS[r.status] || [r.status])[0] || '—', ` · ίδιο σε ${r.found || 0}`, r.reason ? h('div', { class: 'faint', style: { fontSize: '12px' } }, r.reason + (r.worker ? ' · ' + r.worker : '')) : null);
+      const mine = runs.filter((r) => r.origin === 'manual'), auto = runs.filter((r) => r.origin !== 'manual');
+      return h('div', { class: 'grid2 runs', style: { margin: '8px 0' } },
+        h('div', null, h('h3', { style: { margin: '0 0 4px', fontSize: '13px', letterSpacing: '.04em' } }, 'ΕΡΕΥΝΕΣ ΠΟΥ ΞΕΚΙΝΗΣΑ ΕΓΩ'),
+          mine.length ? h('ul', { class: 'todo-list' }, mine.slice(0, 10).map(row)) : h('p', { class: 'faint', style: { margin: 0 } }, 'Καμία ακόμα.'),
+          mine.length ? h('button', { type: 'button', class: 'linkish', onclick: () => { which = which === 'mine' ? '' : 'mine'; load(); } }, which === 'mine' ? 'Δείξε την τελευταία έρευνα' : 'Δείξε τις λεπτομέρειες της δικής μου') : null),
+        h('div', null, h('h3', { style: { margin: '0 0 4px', fontSize: '13px', letterSpacing: '.04em' } }, 'ΑΥΤΟΜΑΤΕΣ ΕΡΕΥΝΕΣ ΤΟΥ ΣΥΣΤΗΜΑΤΟΣ'),
+          auto.length ? h('ul', { class: 'todo-list' }, auto.slice(0, 5).map(row)) : h('p', { class: 'faint', style: { margin: 0 } }, 'Καμία ακόμα.')));
+    };
     const load = async () => {
       try {
-        const t = await GET('/api/codes/trace', { site, id, page: Math.max(pageOf.pages, pageOf.results), per: 40 });
+        const t = await GET('/api/codes/trace', { site, id, page: Math.max(pageOf.pages, pageOf.results), per: 40, run: which });
         clear(box);
+        const rb = runsBox(t);
+        if (rb) box.appendChild(rb);
+        if (t.shown) box.appendChild(h('p', { class: 'faint', style: { margin: '4px 0' } }, 'Οι λεπτομέρειες είναι της ' + (t.shown.origin === 'manual' ? 'έρευνας που ξεκίνησες' + (t.shown.by ? ' (' + t.shown.by + ')' : '') : 'αυτόματης έρευνας') + ' · ' + fmt.ago(t.shown.endedAt)));
         const st = RS[t.status] || [t.status, ''];
         box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px' } }, h('span', { class: 'pill ' + st[1] }, st[0]), t.mode === 'full' ? h('span', { class: 'pill' }, 'πλήρης') : null,
           t.at ? h('span', { class: 'faint' }, 'Τελευταία: ' + fmt.ago(t.at)) : null, t.okAt ? h('span', { class: 'faint' }, '· επιτυχής: ' + fmt.ago(t.okAt)) : null,

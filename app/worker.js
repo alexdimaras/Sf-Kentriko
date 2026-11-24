@@ -59,7 +59,7 @@ function caps() {
     cpus: cpus.length, cpuModel: (cpus[0] && cpus[0].model) || '', ramMB: ram, freeMB: Math.round(os.freemem() / 1048576), version: VERSION, platform: process.platform + '-' + process.arch,
     // the internet search reads web pages: it needs the page reader (in the full program folder)
     // the AI only with a model that writes text (an Ollama without one cannot answer anything)
-    types: ['market.shop'].concat(canRead() ? ['codes.web', 'research.measure'] : [], ollama.ok && ollama.models.length ? ['ai.call'] : []),
+    types: ['market.shop'].concat(canRead() ? ['codes.web', 'codes.one', 'research.measure'] : [], ollama.ok && ollama.models.length ? ['ai.call'] : []),
     ollama: ollama.ok ? ollama.models.slice(0, 20) : null,
     ollamaInfo: { ok: ollama.ok, version: ollama.version, error: ollama.ok ? (ollama.models.length ? '' : 'χωρίς μοντέλο που γράφει κείμενο') : ollama.error, at: ollama.at },
     rev: require('./lib/workerrev'),
@@ -210,7 +210,8 @@ function mergeParts(a, b) { if (!a) return b || null; if (!b) return a; return {
 
 // ---------- a runner: one job at a time, in its own process (one per core) ----------
 const toParent = (m) => { try { if (process.send) process.send(m); } catch (_) { /* parent gone */ } };
-const LANE = process.env.SFK_RUNNER_LANE || ''; // '' = any work; 'ai.call' = only quick questions to the AI
+const LANE = process.env.SFK_RUNNER_LANE || ''; // '' = any work; 'ai.call' = only quick questions to the AI; 'codes.one' = the research of one product
+const QUICK_LANE = 'codes.one';
 async function runnerLoop() {
   const conf = readConf();
   if (!conf || !conf.token) process.exit(2);
@@ -236,7 +237,7 @@ async function runnerLoop() {
           toParent({ t: 'job', job: { id: j.id, type: j.type, attempt: j.attempt, label: (coord.handler(j.type) || {}).label || j.type } });
           await runJob(api, conf, j).finally(() => { running--; toParent({ t: 'job', job: null }); toParent({ t: 'count', k: 'job' }); });
           wait = 300;
-        } else wait = POLL;
+        } else wait = LANE === QUICK_LANE ? 4000 : POLL; // (the quick lane asks more often: a person is waiting)
       } else wait = LANE ? 1500 : POLL;
     } catch (e) {
       if (e.fatal) { log(e.message); process.exit(3); }
@@ -282,6 +283,28 @@ async function supervise() {
   const aiQueue = [];
   let aiBusy = false, aiOwner = null;
   const nextAi = () => { while (!aiBusy && aiQueue.length) { const [p, id] = aiQueue.shift(); if (p.connected === false) continue; aiBusy = true; aiOwner = p; try { p.send({ t: 'ailock', id }); } catch (_) { aiBusy = false; aiOwner = null; } } };
+  // The permits of one engine / one shop, in line: each at its own time, the same pace for the whole computer. The
+  // quick lane (one product a person waits for) goes first: it takes the next free moment and every waiting permit of
+  // the other runners moves one step back — the pace stays the same, nobody asks the engine faster.
+  const pend = {}, fired = {};
+  const fire = (key, item) => { item.t = setTimeout(() => { fired[key] = Date.now(); pend[key] = (pend[key] || []).filter((x) => x !== item); try { item.p.send({ t: 'permit', id: item.id, ok: true }); } catch (_) { /* gone */ } }, Math.max(0, item.at - Date.now())); };
+  const grant = (p, id, key, gap, first) => {
+    const list = pend[key] || (pend[key] = []);
+    if (!first) {
+      const at = Math.max(Date.now(), (lastBy[key] || 0) + gap);
+      lastBy[key] = at;
+      const item = { p, id, at };
+      list.push(item); fire(key, item);
+      return;
+    }
+    const ahead = list.filter((x) => x.first);
+    const at = Math.max(Date.now(), (fired[key] || 0) + gap, ...ahead.map((x) => x.at + gap));
+    const item = { p, id, at, first: true };
+    let next = at + gap;
+    for (const x of list.filter((y) => !y.first).sort((a, b) => a.at - b.at)) { if (x.at < next) { clearTimeout(x.t); x.at = next; fire(key, x); } next = x.at + gap; }
+    list.push(item); fire(key, item);
+    lastBy[key] = Math.max(lastBy[key] || 0, ...list.map((x) => x.at));
+  };
   const start = (i, lane) => {
     const p = fork(__filename, [], { env: Object.assign({}, process.env, { SFK_RUNNER: '1', SFK_RUNNER_ID: String(i), SFK_RUNNER_LANE: lane || '' }), stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const r = { p, rss: 0, job: null };
@@ -296,9 +319,7 @@ async function supervise() {
       else if (m.t === 'aiunlock') { if (aiOwner === p) { aiBusy = false; aiOwner = null; } nextAi(); }
       else if (m.t === 'permit' && String(m.eng).startsWith('site:')) {
         // one page of the same shop at a time for the whole computer, at the profile's pace (polite to the shops)
-        const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + P.domainGap);
-        lastBy[m.eng] = at;
-        setTimeout(() => { try { p.send({ t: 'permit', id: m.id, ok: true }); } catch (_) { /* gone */ } }, at - Date.now());
+        grant(p, m.id, m.eng, P.domainGap, lane === QUICK_LANE);
       }
       else if (m.t === 'permit') {
         // one search at a time per engine for the whole computer, at a steady pace
@@ -306,9 +327,7 @@ async function supervise() {
         // ten minutes without a refusal: 10% faster (never below the floor)
         if (Date.now() - okSince > 3 * 60000) { for (const e of Object.keys(gapBy)) gapBy[e] = Math.max(MIN_GAP, Math.round(gapBy[e] * 0.85)); okSince = Date.now(); }
         const gap = gapBy[m.eng] || (gapBy[m.eng] = START_GAP);
-        const at = Math.max(Date.now(), (lastBy[m.eng] || 0) + gap + Math.random() * gap * 0.3);
-        lastBy[m.eng] = at;
-        setTimeout(() => { try { p.send({ t: 'permit', id: m.id, ok: true }); } catch (_) { /* gone */ } }, at - Date.now());
+        grant(p, m.id, m.eng, gap + Math.random() * gap * 0.3, lane === QUICK_LANE);
       }
     });
     p.on('exit', (code) => {
@@ -338,6 +357,8 @@ async function supervise() {
   for (let i = 0; i < K; i++) start(i);
   // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
   start(K, 'ai.call');
+  // …and one for the research of ONE product a person is waiting for (it never waits behind the long batches)
+  if (canRead()) start(K + 1, QUICK_LANE);
   // (closing the window / Windows shutting down: the jobs go back first, within 5 seconds at most)
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) { try { process.on(sig, () => { if (stopping) return; stopping = true; Promise.race([stopRunners('ο υπολογιστής κλείνει'), new Promise((x) => setTimeout(x, 5000))]).finally(() => process.exit(0)); }); } catch (_) { /* not on this system */ } }
 

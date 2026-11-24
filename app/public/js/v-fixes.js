@@ -110,7 +110,8 @@
       // A decision shows at once: the change leaves the list, the numbers follow, and the program saves it behind the
       // screen. The list is brought up to date quietly when the decisions stop for a moment (never while you tap).
       let settleTimer = null, waiting = 0;
-      const settle = () => { clearTimeout(settleTimer); settleTimer = setTimeout(() => { if (waiting || !main.isConnected) return; App.refreshBadges(); load(); }, 900); };
+      // (asked 24/11: «not reload and jump after each approval» — the list is read again only when it runs short)
+      const settle = () => { clearTimeout(settleTimer); settleTimer = setTimeout(() => { if (waiting || !main.isConnected) return; App.refreshBadges(); if (list.querySelectorAll('.fx-card').length < 4) load(); }, 900); };
       const leave = (ids) => {
         const gone = new Set(ids);
         let n = 0;

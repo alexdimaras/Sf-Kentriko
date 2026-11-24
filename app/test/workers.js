@@ -225,6 +225,17 @@ function web() {
     ok(fields.some((f) => f.startsWith('images:')) && fields.includes('gtin:high'), 'the same search brings the EAN (sure: two shops) and the photo (for a look: our title names no colour, a shop says «Black»)', JSON.stringify(fields));
     const wj = (await get('/api/jobs')).find((x) => x.distributed && /internet/.test(x.label || ''));
     ok(wj && wj.worker === os.hostname(), 'the searching was done by the shop\'s computer', JSON.stringify(wj && [wj.worker, wj.status]));
+    {
+      // (24/11: a click on «Έρευνα» for ONE product waited behind the long batches) — it goes on the quick lane of the
+      // computer, and it is written down as the person's research (who, why), apart from the program's
+      const q1 = await post('/api/codes/find', { site: 'sf', id: 105, mode: 'full' });
+      ok(q1 && q1.type === 'codes.one', 'a click on «Πλήρης έρευνα Internet» for one product → the quick lane of the computer', JSON.stringify(q1 && [q1.type, q1.error]));
+      const q1d = await until(async () => { const j = (await get('/api/jobs')).find((x) => x.id === q1.id); return j && ['completed', 'failed'].includes(j.status) ? j : null; }, 90000);
+      ok(q1d && q1d.status === 'completed' && q1d.worker === os.hostname(), 'done by the computer\'s quick lane', JSON.stringify(q1d && [q1d.status, q1d.worker, q1d.error]));
+      const tr = await get('/api/codes/trace?site=sf&id=105');
+      const mine = (tr.runs || []).filter((r) => r.origin === 'manual');
+      ok(mine.length >= 1 && mine[mine.length - 1].kind === 'full' && /Πλήρης/.test(mine[mine.length - 1].reason) && mine[mine.length - 1].by === 'admin', 'the research is listed as the person\'s own (who, why), apart from the automatic ones', JSON.stringify(tr.runs));
+    }
     ok(webSrv.state.searches >= 1, 'it searched the «internet»');
     // a new shop of the internet counts after a yes for that shop (Τιμές → «Έγκριση τιμών»)
     const gl0 = (await get('/api/market?site=sf&q=GLOVE')).rows[0];

@@ -303,6 +303,18 @@ function page(o) {
   const done = await coord.complete(w.id, c2.id, 'idem-1', { results: { 'sf:1': { hits: [], read: 0, status: 'not_found', trace: { at: 'T2' } }, 'sf:2': { hits: [], read: 2, status: 'not_found', trace: { at: 'T3', queries: [], pages: [] } } } });
   ok(done.ok && store.read('web-codes').products['sf:1'].hits.length === 1 && store.read('web-codes').products['sf:2'].status === 'not_found', 'the end: the new products written, the one handed in before not overwritten');
 
+  {
+    // (24/11: «the research I started vanished after an automatic one») — every run of a product is listed, a person's
+    // apart from the program's, and the detail of a person's last research stays whole
+    const cf2 = require(APP + '/lib/codefind');
+    const T1 = '2026-11-24T10:00:00.000Z', T2 = '2026-11-24T11:00:00.000Z';
+    cf2.save({ 'sf:3': { hits: [], read: 2, status: 'not_found', queries: 6, trace: { at: T1, mode: 'full', queries: [{ q: 'mine', n: 1 }], pages: [] }, run: { id: 'r-mine', origin: 'manual', kind: 'full', by: 'alex', reason: 'πάτησες «Πλήρης έρευνα Internet»', at: T1, endedAt: T1 } } });
+    cf2.save({ 'sf:3': { hits: [], read: 1, status: 'not_found', queries: 3, trace: { at: T2, mode: 'auto', queries: [{ q: 'auto', n: 0 }], pages: [] }, run: { id: 'r-auto', origin: 'automatic', kind: 'auto', reason: 'ημερήσια ανανέωση', at: T2, endedAt: T2 } } });
+    const tr = cf2.traceFor('sf:3', {});
+    ok(tr.runs.length === 2 && tr.runs[0].origin === 'automatic' && tr.runs[1].origin === 'manual' && tr.runs[1].by === 'alex' && /Πλήρης/.test(tr.runs[1].reason), 'every research of the product is listed: who, why, when — the person\'s and the program\'s apart', JSON.stringify(tr.runs));
+    ok(tr.shown && tr.shown.origin === 'automatic' && cf2.traceFor('sf:3', { run: 'mine' }).shown.origin === 'manual' && cf2.traceFor('sf:3', { run: 'mine' }).queries[0].q === 'mine', 'the detail of the research a person started stays whole after an automatic one');
+  }
+
   section('Όλοι οι υπολογιστές κλειστοί: το cloud συνεχίζει');
   // a little internet: a search engine and two shops on 127.0.0.x
   const shop = http.createServer((req, res) => {
