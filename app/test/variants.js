@@ -93,6 +93,15 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
     const red = market.variantOf({ colors: market.coloursOf('ΚΟΚΚΙΝΟ'), gtin: '' }, sh);
     ok(red && red.none, 'a colour they do not have → «another variant», not a price for ours', JSON.stringify(red));
     ok(market.variantOf({ colors: new Set(), gtin: '' }, sh) === null, 'our product without a colour: the product as a whole (as before)');
+    // the same for a WooCommerce shop: its variations as the Store API gives them (the real shape of specialforces.gr)
+    const wv = [
+      { id: 2, parent: 1, sku: 'BK-ACH-G', prices: { price: '3490', regular_price: '3490', currency_minor_unit: 2 }, is_in_stock: true, variation: 'Μεγεθος: Large, Χρώμα: Πράσινο' },
+      { id: 3, parent: 1, sku: 'BK-ACH-B', prices: { price: '2990', regular_price: '3490', currency_minor_unit: 2 }, is_in_stock: false, variation: 'Μεγεθος: Large, Χρώμα: Μαύρο' },
+      { id: 5, parent: 4, sku: 'X-S', prices: { price: '1000', currency_minor_unit: 2 }, is_in_stock: true, variation: 'Μεγεθος: S' }, { id: 6, parent: 4, sku: 'X-M', prices: { price: '1000', currency_minor_unit: 2 }, is_in_stock: true, variation: 'Μεγεθος: M' }].map(compcat.fromWooVariation);
+    const witems = [{ id: 1, n: 'Σακίδιο Χ', p: 29.9, st: true }, { id: 4, n: 'Μπλούζα', p: 10, st: true }];
+    ok(compcat.attachVariants(witems, wv) === 1 && witems[0].v.length === 2 && !witems[1].v, 'WooCommerce: a product in two colours keeps each one; sizes alone are not kept');
+    const bl = market.variantOf({ colors: market.coloursOf('ΜΑΥΡΟ'), gtin: '' }, witems[0]);
+    ok(bl && bl.price.st === false && bl.price.p === 29.9 && bl.price.s === 'BK-ACH-B', 'our BLACK there: 29,90 € but sold out — not «in stock» because the green one is', JSON.stringify(bl && bl.price));
   }
 
   {

@@ -158,7 +158,51 @@ async function syncWoo(c, prev, opts) {
     }
     items = [...map.values()];
   }
+  // the colours of its products, one by one (WooCommerce gives each variation with its own price, stock, code): read on
+  // a full reading; a reading of the changes keeps the ones read last time (spec 2.0, P1 — as for Shopify)
+  if (full && !opts.noVariants) {
+    try { const n = await wooColourVariants(c, items, gap, H, opts); if (n && opts.prog && opts.prog.log) opts.prog.log(`${c.name}: ${n} προϊόντα σε πολλά χρώματα (τιμή / απόθεμα ανά χρώμα)`); } catch (e) { if (opts.cancelled && opts.cancelled()) throw e; /* the products stay, without their colours */ }
+  } else if (prev && prev.products) {
+    const was = new Map(prev.products.filter((p) => p.v).map((p) => [p.id, p.v]));
+    for (const p of items) if (!p.v && was.has(p.id)) p.v = was.get(p.id);
+  }
   return { items, mode, full, started };
+}
+/** One variation of the Store API → the shape of compcat's variants { o, s, g, p, r, st }. */
+function fromWooVariation(v) {
+  const pr = v.prices || {};
+  const unit = Number(pr.currency_minor_unit == null ? 2 : pr.currency_minor_unit);
+  const f = (x) => (x == null || x === '' ? 0 : Number(x) / Math.pow(10, unit));
+  return { parent: v.parent, o: U.collapse(U.decodeEntities(String(v.variation || ''))).slice(0, 60), s: U.decodeEntities(v.sku || '').trim(), g: gtinOf(v.global_unique_id || ''), p: f(pr.price), r: f(pr.regular_price) > f(pr.price) ? f(pr.regular_price) : 0, st: v.is_in_stock !== false };
+}
+/** Group variations by product: kept only for products whose variations differ in COLOUR (sizes alone: one product). */
+function attachVariants(items, variations) {
+  const mk = require('./market');
+  const by = new Map();
+  for (const v of variations) { if (!v || !v.parent) continue; if (!by.has(v.parent)) by.set(v.parent, []); by.get(v.parent).push(v); }
+  let n = 0;
+  for (const p of items) {
+    const vs = by.get(p.id);
+    if (!vs || vs.length < 2) continue;
+    const cols = new Set(vs.map((v) => [...mk.coloursOf(v.o)].sort().join('+')).filter(Boolean));
+    if (cols.size < 2) continue;
+    p.v = vs.slice(0, 40).map((v) => ({ o: v.o, s: v.s, g: v.g, p: v.p, r: v.r, st: v.st }));
+    n++;
+  }
+  return n;
+}
+async function wooColourVariants(c, items, gap, H, opts) {
+  const url = (pg) => `${c.url}/wp-json/wc/store/v1/products?per_page=100&type=variation&_fields=id,parent,sku,prices,is_in_stock,variation,global_unique_id&page=${pg}`;
+  const first = await http.getJson(url(1), { gap, timeout: 60000, retries: 2, headers: H, signal: opts.signal });
+  if (!Array.isArray(first.json)) return 0;
+  const pages = parseInt(first.headers.get('x-wp-totalpages') || '1', 10) || 1;
+  // (a shop with more than 30.000 variations: not read — the comparison stays per product, as before)
+  if (pages > 300) return 0;
+  const all = first.json.map(fromWooVariation);
+  const rest = [];
+  for (let pg = 2; pg <= pages; pg++) rest.push(pg);
+  await http.pool(rest, 2, async (pg) => { const r = await http.getJson(url(pg), { gap, timeout: 60000, retries: 2, headers: H, signal: opts.signal }); for (const v of (Array.isArray(r.json) ? r.json : [])) all.push(fromWooVariation(v)); }, opts.cancelled);
+  return attachVariants(items, all);
 }
 
 async function syncShopify(c, prev, opts) {
@@ -257,4 +301,4 @@ function info(id) {
     complete: c.kind === 'sitemap' ? !!c.complete : !c.limitReached };
 }
 
-module.exports = { load, remove, syncOne, syncAll, info, fromWoo, fromShopify };
+module.exports = { attachVariants, fromWooVariation, load, remove, syncOne, syncAll, info, fromWoo, fromShopify };
