@@ -539,7 +539,7 @@ function proposalsFor0(site, p, C) {
       const tf = checks.titleFix(p, ctx);
       if (tf.fix && tf.fix !== p.name && tf.steps.length) {
         fixedName = tf.fix;
-        add(Object.assign({}, base, { field: 'name', ign: TITLE_CHECKS.map((k) => site + '-' + k), from: p.name, to: tf.fix, why: tf.steps.map((x) => x.why).join(' · '), source: { kind: 'rule', label: 'Κανόνες τίτλων του καταστήματος' }, level: tf.steps.some((x) => x.level === 'medium') ? 'medium' : 'high' }));
+        add(Object.assign({}, base, { field: 'name', ign: TITLE_CHECKS.map((k) => site + '-' + k), from: p.name, to: tf.fix, why: tf.steps.map((x) => x.why).join(' · '), source: tf.steps.some((x) => x.how === 'similar') ? { kind: 'rule', label: 'Από παρόμοια προϊόντα του καταστήματος (λέξη είδους — έλεγξέ το)' } : { kind: 'rule', label: 'Κανόνες τίτλων του καταστήματος' }, level: tf.steps.some((x) => x.level === 'medium') ? 'medium' : 'high' }));
       }
     }
     // category: only in the general category → the category of similar products (same type word)

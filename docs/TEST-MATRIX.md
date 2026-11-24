@@ -26,6 +26,15 @@
 | Η προετοιμασία δεν καθυστερεί από αιτήματα που περιμένουν | `app/test/integrity.js` · «a request that only waits does not hold the background work back» |
 | Αναφορά ποιότητας: 3 καταστάσεις, χωρίς αναζήτηση στο άνοιγμα | `app/test/variants.js` · quality block |
 | Worker που σβήνει στη μέση: τίποτα δεν χάνεται | `app/test/research.js`, `app/test/workers.js` |
+| Είδος προϊόντος με τις λέξεις του καταστήματος (ΔΙΑΚΡΙΤΙΚΟ ≠ ΣΗΜΑ, κανένα είδος από 1 προϊόν, αποχή, XQ35/223REM μένουν) — regression | `app/test/knowledge.js` · μέτρηση: `node test/bench/naming-bench.js <products.json> …` |
+| Ουρά: προσπάθεια (fencing), επιστροφή εργασίας, «ζωντανός αλλά αργός», γρήγορη λωρίδα codes.one | `app/test/coord.js`, `app/test/workers.js` (πραγματικός worker) |
+| «Μόνο με ανοιχτό πρόγραμμα»: η εργασία δεν κόβεται στη μέση | `app/test/workers.js` |
+| Έρευνες: δικές μου / αυτόματες, λεπτομέρειες της δικής μου μένουν | `app/test/research.js`, `app/test/workers.js` |
+| Τιμοκατάλογος: εκδόσεις, διαφορές, τίποτα δεν διαγράφεται επειδή λείπει | `app/test/run.js` |
+| Παραλλαγές ανταγωνιστών (Shopify / WooCommerce): τιμή/απόθεμα του δικού μας χρώματος | `app/test/variants.js` |
+| Ιστορικό τιμών: μόνο αλλαγές, 30 ημέρες, πιθανή τεχνητή έκπτωση | `app/test/variants.js` |
+| Κωδικοί: αντιγραμμένος κωδικός άλλου προϊόντος, «μέγεθος-αριθμός», κείμενο στη θέση κωδικού | `app/test/rules.js` |
+| «Δεν μπήκε στο site» (αρχείο που δεν εισήχθη) · προέλευση προτάσεων | `app/test/run.js` |
 
 Δεν καλύπτεται από τεστ (θέλει πραγματικό περιβάλλον): πραγματικές μηχανές αναζήτησης, Ollama στο PC, εισαγωγή CSV
 στο WooCommerce, restore από αντίγραφο GitHub.

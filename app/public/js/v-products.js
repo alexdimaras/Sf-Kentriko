@@ -323,7 +323,9 @@
         h('span', { class: 'pill' + (st.flow.stage >= 5 ? ' ok' : ''), title: 'Η ροή εργασίας του καταστήματος' }, 'Ροή: ' + st.flow.label),
         h('span', { class: 'pill ' + (RW[rs.state] || '') }, 'Internet: ' + rs.label + (rs.at ? ' · ' + fmt.ago(rs.okAt || rs.at) : '')),
         h('span', { class: 'pill ' + ss[1] }, ss[0] + (st.seo.at ? ' · ' + fmt.ago(st.seo.at) : ''))));
-      if (rs.autoQueued) box.appendChild(h('div', { class: 'note', style: { margin: '8px 0' } }, 'Δεν έχει πραγματικό κωδικό: η έρευνα στο internet ξεκίνησε μόνη της (κωδικός, EAN, φωτογραφίες, τιμή). Ό,τι βρεθεί εμφανίζεται εδώ για έγκριση.'));
+      // what this product still waits for (its «folder»): what is missing and what the program is doing about it
+      if ((r.missing || []).length) box.appendChild(h('div', { class: 'row tight', style: { flexWrap: 'wrap', gap: '6px', margin: '6px 0 0' } }, h('b', { style: { fontSize: '13px' } }, 'Εκκρεμότητες:'), r.missing.map((m) => h('span', { class: 'pill warn' }, m)), rs.nextAt ? h('span', { class: 'faint', style: { fontSize: '12px' } }, 'επόμενη έρευνα ' + new Date(rs.nextAt).toLocaleDateString('el-GR')) : null));
+      if (rs.autoQueued) box.appendChild(h('div', { class: 'note', style: { margin: '8px 0' } }, 'Η έρευνα στο internet ξεκίνησε μόνη της, με προτεραιότητα (γρήγορη λωρίδα του υπολογιστή), για: ' + ((r.missing || []).join(', ') || 'κωδικός, EAN, φωτογραφίες, τιμή') + '. Ό,τι βρεθεί εμφανίζεται εδώ για έγκριση.'));
       else if (r.needsResearch) box.appendChild(h('div', { class: 'note', style: { margin: '8px 0' } }, rs.state === 'never' ? 'Δεν έχει γίνει έρευνα στο internet. ' : rs.stale ? 'Η έρευνα στο internet είναι παλιά. ' : 'Λείπουν σημαντικά στοιχεία. ',
         btn('Πλήρης έρευνα Internet', { cls: 'sm primary', icon: 'search' }, () => POST('/api/codes/find', { site, id, mode: 'full' }).then((job) => watchJob(job, { done: () => { toast('Ό,τι βρέθηκε είναι εδώ για έγκριση.'); refresh(); } })).catch(fail))));
       // 1. the ready changes, approvable or written by hand here
