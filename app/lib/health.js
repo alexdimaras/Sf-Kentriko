@@ -54,6 +54,8 @@ function probeSave(saveStatus) {
   if (c.blocked) return set('save', 'crit', 'Η αποθήκευση είναι σταματημένη: ' + (c.error || 'τα δεδομένα δεν διαβάστηκαν στην εκκίνηση'));
   if ((c.conflicts || []).length) return set('save', 'crit', `Δεν γράφτηκαν ${c.conflicts.length} αρχεία (τα άλλαξε κάποιος άλλος στο μεταξύ): ${c.conflicts.slice(0, 3).join(', ')}.`);
   if (c.error) return set('save', 'crit', c.error);
+  // (just started: the data came from the database and nothing changed since — nothing to save is not «unknown»)
+  if (!c.savedAt && c.loadedAt && !c.pending) return set('save', 'ok', `Τα δεδομένα φορτώθηκαν από τη ${c.where || 'αποθήκευση'} ${new Date(c.loadedAt).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' })} · καμία αλλαγή για αποθήκευση ακόμα.`);
   if (!c.savedAt) return set('save', process.uptime() < 600 ? 'unknown' : 'warn', process.uptime() < 600 ? 'Δεν έχει γίνει ακόμα αποθήκευση από την εκκίνηση (γίνεται μέσα σε λίγα λεπτά).' : 'Δεν έχει γίνει καμία αποθήκευση από την εκκίνηση.');
   const age = Date.now() - new Date(c.savedAt).getTime();
   if (c.pending && age > 10 * 60000) return set('save', 'warn', `Υπάρχουν αλλαγές που δεν έχουν σωθεί εδώ και ${Math.round(age / 60000)} λεπτά.`);
@@ -75,8 +77,9 @@ async function probeQueue(coord) {
   if (!coord) return set('queue', 'unknown', 'Η ουρά εργασιών δεν έχει ξεκινήσει ακόμα.');
   try {
     const q = await coord.healthOf();
-    const level = q.stuck ? 'crit' : q.old || q.failed >= 5 ? 'warn' : 'ok';
-    return set('queue', level, `${q.queued} σε αναμονή · ${q.running} τρέχουν` + (q.stuck ? ` · ${q.stuck} κολλημένες (έληξε ο χρόνος τους)` : '') + (q.old ? ` · ${q.old} περιμένουν πάνω από 2 μέρες` : '') + (q.failed ? ` · ${q.failed} απέτυχαν το τελευταίο 24ωρο` : '') + '.', q);
+    const recent = q.failedRecent == null ? q.failed : q.failedRecent;
+    const level = q.stuck ? 'crit' : q.old || recent >= 3 ? 'warn' : 'ok';
+    return set('queue', level, `${q.queued} σε αναμονή · ${q.running} τρέχουν` + (q.stuck ? ` · ${q.stuck} κολλημένες (έληξε ο χρόνος τους)` : '') + (q.old ? ` · ${q.old} περιμένουν πάνω από 2 μέρες` : '') + (q.failed ? ` · ${q.failed} απέτυχαν το τελευταίο 24ωρο` + (q.failedRecent != null ? (recent ? ` (${recent} τις τελευταίες 3 ώρες)` : ' (καμία τις τελευταίες 3 ώρες)') : '') : '') + '.', q);
   } catch (e) { return set('queue', 'crit', 'Η ουρά δεν απαντά: ' + String(e.message || e).slice(0, 160)); }
 }
 

@@ -464,6 +464,8 @@ async function healthOf() {
     stuck: live.filter((j) => j.status !== 'queued' && j.leaseUntil && j.leaseUntil < t - 5 * 60000).length,
     old: live.filter((j) => j.status === 'queued' && j.createdAt && t - new Date(j.createdAt).getTime() > 2 * 864e5).length,
     failed: failed.length,
+    // (the last 3 hours apart: failures of a problem already solved do not keep the queue yellow for a whole day)
+    failedRecent: failed.filter((j) => t - new Date(j.completedAt).getTime() < 3 * 3600e3).length,
   };
 }
 async function stats() {

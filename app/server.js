@@ -1039,7 +1039,9 @@ async function systemStatus() {
     const why = empty || limited ? ` — ΔΕΝ είναι αντιπροσωπευτική: οι μηχανές αναζήτησης δεν έδωσαν χρήσιμα αποτελέσματα${meas.worker === 'cloud' ? ' στο cloud (συχνά δεν απαντούν σε διευθύνσεις datacenter)' : ''}. Ξανά από τον υπολογιστή του καταστήματος.` : '';
     add('measure', 'Μέτρηση έρευνας', good, good ? 'ok' : 'warn', `${new Date(meas.at).toLocaleString('el-GR', { timeZone: 'Europe/Athens' })}${meas.worker ? ' · ' + meas.worker : ''}: ${meas.summary}${why}`);
   }
-  add('research', 'Έρευνα internet', !paused.length, paused.length ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
+  // one engine resting is the normal pace (it comes back by itself); only all of them resting is a problem
+  const allPaused = loads.length && ['ddg', 'bing', 'yahoo'].every((e) => paused.includes(e));
+  add('research', 'Έρευνα internet', !allPaused, allPaused ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
   const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
   for (const x of items) x.level = LEVEL[x.state] || (x.ok ? 'ok' : 'warn');
