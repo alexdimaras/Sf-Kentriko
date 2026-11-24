@@ -111,6 +111,9 @@
               h('div', { class: 'faint ell', title: c.name }, c.name), c.why && (f === 'similar' || f === 'family') ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
               // (their product in several colours: which of them was counted — ours, by EAN or by colour)
               c.variant ? h('div', { class: 'hint', style: { margin: 0 }, title: 'Η τιμή και η διαθεσιμότητα είναι αυτής της παραλλαγής τους' }, 'Παραλλαγή: ' + c.variant + (c.variantBy === 'ean' ? ' (ίδιο EAN)' : ' (ίδιο χρώμα)')) : null,
+              // (the history of this offer: only changes are kept — lowest / highest of 30 days, a «discount» never asked before)
+              c.hist && c.hist.points > 1 ? h('div', { class: 'hint', style: { margin: 0 }, title: 'Από τις αλλαγές που είδε το πρόγραμμα' }, `30 ημ.: ${fmt.money(c.hist.min30)} – ${fmt.money(c.hist.max30)}` + (c.hist.low30 ? ' · χαμηλότερη 30 ημερών' : '')) : null,
+              c.hist && c.hist.artificial ? h('div', { class: 'hint warn', style: { margin: 0 } }, 'Πιθανή τεχνητή έκπτωση: η «αρχική» τιμή δεν ζητήθηκε τις τελευταίες 30 μέρες') : null,
               // why the program says it is the same product (code, EAN, brand, model words, photo)
               c.confirmed ? h('div', { class: 'ev' }, 'ίδιο: το επιβεβαίωσες εσύ') : (c.ev && c.ev.length && f !== 'similar' ? h('div', { class: 'ev', title: 'Με τι αναγνωρίστηκε ως το ίδιο προϊόν' }, c.ev.join(' · ')) : null)))),
           h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),

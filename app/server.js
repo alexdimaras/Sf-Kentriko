@@ -1055,6 +1055,18 @@ async function systemStatus() {
   // one engine resting is the normal pace (it comes back by itself); only all of them resting is a problem
   const allPaused = loads.length && ['ddg', 'bing', 'yahoo'].every((e) => paused.includes(e));
   add('research', 'Έρευνα internet', !allPaused, allPaused ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
+  // the search engines, the last 24 hours: an answer with results apart from an error, a pause, a page that was not results
+  try {
+    const ev = require('./lib/codefind').engineView();
+    const ids = Object.keys(ev);
+    if (ids.length) {
+      const tot = ids.reduce((a, k) => a + ev[k].ok + ev[k].failed + ev[k].blocked, 0);
+      const useful = ids.reduce((a, k) => a + (ev[k].results > 0 ? ev[k].ok : 0), 0);
+      const poor = tot >= 30 && ids.every((k) => ev[k].results < Math.max(1, ev[k].ok) * 0.5);
+      const NAME = { ddg: 'DuckDuckGo', bing: 'Bing', yahoo: 'Yahoo', searxng: 'SearXNG', brave: 'Brave', google: 'Google' };
+      add('engines', 'Μηχανές αναζήτησης (24 ώρες)', !poor, poor ? 'warn' : 'ok', ids.map((k) => { const e = ev[k]; return `${NAME[k] || k}: ${e.ok} απάντησαν (${e.results} αποτελέσματα)` + (e.failed ? ` · ${e.failed} σφάλμα` + (e.odd ? ` (${e.odd} χωρίς σελίδα αποτελεσμάτων)` : '') : '') + (e.blocked ? ` · ${e.blocked} σε παύση` : ''); }).join(' · ') + (poor ? ' — οι μηχανές δίνουν λίγα αποτελέσματα. Δωρεάν λύση: δικός σας SearXNG (Ρυθμίσεις → Τιμές → Προαιρετικοί πάροχοι αναζήτησης· docs/RUNBOOKS.md).' : '') + ` (${useful} από ${tot} με αποτελέσματα)`);
+    }
+  } catch (_) { /* not counted yet */ }
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
   const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
   for (const x of items) x.level = LEVEL[x.state] || (x.ok ? 'ok' : 'warn');

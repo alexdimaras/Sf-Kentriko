@@ -313,6 +313,11 @@ function page(o) {
     const tr = cf2.traceFor('sf:3', {});
     ok(tr.runs.length === 2 && tr.runs[0].origin === 'automatic' && tr.runs[1].origin === 'manual' && tr.runs[1].by === 'alex' && /Πλήρης/.test(tr.runs[1].reason), 'every research of the product is listed: who, why, when — the person\'s and the program\'s apart', JSON.stringify(tr.runs));
     ok(tr.shown && tr.shown.origin === 'automatic' && cf2.traceFor('sf:3', { run: 'mine' }).shown.origin === 'manual' && cf2.traceFor('sf:3', { run: 'mine' }).queries[0].q === 'mine', 'the detail of the research a person started stays whole after an automatic one');
+    // the search engines, counted per day: answers with results apart from errors, pauses and pages that were not results
+    const ev0 = cf2.engineView();
+    cf2.save({ 'sf:2': { hits: [], read: 0, status: 'coverage_limited', queries: 2, sum: { engines: { bing: { ok: 4, results: 0, failed: 1, blocked: 0, odd: 1 }, ddg: { ok: 0, results: 0, failed: 0, blocked: 4 } } }, trace: { at: T2, queries: [], pages: [] } } });
+    const ev1 = cf2.engineView();
+    ok(ev1.bing.ok - ((ev0.bing || {}).ok || 0) === 4 && ev1.bing.odd - ((ev0.bing || {}).odd || 0) === 1 && ev1.ddg.blocked - ((ev0.ddg || {}).blocked || 0) === 4, 'the engines of the last 24 hours: answered / with results / error / not a page of results / paused', JSON.stringify(ev1));
   }
 
   section('Όλοι οι υπολογιστές κλειστοί: το cloud συνεχίζει');

@@ -95,6 +95,20 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
     ok(market.variantOf({ colors: new Set(), gtin: '' }, sh) === null, 'our product without a colour: the product as a whole (as before)');
   }
 
+  {
+    // (spec 2.0 §7) the history of a competitor's price: only its changes, with the day; lowest / highest of 30 days; a
+    // «discount» whose «before» price was never asked in the last 30 days
+    const ph = require(APP + '/lib/pricehistory');
+    const d = (n) => new Date(Date.now() - n * 864e5).toISOString();
+    const offer = (price, regular, at) => ({ 'sf:1': { competitors: [{ url: 'https://c.example/p', price, regular, inStock: true, match: 'exact', seenAt: at }, { url: 'https://c.example/q', price: 5, match: 'similar', seenAt: at }] } });
+    ph.observe(offer(40, 0, d(20))); ph.observe(offer(40, 0, d(15))); ph.observe(offer(35, 0, d(10))); ph.observe(offer(30, 50, d(1)));
+    const hist = ph.forProduct('sf:1');
+    const one = hist['https://c.example/p'];
+    ok(one && one.list.length === 3 && !hist['https://c.example/q'], 'only the CHANGES of the same product are kept (the same price twice is one line; a similar product is not kept)', JSON.stringify(one && one.list));
+    ok(one.sum.min30 === 30 && one.sum.max30 === 40 && one.sum.low30, 'lowest / highest of 30 days; the price now is the lowest', JSON.stringify(one.sum));
+    ok(one.sum.artificial === true, '«50 € → 30 €» while 50 € was never asked in 30 days: a discount that may be artificial');
+  }
+
   section('Φωτογραφίες: μόνο της δικής μας παραλλαγής');
   const OL = market.coloursOf(olive.name);
   const pageMany = { name: 'Mil-Tec Assault Pack Small', images: ['https://s.gr/i/olive-front.jpg', 'https://s.gr/i/black-front.jpg', 'https://s.gr/i/coyote.jpg'], variants: [

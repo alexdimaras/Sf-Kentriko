@@ -847,6 +847,7 @@ function mergeWeb(byKey) {
   const shopDec = require('./codefind').shopDecisions();
   const approved = new Set(shopDec.approved), rejected = new Set(shopDec.rejected);
   let n = 0;
+  const touchedKeys = {};
   for (const [key, hits] of Object.entries(byKey || {})) {
     const [site, id] = key.split(':');
     const p = byId[site] && byId[site].get(Number(id));
@@ -868,9 +869,12 @@ function mergeWeb(byKey) {
     const yes = new Set(d.yes || []), no = new Set(d.no || []);
     for (const x of list) { x.ignored = no.has(x.url); if (yes.has(x.url)) { x.match = 'exact'; x.confirmed = true; } }
     all[key] = compute(site, p, { at: prev ? prev.at : at, name: p.name, competitors: list, prevStats: prev ? prev.prevStats || null : null });
+    touchedKeys[key] = all[key];
     n++;
   }
   if (n) store.write('market', all);
+  // (the history of the prices of the same products — what changed, with the day: lib/pricehistory.js)
+  if (n) { try { require('./pricehistory').observe(touchedKeys); } catch (e) { console.error('price history:', e.message); } }
   return n;
 }
 
@@ -1040,6 +1044,7 @@ async function run(targets, job, opts) {
     if (!(unsaved.length || (force && work.some((w) => w.touched))) || (!force && Date.now() - lastSave < 45000)) return;
     for (const w of work) { if (w.touched) { commit(w); w.touched = false; } if (pace.due()) await pace.rest(); }
     await store.writeAsync('market', all, bg.breathe);
+    if (force) { try { require('./pricehistory').observe(all); } catch (e) { console.error('price history:', e.message); } }
     if (whole) { for (const [id, catAt] of unsaved) prog.done[id] = catAt; prog.at = U.nowIso(); prog.changes += changes.length; store.write(PROGRESS, prog); }
     if (changes.length) { const log = store.read('market-changes', []); store.write('market-changes', changes.splice(0).concat(log).slice(0, 400)); }
     unsaved = []; lastSave = Date.now();
@@ -1311,6 +1316,11 @@ function overview(site, q) {
   list.sort((a, b) => order[a.action] - order[b.action] || Math.abs(b.diff) - Math.abs(a.diff) || Math.abs(b.vsMedian || 0) - Math.abs(a.vsMedian || 0));
   const total = list.length;
   if (q.per) { const per = Math.min(500, Number(q.per) || 100), page = Math.max(1, Number(q.page) || 1); list = list.slice((page - 1) * per, page * per); }
+  // the shown page only: what the history of each offer says (lowest / highest of 30 days, a «discount» never asked before)
+  try {
+    const ph = require('./pricehistory');
+    list = list.map((r) => { const hist = ph.forProduct(r.key); if (!Object.keys(hist).length) return r; return Object.assign({}, r, { competitors: r.competitors.map((c) => (hist[c.url] && hist[c.url].sum ? Object.assign({}, c, { hist: hist[c.url].sum }) : c)) }); });
+  } catch (_) { /* the history is optional */ }
   return { rows: list, counts, total, actions: ACTIONS, meta: store.read('market-meta', {}), changes: store.read('market-changes', []).filter((c) => c.site === site || (site === 'st' && c.site === 'sf')).slice(0, 50) };
 }
 

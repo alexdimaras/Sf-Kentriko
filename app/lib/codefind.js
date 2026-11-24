@@ -608,6 +608,8 @@ function save(results) {
     const W = { blocked: ['SEARCH_BLOCKED', 'warn', 'οι μηχανές αναζήτησης ζήτησαν παύση'], search_failed: ['SEARCH_FAILED', 'warn', 'απέτυχαν οι μηχανές αναζήτησης'], pages_failed: ['PAGES_FAILED', 'warn', 'δεν διαβάστηκαν οι σελίδες'], error: ['SEARCH_ERROR', 'error', 'σφάλμα στην έρευνα'] };
     for (const [k, c] of Object.entries(n)) require('./events').record({ severity: W[k][1], service: 'search', code: W[k][0], message: `Έρευνα internet: ${W[k][2]} (${c} προϊόντα)` });
   } catch (_) { /* the log never stops the saving */ }
+  // the search engines, counted per day (what each answered: results, an error, a pause, a page that was not results)
+  try { engineStats(results); } catch (_) { /* the counting never stops the saving */ }
   const traces = {};
   const merged = {};
   store.update(KEY, {}, (d) => {
@@ -689,6 +691,36 @@ function save(results) {
   // (a research a person asked for is shown at once; the automatic one, in batches — every 10 minutes at most)
   const asked = Object.values(results || {}).some((r) => r && r.trace && r.trace.mode && r.trace.mode !== 'auto');
   try { const fx = require('./fixes'); if (asked) fx.invalidate(); else fx.invalidateSoon(Number(process.env.SFK_WEB_FIXES_MS) || 10 * 60000); } catch (_) { /* not loaded */ }
+}
+/** Each engine per day: searches answered with results / with none, errors, pauses, pages that were not results. */
+const ENGINE_KEY = 'engine-stats';
+function engineStats(results) {
+  const dayK = new Date().toISOString().slice(0, 10);
+  const add = {};
+  for (const r of Object.values(results || {})) {
+    const en = r && r.sum && r.sum.engines;
+    if (!en || (r.run && r.run.measured)) continue;
+    for (const [id, e] of Object.entries(en)) {
+      const a = add[id] || (add[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 });
+      a.ok += e.ok || 0; a.results += e.results || 0; a.failed += e.failed || 0; a.blocked += e.blocked || 0; a.odd += e.odd || 0; a.products++;
+    }
+  }
+  if (!Object.keys(add).length) return;
+  store.update(ENGINE_KEY, { days: {} }, (s) => {
+    s.days = s.days || {};
+    const d = s.days[dayK] || (s.days[dayK] = {});
+    for (const [id, a] of Object.entries(add)) { const x = d[id] || (d[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 }); for (const k of Object.keys(a)) x[k] += a[k]; }
+    for (const k of Object.keys(s.days).sort().slice(0, -14)) delete s.days[k];
+    return s;
+  });
+}
+/** The last 24 hours of the engines (today and yesterday) → { engine: {...} } */
+function engineView() {
+  const s = store.read(ENGINE_KEY, { days: {} });
+  const days = Object.keys(s.days || {}).sort().slice(-2);
+  const out = {};
+  for (const k of days) for (const [id, x] of Object.entries(s.days[k])) { const o = out[id] || (out[id] = { ok: 0, results: 0, failed: 0, blocked: 0, odd: 0, products: 0 }); for (const f of Object.keys(o)) o[f] += x[f] || 0; }
+  return out;
 }
 function ownHosts() { const s = require('./settings').all(); return new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean)); }
 /** The hosts the research classes as competitors / suppliers (sent with the jobs). */
@@ -874,4 +906,4 @@ function status() {
   return { looked: all.filter((e) => !FAILED.has(e.status)).length, withCode: all.filter((e) => (e.hits || []).length).length, waiting: candidates(2000).length, byStatus: by, failed: all.filter((e) => FAILED.has(e.status)).length, sites: Object.keys(d.shops).length };
 }
 
-module.exports = { STOP_LABEL, itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };
+module.exports = { engineView, engineStats, STOP_LABEL, itemsFor, stateOf, candidates, lookUp, run, save, hitsFor, traceFor, suggestedShops, sites, decideShop, shopDecisions, status, queryOf, queriesOf, planOf, needsOf, openNeeds, dueAt, variantView, imagesForVariant, fileColours, classify, normUrl, kindEn, contextHosts, ownHosts, limits, stateWord, qualityOf, KEY, TRACE_KEY, FAILED, STATUS_LABEL, CLASS_LABEL };
