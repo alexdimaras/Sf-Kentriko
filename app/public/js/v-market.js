@@ -65,6 +65,22 @@
   }
   App.priceLadder = ladder;
 
+  // the suggested shops, many at once: tick them and add them to the competitors in one go (their way of reading is
+  // found in the background: WooCommerce / Shopify / site map)
+  function bulkBar(shops) {
+    const count = h('span', { class: 'faint' }, '');
+    const picked = () => [...document.querySelectorAll('.shop-pick:checked')].map((b) => b.dataset.host);
+    const upd = () => { const n = picked().length; count.textContent = n ? `${n} επιλεγμένα` : ''; add.disabled = !n; };
+    const all = h('label', { class: 'row tight' }, h('input', { type: 'checkbox', 'aria-label': 'Επιλογή όλων', onchange: (e) => { document.querySelectorAll('.shop-pick').forEach((b) => { b.checked = e.target.checked; }); upd(); } }), ' Όλα');
+    const add = btn('Στους ανταγωνιστές τα επιλεγμένα', { cls: 'sm primary', icon: 'new' }, () => POST('/api/competitors/bulk', { hosts: picked() }).then((r) => {
+      toast(`Προστέθηκαν ${r.added}` + (r.skipped.length ? ` · δεν μπήκαν ${r.skipped.length} (${r.skipped[0].why})` : '') + (r.added ? ' · γίνεται έλεγχος ανάγνωσης' : ''));
+      if (r.job) watchJob(r.job, { done: () => App.route() }); else App.route();
+    }).catch(fail));
+    add.disabled = true;
+    setTimeout(() => document.querySelectorAll('.shop-pick').forEach((b) => b.addEventListener('change', upd)), 0);
+    return h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '10px', margin: '6px 0 10px' } }, all, add, count);
+  }
+
   function decide(ctx, url, answer) {
     return POST('/api/market/decide', { site: ctx.site, id: ctx.id, url, answer }).then(() => { toast(answer === 'yes' ? 'Μετράει πλέον στην τιμή (το θυμάμαι και για τις επόμενες έρευνες).' : answer === 'no' ? 'Δεν μετράει (το θυμάμαι).' : 'Επαναφορά.'); if (ctx.refresh) ctx.refresh(); }).catch(fail);
   }
@@ -381,8 +397,9 @@
     if (cs) main.appendChild(h('div', { class: 'panel', style: { marginBottom: '14px' } }, h('h2', null, 'Καταστήματα που βρέθηκαν στο internet'),
       h('p', { class: 'muted' }, `Η αναζήτηση κωδικών στο internet έχει δει ${fmt.num(cs.looked)} προϊόντα (μένουν ${fmt.num(cs.waiting)}). Όσα καταστήματα πουλάνε τουλάχιστον 3 ίδια προϊόντα με εσάς προτείνονται εδώ: με «Προσθήκη» μπαίνουν στην έρευνα τιμών.`),
       cs.sites ? h('p', { class: 'faint' }, `Sites που συνάντησε η έρευνα: ${fmt.num(cs.sites)}.` + (cs.failed ? ` Έρευνες που απέτυχαν και θα ξαναγίνουν: ${fmt.num(cs.failed)}.` : '')) : null,
+      cs.shops.length ? bulkBar(cs.shops) : null,
       cs.shops.length ? h('div', { class: 'stack s' }, cs.shops.map((x) => h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' } },
-        h('div', null, h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, h('b', null, x.host)), h('span', { class: 'pill' }, x.label || 'κατάστημα'), h('span', { class: 'faint' }, ` · ${fmt.num(x.count)} ίδια προϊόντα · σε ${fmt.num(x.seen || 0)} έρευνες`), x.approved ? h('span', { class: 'pill ok' }, 'οι τιμές του μετράνε') : null),
+        h('div', null, h('input', { type: 'checkbox', class: 'shop-pick', 'data-host': x.host, 'aria-label': 'Επιλογή ' + x.host, style: { marginRight: '8px' } }), h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, h('b', null, x.host)), h('span', { class: 'pill' }, x.label || 'κατάστημα'), h('span', { class: 'faint' }, ` · ${fmt.num(x.count)} ίδια προϊόντα · σε ${fmt.num(x.seen || 0)} έρευνες`), x.approved ? h('span', { class: 'pill ok' }, 'οι τιμές του μετράνε') : null),
         h('div', { class: 'row tight' },
           !x.approved ? btn('Έγκριση τιμών', { cls: 'sm', icon: 'check', title: 'Πραγματικό κατάστημα: οι τιμές του (για ίδια προϊόντα, διαθέσιμα) να μετράνε' }, () => POST('/api/codes/shop', { host: x.host, answer: 'approve' }).then(() => { toast('Εγκρίθηκε.'); App.route(); }).catch(fail)) : null,
           btn('Στους ανταγωνιστές', { cls: 'sm', icon: 'new', title: 'Να διαβάζεται όλος ο κατάλογός του (WooCommerce / Shopify / χάρτης site)' }, () => POST('/api/competitors', { url: x.url, name: x.host.replace(/\.(gr|com|eu)$/, '') }).then(() => { toast('Προστέθηκε· διαβάζεται στην επόμενη έρευνα.'); App.route(); }).catch(fail)),

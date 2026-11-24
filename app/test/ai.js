@@ -118,6 +118,34 @@ function fakeOllama(state) {
   state.answer = '<think>Ο χρήστης θέλει…</think>\nΜαύρο σακίδιο.';
   ok(localai.cleanAnswer('<think>abc</think>\nΚείμενο') === 'Κείμενο', 'the reasoning of «thinking» models (<think>) never reaches the description');
 
+  section('Περιγραφή με AI για προϊόν που ήδη υπάρχει στο site: πρόταση με έγκριση');
+  {
+    const catalog = require(APP + '/lib/catalog');
+    const fixes = require(APP + '/lib/fixes');
+    const raw = { id: 501, name: 'ΣΑΚΙΔΙΟ HELIKON-TEX RACCOON MK2 20L', slug: 'raccoon', type: 'simple', permalink: 'https://shop.example/raccoon', sku: 'PL-RC2-CD', description: '', short_description: '', prices: { price: '8900', regular_price: '8900', currency_minor_unit: 2 }, images: [], categories: [], brands: [{ name: 'HELIKON-TEX' }],
+      attributes: [{ name: 'Υλικό', taxonomy: 'pa_material', has_variations: false, terms: [{ name: 'Cordura 500D' }] }, { name: 'Χωρητικότητα', taxonomy: 'pa_cap', has_variations: false, terms: [{ name: '20 L' }] }, { name: 'Χρώμα', taxonomy: 'pa_color', has_variations: false, terms: [{ name: 'Μαύρο' }] }], is_in_stock: true };
+    store.write('catalog-sf', { syncedAt: new Date().toISOString(), source: 'api', products: [catalog.fromStoreApi(raw)], categories: [] });
+    store.write('catalog-st', { syncedAt: new Date().toISOString(), source: 'api', products: [], categories: [] });
+    catalog.reload && catalog.reload();
+    settings.save({ localAI: { enabled: true, url: ol.url, model: 'qwen2.5' } });
+    state.calls.length = 0;
+    state.answer = 'Σακίδιο 20 λίτρων από Cordura 500D. Ζυγίζει 870 γραμμάρια.\n\n- Χωρητικότητα: 20 L\n- Υλικό: Cordura 500D';
+    const r = await fixes.aiDescribe('sf', 501, 'alex');
+    const pr = state.calls[0] && state.calls[0].prompt || '';
+    ok(r.ok && /Cordura 500D/.test(pr) && /Χωρητικότητα: 20 L/.test(pr) && !/Χρώμα:/.test(pr), 'the facts given to the AI: the product\'s own attributes (not the colour / size: those are variations)', pr.slice(-300));
+    fixes.invalidate();
+    const c = fixes.compute().items.find((x) => x.site === 'sf' && x.pid === 501 && x.field === 'desc');
+    ok(c && c.source.kind === 'ai' && c.level === 'medium' && c.origin === 'infer' && /Cordura 500D/.test(c.to.html) && !/870/.test(c.to.html) && /Ζήτησες περιγραφή με AI \(alex\)/.test(c.why) && /αφαιρέθηκαν 1/.test(c.why),
+      'a proposal in Διορθώσεις like any other: «Συμπέρασμα», never «sure», the invented weight taken out and said', JSON.stringify(c && [c.source, c.level, c.origin, c.why]));
+    ok(c && c.status !== 'approved', 'nothing is approved by itself');
+    // the site gets the text → no more proposal
+    const cat = store.read('catalog-sf');
+    cat.products[0] = catalog.fromStoreApi(Object.assign({}, raw, { description: c.to.html }));
+    store.write('catalog-sf', cat); catalog.reload && catalog.reload();
+    fixes.invalidate();
+    ok(!fixes.compute().items.some((x) => x.site === 'sf' && x.pid === 501 && x.field === 'desc'), 'once the site has the text, it is no longer proposed');
+  }
+
   section('Μετάφραση σε κομμάτια (δεν κόβεται)');
   state.calls.length = 0;
   state.answer = (j) => j.prompt.split('\n\n').pop().split('\n').map((l) => l.startsWith('- ') ? '- ΕΛ ' + l.slice(2) : 'ΕΛ ' + l).join('\n');

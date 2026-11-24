@@ -461,7 +461,7 @@ function buildCtx() {
   const checks = require('./checks');
   const wx = require('./wooexport');
   const L = catalog.links();
-  const C = { manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
+  const C = { aiDesc: store.read(AIDESC, null) || {}, manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
   C.skuOwner = { sf: new Map(), st: new Map() }; // code → the product (not a variation) that has it
   for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) { C.skus[st].add(U.normSku(x.sku)); if (x.type !== 'variation') C.skuOwner[st].set(U.normSku(x.sku), x); }
   for (const site of catalog.SITES) {
@@ -482,6 +482,9 @@ function buildCtx() {
 // it waits in Διορθώσεις with the rest until the file for the site is made. { 'site:id': { name|short|desc: { to, at, by } } }
 const MANUAL = 'fixes-manual';
 const MANUAL_FIELDS = ['name', 'short', 'desc'];
+// descriptions written by the local AI when a person asked for one («Γράψε περιγραφή με AI», for a product already on
+// the site): only from the product's real facts, numbers the AI added taken out — and a proposal like any other.
+const AIDESC = 'fixes-ai-desc'; // { 'site:id': { html, at, by, model, notes: [..], removed } }
 function proposalsFor(site, p, C) {
   const list = proposalsFor0(site, p, C);
   const man = (C.manual || {})[site + ':' + p.id];
@@ -561,7 +564,15 @@ function proposalsFor0(site, p, C) {
     const twin = (() => { const oid = map.get(p.id); return oid ? oById.get(oid) : null; })();
     // our other site already has a good text / more photos: the safest source of all (our own work)
     const twinDesc = need.desc && !need.hasOwn && twin && textInfo(twin).len >= 300 && textInfo(twin).greek >= 0.3 ? twin.desc : '';
-    if (need.desc && twinDesc && !need.hasOwn) {
+    const aiD = (C.aiDesc || {})[key];
+    // (once the site has the text — the AI's part of it — nothing more is proposed)
+    if (aiD && aiD.html && !U.foldKey(stripText(p.desc)).includes(U.foldKey(stripText(aiD.html)).slice(0, 160))) {
+      // a person asked for it: proposed even when the product has a text (it is their choice), never «sure» (a person reads it)
+      const html = buildDesc(Object.assign({}, p, { desc: '' }), { descHtml: aiD.html, brand: p.brand }, false, fixedName);
+      add(Object.assign({}, base, { field: 'desc', lazyFrom: true, to: { html, meta: seo ? metaOf(html) : '' },
+        why: `Ζήτησες περιγραφή με AI (${aiD.by || 'χρήστης'}): γράφτηκε ΜΟΝΟ από τα στοιχεία του προϊόντος` + (aiD.removed ? `· αφαιρέθηκαν ${aiD.removed} φράσεις με αριθμούς που δεν υπάρχουν στα στοιχεία` : '') + '. Διάβασέ τη πριν την έγκριση.' + (aiD.notes || []).filter((x) => !/Αφαιρέθηκαν/.test(x)).map((x) => ' ' + x).join(''),
+        source: { kind: 'ai', label: 'AI του υπολογιστή' + (aiD.model ? ` (${aiD.model})` : '') + ' · από τα στοιχεία του προϊόντος' }, level: 'medium' }));
+    } else if (need.desc && twinDesc && !need.hasOwn) {
       add(Object.assign({}, base, { field: 'desc', lazyFrom: true, to: { html: twinDesc, meta: seo ? metaOf(twinDesc) : '' }, why: need.descWhy + `. Το ίδιο προϊόν στο ${s.sites[other].name} έχει πλήρη περιγραφή.`, source: { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }, level: 'high' }));
     } else if (need.desc && found && found.data && stripText(scrub(found.data.descHtmlEl || found.data.descHtml, found.data.supplier)).length >= 80) {
       const html = buildDesc(p, Object.assign({}, found.data, found.data.descHtmlEl ? { descHtml: found.data.descHtmlEl } : {}), need.hasOwn, fixedName);
@@ -1225,6 +1236,34 @@ async function fromPage(site, id, url) {
   return { ok: true, sameProduct: chk.match !== 'none', name: x.name };
 }
 
+/**
+ * A description written by the local AI for a product already on the site (a person asked): from the product's own
+ * facts only — its attributes, the supplier's / given page's text and specs, its own text — never from guesses.
+ * → { ok, notes } (the text waits in Διορθώσεις as a proposal).
+ */
+async function aiDescribe(site, id, by) {
+  const catalog = require('./catalog');
+  const localai = require('./localai');
+  const p = catalog.load(site).products.find((x) => x.id === Number(id) && x.type !== 'variation');
+  if (!p) throw new Error('Δεν βρέθηκε το προϊόν.');
+  const key = site + ':' + p.id;
+  const data = ((cache().products[key] || {}).data) || {};
+  const ti = textInfo(p);
+  const own = ti.len >= 40 && !ti.onlyTitle ? stripText(p.desc) : '';
+  const skip = /χρωμα|χρώμα|μεγεθ|μέγεθ|size|colou?r|μαρκα|μάρκα|brand|κατασκευαστ/i;
+  const specs = (data.specs || []).concat((p.attrs || []).filter((a) => a.terms && a.terms.length && !skip.test(a.name)).map((a) => ({ k: a.name, v: a.terms.slice(0, 6).join(', ') })));
+  const sizes = sizesOf(site, p);
+  const d = {
+    title: p.name, fields: { brand: p.brand || data.brand || '' }, specs, features: data.features || [],
+    variations: (sizes || []).map((x) => ({ size: x })),
+    descOfficial: [data.descHtmlEl || data.descHtml || '', own ? '<p>' + U.escapeHtml(own) + '</p>' : ''].filter(Boolean).join('\n'),
+  };
+  const r = await localai.describeFull(d);
+  store.update(AIDESC, {}, (x) => { x[key] = { html: r.html, at: U.nowIso(), by: by || '', model: r.model || '', notes: r.notes || [], removed: (r.removed || []).length }; return x; });
+  refreshProduct(site, p.id);
+  return { ok: true, notes: r.notes || [], model: r.model || '' };
+}
+
 /** Greek translation of the supplier's English text, with the free local AI (if it is on). */
 async function translate(site, id) {
   const localai = require('./localai');
@@ -1248,4 +1287,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

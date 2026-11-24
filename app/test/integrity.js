@@ -103,6 +103,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const pp = sm.productOf(page, 'https://x.example/bag');
   ok(pp && pp.n === 'Our bag' && pp.p === 39.9 && pp.st === true, 'a shop page: its own product (not a related one shown on it) and the price in stock', JSON.stringify(pp && [pp.n, pp.p, pp.st]));
 
+  // a product in several colours, written the way Google asks (ProductGroup + hasVariant): every colour keeps its own
+  // price / stock / code, and OUR colour's offer is the one that counts (spec 2.0, P1)
+  const grp = (vars) => '<html><head>' + ld({ '@context': 'https://schema.org', '@type': 'ProductGroup', name: 'Μπλούζα Pentagon Ageron', productGroupID: 'K09012', brand: { '@type': 'Brand', name: 'Pentagon' }, variesBy: ['https://schema.org/color'],
+    hasVariant: vars.map((v) => ({ '@type': 'Product', name: 'Μπλούζα Pentagon Ageron ' + v.c, color: v.c, sku: v.s, gtin13: v.g || undefined, offers: { '@type': 'Offer', price: v.p, priceCurrency: 'EUR', availability: 'https://schema.org/' + (v.in ? 'InStock' : 'OutOfStock') } })) }) + '</head></html>';
+  const gp = sm.productOf(grp([{ c: 'Black', s: 'K09012-01', p: '24.90', in: true }, { c: 'Olive', s: 'K09012-06', p: '19.90', in: false }, { c: 'Coyote', s: 'K09012-03', p: '22.90', in: true }]), 'https://x.example/ageron');
+  ok(gp && gp.n === 'Μπλούζα Pentagon Ageron' && gp.b === 'Pentagon' && gp.p === 22.9 && gp.st === true && gp.s === 'K09012' && Array.isArray(gp.v) && gp.v.length === 3,
+    'a ProductGroup page: the group is the product, the price the cheapest IN STOCK, its code the common part of the colours\' codes, every colour kept', JSON.stringify(gp && [gp.n, gp.p, gp.st, gp.s, gp.v && gp.v.length]));
+  const mk8 = require(APP + '/lib/market');
+  const olive = mk8.variantOf({ colors: mk8.coloursOf('ΜΠΛΟΥΖΑ PENTAGON AGERON ΛΑΔΙ'), gtin: '' }, gp);
+  ok(olive && olive.price && olive.price.p === 19.9 && olive.price.st === false && olive.price.s === 'K09012-06', 'our colour (ΛΑΔΙ = olive) → that colour\'s price and stock, not the cheapest of another colour', JSON.stringify(olive));
+  const sizes = sm.productOf(grp([{ c: 'Black S', s: 'A-S', p: '10', in: true }, { c: 'Black M', s: 'A-M', p: '11', in: true }]).replace(/"color":"Black (S|M)"/g, '"size":"$1"'), 'https://x.example/a');
+  ok(sizes && !sizes.v && sizes.p === 10, 'sizes alone are one product: not kept one by one (memory of the small machine)', JSON.stringify(sizes));
+
   section('Κατάλογος με «τρύπα» δεν κρατιέται, χάρτης μισός δεν σβήνει προϊόντα');
   process.env.SFK_ALLOW_PRIVATE = '1';
   const woo = http.createServer((req, res) => {

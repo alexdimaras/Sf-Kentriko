@@ -223,7 +223,7 @@ function report(site, id) {
   for (const a of areas) counts[a.level]++;
   return {
     at: U.nowIso(), site, id: p.id, name: p.name, sku: p.sku || '',
-    current: { name: p.name, short: String(p.short || '').slice(0, 4000) },
+    current: { name: p.name, type: p.type, short: String(p.short || '').slice(0, 4000) },
     // approved changes waiting for the file of the site (Διορθώσεις → «Αρχείο»)
     approved: approved.map((c) => ({ id: c.id, label: c.label, to: show(c, c.edited !== undefined ? c.edited : c.to), manual: !!c.manual })),
     statuses: { flow, research, seo: { state: seoState, at: seo ? seo.at : null, counts: seo ? seo.counts : null } },

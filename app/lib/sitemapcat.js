@@ -137,7 +137,7 @@ function ldProducts(html) {
       if (Array.isArray(x)) { for (const y of x) walk(y, d + 1); return; }
       if (typeof x !== 'object') return;
       const t = [].concat(x['@type'] || []).join(' ');
-      if (/\bProduct\b/i.test(t)) out.push(x);
+      if (/\bProduct(Group)?\b/i.test(t)) out.push(x); // (a ProductGroup: the variants, in hasVariant)
       if (x['@graph']) walk(x['@graph'], d + 1);
       if (x.mainEntity) walk(x.mainEntity, d + 1);
     };
@@ -154,28 +154,32 @@ const metaOf = (html, prop) => { const m = html.match(new RegExp(`<meta[^>]+(?:p
  */
 function productOf(html, url) {
   const list = ldProducts(html);
+  const isGroup = (x) => /ProductGroup/i.test([].concat(x['@type'] || []).join(' '));
   // the page's own product: the one whose address matches, else the first with an offer
   const offersOf = (x) => [].concat(x.offers || []).flatMap((o) => (o && o.offers ? [].concat(o.offers) : [o])).filter(Boolean);
   const same = (u) => { if (!u || typeof u !== 'string') return false; try { const a = new URL(u, url), b = new URL(url); return a.host === b.host && a.pathname.replace(/\/$/, '') === b.pathname.replace(/\/$/, ''); } catch (_) { return false; } };
-  const p = list.find((x) => offersOf(x).length && (same(x.url) || same(x['@id'] || '') || offersOf(x).some((o) => same(o.url || '')))) || list.find((x) => offersOf(x).length) || list[0];
+  // a product in several colours written the way Google asks (ProductGroup + hasVariant, or variants that say
+  // isVariantOf / inProductGroupWithID): the group is the product, every variant keeps its own price / stock / code
+  const group = list.find(isGroup);
+  const gid = group ? str(group.productGroupID || group['@id'] || '') : '';
+  const vnodes = !group ? [] : (Array.isArray(group.hasVariant) ? group.hasVariant : [])
+    .concat(list.filter((x) => x !== group && !isGroup(x) && (x.isVariantOf || (gid && [].concat(x.inProductGroupWithID || []).map(str).includes(gid)))))
+    .filter((x, i, a) => x && typeof x === 'object' && a.indexOf(x) === i);
+  const plain = list.filter((x) => !isGroup(x) && !vnodes.includes(x));
+  const p = group && vnodes.length ? group
+    : plain.find((x) => offersOf(x).length && (same(x.url) || same(x['@id'] || '') || offersOf(x).some((o) => same(o.url || '')))) || plain.find((x) => offersOf(x).length) || plain[0] || group;
+  const all = p ? (p === group ? offersOf(group).concat(vnodes.flatMap(offersOf)) : offersOf(p)) : [];
   // stock: true / false only when the page says so; nothing said = unknown (null) — never taken for «in stock»
-  let price = 0, cur = 'EUR', stock = null, high = 0;
-  if (p) {
-    const all = offersOf(p);
-    const out = (o) => /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
-    const said = (o) => /InStock|LimitedAvailability|OnlineOnly|InStoreOnly|OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
-    // the price a buyer can pay today: only the offers in stock (none in stock → sold out, with its lowest price)
-    const inStock = all.filter((o) => !out(o));
-    const offs = inStock.length ? inStock : all;
-    const prices = [];
-    for (const o of offs) {
-      const v = U.parseNumber(o.price != null ? o.price : o.lowPrice != null ? o.lowPrice : (o.priceSpecification && [].concat(o.priceSpecification)[0] && [].concat(o.priceSpecification)[0].price));
-      if (v > 0) prices.push(v);
-      if (o.highPrice) high = Math.max(high, U.parseNumber(o.highPrice));
-      if (o.priceCurrency) cur = String(o.priceCurrency).toUpperCase();
-    }
-    if (prices.length) { price = Math.min(...prices); high = Math.max(high, Math.max(...prices)); }
-    if (all.some(said)) stock = all.some((o) => said(o) && !out(o));
+  let { price, cur, stock, high } = offerSum(all);
+  // the variants, kept one by one ONLY when they differ in colour (as for Shopify / WooCommerce): sizes alone = one product
+  let vlist = null;
+  if (vnodes.length > 1) {
+    const mk = require('./market');
+    const gname = U.foldKey(str(group.name));
+    const opt = (v) => U.collapse(str(v.color) || [v.size, v.pattern, v.material].map(str).filter(Boolean).join(' / ') || U.foldKey(str(v.name)).replace(gname, '').replace(/^[\s\-–,/]+/, '')).slice(0, 60);
+    const rows = vnodes.slice(0, 40).map((v) => { const o = offerSum(offersOf(v)); return { o: opt(v), s: str(v.sku), g: require('./extract').validGtin(str(v.gtin13 || v.gtin || v.gtin12 || v.gtin14 || v.gtin8 || v.ean)), p: o.price, r: 0, st: o.stock }; });
+    const cols = new Set(rows.map((v) => [...mk.coloursOf(v.o)].sort().join('+')).filter(Boolean));
+    if (cols.size >= 2) vlist = rows;
   }
   // shops whose block has no price: the meta tags Facebook reads
   if (!(price > 0)) {
@@ -187,10 +191,35 @@ function productOf(html, url) {
   if (!name || !(price > 0)) return null;
   const img = p ? [].concat(p.image || [])[0] : '';
   return {
-    n: U.untexturize(name), s: str(p && p.sku), m: str(p && p.mpn), g: require('./extract').validGtin(str(p && (p.gtin13 || p.gtin || p.gtin12 || p.gtin14 || p.gtin8 || p.ean))),
+    n: U.untexturize(name), s: str(p && p.sku) || (p && p === group ? groupCode(vnodes.map((v) => str(v.sku))) : ''), m: str(p && p.mpn), g: require('./extract').validGtin(str(p && (p.gtin13 || p.gtin || p.gtin12 || p.gtin14 || p.gtin8 || p.ean))),
     b: str(p && p.brand), u: url, p: U.r2(price), pm: high > price ? U.r2(high) : 0, r: 0, st: stock,
     i: typeof img === 'string' ? img : str(img && (img.url || img.contentUrl)) || metaOf(html, 'og:image'), c: cur || 'EUR',
+    ...(vlist ? { v: vlist } : {}),
   };
+}
+/** A group's own code: the one all its variants share, or their common part (K16110-01-S, -M → K16110-01) — never the first one's. */
+function groupCode(skus) {
+  const list = [...new Set(skus.filter(Boolean))];
+  return list.length <= 1 ? list[0] || '' : require('./extract').commonCode(list) || '';
+}
+/** The offers of a product → { price (the lowest a buyer can pay today), high, cur, stock (true / false / null) } */
+function offerSum(all) {
+  let price = 0, cur = 'EUR', stock = null, high = 0;
+  const out = (o) => /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
+  const said = (o) => /InStock|LimitedAvailability|OnlineOnly|InStoreOnly|OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ''));
+  // only the offers in stock (none in stock → sold out, with its lowest price)
+  const inStock = all.filter((o) => !out(o));
+  const offs = inStock.length ? inStock : all;
+  const prices = [];
+  for (const o of offs) {
+    const v = U.parseNumber(o.price != null ? o.price : o.lowPrice != null ? o.lowPrice : (o.priceSpecification && [].concat(o.priceSpecification)[0] && [].concat(o.priceSpecification)[0].price));
+    if (v > 0) prices.push(v);
+    if (o.highPrice) high = Math.max(high, U.parseNumber(o.highPrice));
+    if (o.priceCurrency) cur = String(o.priceCurrency).toUpperCase();
+  }
+  if (prices.length) { price = Math.min(...prices); high = Math.max(high, Math.max(...prices)); }
+  if (all.some(said)) stock = all.some((o) => said(o) && !out(o));
+  return { price, cur, stock, high };
 }
 
 /**

@@ -351,6 +351,11 @@
       const slot = h('div');
       if (!r.proposals.some((c) => c.field === 'name')) manual.appendChild(btn('Αλλαγή τίτλου', { cls: 'sm ghost', icon: 'edit' }, () => { clear(slot).appendChild(editor('name', r.current.name)); }));
       if (!r.proposals.some((c) => c.field === 'short')) manual.appendChild(btn('Αλλαγή σύντομης περιγραφής', { cls: 'sm ghost', icon: 'edit' }, () => { clear(slot).appendChild(editor('short', '', r.current.short)); }));
+      // a description by the local AI, from the product's own facts (it waits here as a ready change: approval as always)
+      if (r.ai && r.current.type !== 'variation') manual.appendChild(btn('Περιγραφή με AI', { cls: 'sm ghost', icon: 'bolt', title: 'Το AI του υπολογιστή γράφει περιγραφή μόνο από τα στοιχεία του προϊόντος (χαρακτηριστικά, κείμενο αντιπροσώπου): αριθμοί που δεν υπάρχουν στα στοιχεία αφαιρούνται. Έρχεται για έγκριση.' }, (e) => {
+        const b = e.currentTarget; b.disabled = true; toast('Το AI γράφει… (μπορεί να πάρει 1–2 λεπτά)');
+        POST('/api/fixes/ai-desc', { site, id }).then((x) => { toast('Έτοιμη: διάβασέ τη πριν την έγκριση.' + ((x.notes || []).length ? ' ' + x.notes[0] : '')); refresh(); }).catch((err) => { b.disabled = false; fail(err); });
+      }));
       box.appendChild(manual); box.appendChild(slot);
       if (r.approved.length) box.appendChild(h('p', { class: 'faint', style: { margin: '8px 0 0' } }, `Εγκεκριμένες, περιμένουν το αρχείο για το site (Διορθώσεις → Αρχείο): ${r.approved.map((a) => a.label + (a.to ? ' → ' + a.to.slice(0, 60) : '')).join(' · ')}`));
       // 3. what still needs a look (the findings that are not already a ready change above)

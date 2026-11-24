@@ -269,6 +269,8 @@ const routes = {
   'POST /api/fixes/find': (b) => jobs.start('fixes', 'Αναζήτηση στοιχείων στους αντιπροσώπους', (job) => heldWhile(() => fixes.findSources(job, { maxPages: Math.min(1000, Number(b.maxPages) || 150) })), { heavy: true }),
   'POST /api/fixes/page': (b) => fixes.fromPage(b.site === 'st' ? 'st' : 'sf', b.id, b.url),
   'POST /api/fixes/translate': (b) => fixes.translate(b.site === 'st' ? 'st' : 'sf', b.id),
+  // a description by the local AI for a product already on the site: a proposal in Διορθώσεις (approval as always)
+  'POST /api/fixes/ai-desc': (b, _, ctx) => fixes.aiDescribe(b.site === 'st' ? 'st' : 'sf', b.id, ctx.user ? ctx.user.name : ''),
   'GET /api/checks/ignored': (q) => checks.ignoredItems(q.id),
   // Reports: interactive page (HTML) and formatted Excel
   'POST /api/report': async (b) => {
@@ -370,6 +372,16 @@ const routes = {
   // Competitors & market
   'GET /api/competitors': () => market.competitorsView(),
   'POST /api/competitors': (b) => market.saveCompetitor(b),
+  // the shops the internet research suggests, many at once: only hosts that ARE suggested (nothing else is added);
+  // then their way of reading is found (WooCommerce / Shopify / site map) in the background
+  'POST /api/competitors/bulk': (b) => {
+    const want = new Set([].concat(b.hosts || []).map(String));
+    const pick = require('./lib/codefind').suggestedShops(3).filter((x) => want.has(x.host));
+    const r = market.addCompetitors(pick.map((x) => ({ url: x.url, name: x.host.replace(/\.(gr|com|eu)$/, '') })));
+    const ids = new Set(r.added.map((c) => c.id));
+    const job = ids.size ? jobs.start('detect', 'Έλεγχος νέων ανταγωνιστών', (j) => market.detectAll(j, (c) => ids.has(c.id))) : null;
+    return { added: r.added.length, skipped: r.skipped.concat([...want].filter((h) => !pick.some((x) => x.host === h)).map((h) => ({ url: h, why: 'Δεν είναι στα προτεινόμενα' }))), job };
+  },
   'POST /api/competitors/delete': (b) => { market.removeCompetitor(b.id); return { ok: true }; },
   'POST /api/competitors/detect': () => jobs.start('detect', 'Έλεγχος ανταγωνιστών', (job) => market.detectAll(job)),
   // research for every product (or only the given ones): refresh competitor catalogs, compare locally
@@ -459,6 +471,7 @@ const routes = {
         if (items.length) { await coord.enqueue(type, webPayload(items, { origin: 'automatic', kind: 'gap-fill', reason: 'άνοιξες το προϊόν· λείπει: ' + (r.missing || []).join(', ') }), { dedupKey: type + ':open:' + site + ':' + r.id, priority: 30, auto: true, label: 'Έρευνα στο internet: ' + String(r.name).slice(0, 60) }); r.statuses.research.autoQueued = true; }
       } catch (e) { r.statuses.research.autoError = e.message; }
     }
+    r.ai = !!(settings.all().localAI || {}).enabled;
     return r;
   },
   // a person's own change on the product's page (title, short text, description): counts as approved
@@ -820,7 +833,7 @@ function serveReport(req, res, url) {
 let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
-  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων', 'POST /api/knowledge/forget': 'αναίρεση όσων έμαθε το πρόγραμμα',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',

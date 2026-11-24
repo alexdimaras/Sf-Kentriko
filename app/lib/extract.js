@@ -207,8 +207,11 @@ async function enrichShopify(out, url, gap, signal) {
 function commonCode(list) {
   let pre = list[0];
   for (const x of list.slice(1)) { let i = 0; while (i < pre.length && i < x.length && pre[i] === x[i]) i++; pre = pre.slice(0, i); }
-  const cut = pre.match(/^(.*?)[-_./ ]*$/)[1];
-  const atSep = list.every((x) => x.length === cut.length || /[-_./ ]/.test(x[cut.length]));
+  let cut = pre.match(/^(.*?)[-_./ ]*$/)[1];
+  const atSepOf = (c) => list.every((x) => x.length === c.length || /[-_./ ]/.test(x[c.length]));
+  // the common part ends inside a part (K09012-01 / -06 → «K09012-0»): back to the last separator (K09012)
+  if (!atSepOf(cut)) { const m = cut.match(/^(.*[^-_./ ])[-_./ ]+[^-_./ ]*$/); cut = m ? m[1] : ''; }
+  const atSep = atSepOf(cut);
   return atSep && cut.length >= 4 && /\d/.test(cut) ? cut : '';
 }
 

@@ -54,6 +54,14 @@ function saveCompetitor(input) {
   store.write('competitors', all);
   return c;
 }
+/** Many at once (the shops the internet research suggests): { url, name }[] → { added: [competitor], skipped: [{ url, why }] } */
+function addCompetitors(list) {
+  const added = [], skipped = [];
+  for (const x of (list || []).slice(0, 50)) {
+    try { added.push(saveCompetitor({ url: x.url, name: x.name })); } catch (e) { skipped.push({ url: x.url, why: e.message }); }
+  }
+  return { added, skipped };
+}
 function removeCompetitor(id) { store.write('competitors', competitors().filter((c) => c.id !== id)); compcat.remove(id); }
 
 /** Find out how we can read a competitor: WooCommerce Store API, Shopify, or only manual. */
@@ -1371,7 +1379,7 @@ function setCost(site, id, cost, source, rrp) {
   });
 }
 
-module.exports = { variantOf, catalogCoverage, manualExpired, MANUAL_DAYS, sameBrand, MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
+module.exports = { addCompetitors, variantOf, catalogCoverage, manualExpired, MANUAL_DAYS, sameBrand, MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,

@@ -319,6 +319,15 @@ function shop() {
       ok(w2 && w2.level === 'medium' && /μία μόνο πηγή/i.test(w2.why) && /χειροκίνητη επιβεβαίωση/.test(w2.why), 'one shop only → «look at it» (medium)', JSON.stringify(w2 && [w2.level]));
       ok(!fixes.compute().items.some((c) => c.field === 'sku' && /^S[FT]-\d/.test(String(c.to))), 'no invented codes: only codes found somewhere');
       ok(cf.suggestedShops(1).some((x) => x.host === 'shop-a.example') && !cf.suggestedShops(1).some((x) => x.host === 'shop.example'), 'the shops that sell our products are kept as proposals for the price research (never our own site)');
+      {
+        const market = require(APP + '/lib/market');
+        const keepC = store.read('competitors', []);
+        const sug = cf.suggestedShops(1).map((x) => ({ url: x.url, name: x.host }));
+        const b = market.addCompetitors(sug.concat([{ url: sug[0].url, name: 'again' }, { url: '', name: 'x' }]));
+        ok(b.added.length === sug.length && b.skipped.length === 2 && cf.suggestedShops(1).length === 0 && market.competitors().filter((c) => /shop-a\.example/.test(c.url)).length === 1,
+          'the suggested shops are added to the competitors in one go: none twice, a broken one is said, then they are no longer suggested', JSON.stringify([b.added.length, sug.length, b.skipped]));
+        store.write('competitors', keepC);
+      }
       // photos: the same file at two shops of the internet with the same product = the maker's photo → sure
       const hp = catalog.byId('sf').get(267335); const keepImgs = hp.images; hp.images = [];
       const ph = (host, u, more) => Object.assign({}, r.hits[0], { host, url: `https://${host}/p`, images: [u].concat(more || []), img: u });
