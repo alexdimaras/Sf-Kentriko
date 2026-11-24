@@ -10,7 +10,7 @@
       main.appendChild(pageHead('Ρυθμίσεις', 'Αλλάζουν μόνο τον τρόπο που δουλεύει το πρόγραμμα. Τίποτα δεν αλλάζει στα sites.'));
       const server = App.MODE === 'server';
       const admin = !server || (App.me && App.me.role === 'admin');
-      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, server && admin ? ['workers', 'Σύστημα'] : null, server && admin ? ['audit', 'Ιστορικό ενεργειών'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
+      const tabs = [['sites', 'Sites'], ['prices', 'Τιμές'], ['ads', 'Όπλα και διαφημίσεις'], ['new', 'Νέα προϊόντα'], ['cats', 'Κατηγορίες'], ['words', 'Λέξεις καταστήματος'], ['ai', 'AI'], ['phone', 'Κινητό'], server ? ['users', 'Χρήστες'] : null, server && admin ? ['workers', 'Σύστημα'] : null, server && admin ? ['audit', 'Ιστορικό ενεργειών'] : null, ['security', 'Ασφάλεια'], ['data', 'Δεδομένα']].filter(Boolean);
       main.appendChild(h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { 'aria-selected': String(k === tab), onclick: () => App.go('settings', { tab: k }) }, l))));
       const box = h('div', { class: 'stack' });
       main.appendChild(box);
@@ -165,6 +165,30 @@
         }
         box.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, siteName('sf')), h('th', null, siteName('st')), h('th', null, ''))), tb)));
         box.appendChild(h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, btn('Αποθήκευση', { cls: 'primary' }, () => POST('/api/catmap', { from: 'sf', pairs: changes }).then(() => toast('Αποθηκεύτηκε.')).catch(fail))));
+      }
+
+      // the shop's words for what a product is: the owner's rules and a person's own (with who wrote them, taken back)
+      if (tab === 'words') {
+        const KIND = { preferred: 'Προτιμώμενη λέξη', foreign: 'Ξένη λέξη', kind: 'Είδος' };
+        const list = h('div', { class: 'stack s' });
+        const draw = async () => {
+          const rules = await GET('/api/knowledge');
+          clear(list);
+          for (const r of rules) list.appendChild(h('div', { class: 'panel', style: { padding: '10px 12px' } },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+              h('div', null, h('b', null, r.to), ' ', h('span', { class: 'faint' }, r.kind === 'kind' ? '' : '← ' + (r.from || []).join(', ')), ' ', h('span', { class: 'pill' }, KIND[r.kind] || r.kind)),
+              r.owner ? h('span', { class: 'pill', title: 'Απόφαση του ιδιοκτήτη: δεν αναιρείται από εδώ' }, 'σταθερός') : btn('Αναίρεση', { cls: 'sm ghost' }, () => POST('/api/knowledge/remove', { id: r.id }).then(() => { toast('Αναιρέθηκε. Οι προτάσεις υπολογίζονται ξανά.'); draw(); }).catch(fail))),
+            h('div', { class: 'faint', style: { fontSize: '12px' } }, r.source || '', r.at ? ' · ' + fmt.ago(r.at) : '')));
+        };
+        const kindSel = select([['preferred', 'Προτιμώμενη λέξη (π.χ. ΔΙΑΚΡΙΤΙΚΟ αντί για ΣΗΜΑ)'], ['foreign', 'Ξένη λέξη (π.χ. PATCH = ΔΙΑΚΡΙΤΙΚΟ)'], ['kind', 'Είδος (λέξη που λέει τι είναι το προϊόν)']], 'preferred', () => {});
+        kindSel.id = 'kw-kind';
+        const to = h('input', { id: 'kw-to', placeholder: 'Η λέξη του καταστήματος (π.χ. ΔΙΑΚΡΙΤΙΚΟ)' });
+        const from = h('input', { id: 'kw-from', placeholder: 'Λέξεις που αντικαθιστά, με κόμμα (π.χ. ΣΗΜΑ)' });
+        box.appendChild(h('div', { class: 'note' }, 'Πώς λέει το κατάστημα κάθε είδος προϊόντος. Οι προτάσεις τίτλων και το AI τις χρησιμοποιούν· τίποτα δεν αλλάζει στα sites χωρίς έγκριση στις Διορθώσεις.'));
+        box.appendChild(h('div', { class: 'panel stack s' }, h('h3', { style: { margin: 0 } }, 'Νέος κανόνας'), kindSel, to, from,
+          h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, btn('Προσθήκη', { cls: 'primary', icon: 'check' }, () => POST('/api/knowledge/rule', { kind: kindSel.value, to: to.value, from: from.value.split(',').map((x) => x.trim()).filter(Boolean) }).then(() => { to.value = ''; from.value = ''; toast('Προστέθηκε. Οι προτάσεις υπολογίζονται ξανά.'); draw(); }).catch(fail)))));
+        box.appendChild(list);
+        await draw();
       }
 
       if (tab === 'ai') {

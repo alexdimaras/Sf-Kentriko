@@ -411,6 +411,10 @@ const routes = {
     }
     return jobs.start('codes', 'Κωδικοί από το internet', (job) => webCodes(job, { max: Math.min(200, Number(b.max) || 25) }));
   },
+  // the shop's words for what a product is (owner's rules + a person's own, with who wrote them; taken back by id)
+  'GET /api/knowledge': () => require('./lib/knowledge').terms().rules,
+  'POST /api/knowledge/rule': (b, _, ctx) => { const r = require('./lib/knowledge').addRule(b, ctx.user ? ctx.user.name : ''); checks.invalidate(); fixes.invalidate(); return r; },
+  'POST /api/knowledge/remove': (b, _, ctx) => { const ok = require('./lib/knowledge').removeRule(String(b.id || ''), ctx.user ? ctx.user.name : ''); checks.invalidate(); fixes.invalidate(); return { ok }; },
   'GET /api/codes': () => { const cf = require('./lib/codefind'); return Object.assign(cf.status(), { shops: cf.suggestedShops(3) }); },
   // families: the same model sold as separate products, one per colour — proposals, a yes, then the files of the change
   'GET /api/families': (q) => require('./lib/families').list(q.site === 'st' ? 'st' : 'sf'),
@@ -809,6 +813,7 @@ const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
   'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
+  'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
   'POST /api/workers/pair': 'κωδικός σύζευξης υπολογιστή', 'POST /api/workers/revoke': 'αφαίρεση υπολογιστή', 'POST /api/suppliers': 'αντιπρόσωπος', 'POST /api/suppliers/delete': 'διαγραφή αντιπροσώπου',
   'POST /api/backups/restore': 'επαναφορά αντιγράφου', 'POST /api/backup/upload': 'επαναφορά από αρχείο',

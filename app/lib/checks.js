@@ -87,7 +87,13 @@ function typeSuggester(site) {
   const learned = catalog.learnedTypes().map || {};
   const brandWords = new Set();
   for (const k of catalog.knownBrands().keys()) for (const w of U.greekUpper(k).split(/[^A-Z0-9Α-Ω]+/)) if (w.length > 1) brandWords.add(w);
-  const R = kinds.recogniser(catalog.learnedTypes().nouns || [], catalog.categoryIndex(site), brandWords);
+  // the kinds learned from the titles (first word of many titles) + the shop's own kind words (lib/knowledge.js:
+  // ΔΙΑΚΡΙΤΙΚΟ is a kind although 5.11 writes it in the middle of 35 titles and so it is never «the first word»)
+  const K = require('./knowledge').terms();
+  const R = kinds.recogniser([...new Set((catalog.learnedTypes().nouns || []).concat([...K.kinds]))], catalog.categoryIndex(site), brandWords);
+  // a Greek word that may well be the kind already (ΠΕΡΙΚΝΗΜΙΔΕΣ, ΑΚΟΝΙΣΤΗΣ): no colour, no «of …», no little word
+  // (…«-ΤΗΣ» of 8 letters or more is a thing or a person — ΑΚΟΝΙΣΤΗΣ, ΤΗΛΕΠΙΕΣΟΣΤΑΤΗΣ — not «of something»)
+  const nounLike = (w) => /^[Α-Ω]{4,}$/.test(w) && !kinds.COLOUR.test(w) && !kinds.PREP.has(w) && (!kinds.GENITIVE.test(w) || (w.length >= 8 && /ΤΗΣ$/.test(w)));
   return (p) => {
     // 1. the kind is written inside the title: it goes first, with the words that belong to it
     //    (5.11 TACTICAL ΣΑΚΙΔΙΟ RUSH → ΣΑΚΙΔΙΟ 5.11 TACTICAL RUSH · BENELLI M4 ΗΜΙΑΥΤΟΜΑΤΗ ΚΑΡΑΜΠΙΝΑ → ΗΜΙΑΥΤΟΜΑΤΗ ΚΑΡΑΜΠΙΝΑ BENELLI M4)
@@ -96,18 +102,30 @@ function typeSuggester(site) {
     // 2. proof of what it is: a trade name of one kind only (12ΒΟΛΑ, ΜΟΝΟΒΟΛΑ → ΦΥΣΙΓΓΙΑ), or its own category
     const k = R.kindOf(p);
     if (k.kind && k.at !== 0 && (k.how === 'compound' || k.how === 'category')) return { fix: k.kind + ' ' + U.collapse(p.name), why: `Είδος «${k.kind}»: ${k.proof}`, how: k.how, kind: k.kind };
-    // 3. no proof: what similar products are called — a suggestion to check, never a certainty
+    const ws = kinds.words(p.name);
+    // 2b. a foreign word the shop names in its own way (PATCH → ΔΙΑΚΡΙΤΙΚΟ): its rule, said with its source
+    const fw = ws.find((w) => K.foreign.has(w.replace(/[^A-Z]/g, '')));
+    if (fw && !ws.some((w) => R.isKind(w))) { const f = K.foreign.get(fw.replace(/[^A-Z]/g, '')); return { fix: f.to + ' ' + U.collapse(p.name), why: `Είδος «${f.to}»: «${fw}» στη γλώσσα του καταστήματος (${f.source})`, how: 'term', kind: f.to }; }
+    // 3. no proof: what similar products are called — a suggestion to check, never a certainty. Not when the title
+    // already has a Greek word that may be its kind (it is not put aside for another one: 101 of 531 such proposals on
+    // the real catalog, 24/11 — ΠΕΡΙΚΝΗΜΙΔΕΣ → «ΓΙΛΕΚΟ»), never a second kind word, and only from enough products:
+    // 5 or more of the category starting with a Greek word, 60% of them with the same one (one product of «5.11
+    // TACTICAL» named all 35 of its patches «ΣΗΜΑ»)
+    if (ws.some((w) => R.isKind(w) || nounLike(w))) return { fix: '', why: 'Ο τίτλος έχει ήδη ελληνική λέξη για το είδος· καμία άλλη από «παρόμοια προϊόντα» (γράψε το είδος μπροστά, αν χρειάζεται)', how: '' };
     const words = U.greekUpper(p.name).split(' ');
     let best = '', bn = 0;
     for (const id of p.cats) {
       const m = byCat.get(id);
       if (!m) continue;
       let tot = 0; for (const n of m.values()) tot += n;
-      for (const [w, n] of m) if (n > bn && n / tot >= 0.5) { bn = n; best = w; }
+      if (tot < 5) continue;
+      for (const [w, n] of m) if (n > bn && n >= 3 && n / tot >= 0.6) { bn = n; best = w; }
     }
     if (!best) {
       const votes = new Map();
-      for (const w of words) { const l = learned[w.replace(/[^A-Z]/g, '')]; if (l) votes.set(l.type, (votes.get(l.type) || 0) + l.share); }
+      // (a foreign word that goes with one kind in many of our titles: SHORTS → ΒΕΡΜΟΥΔΑ in 11 of 14 — not a word seen
+      // with a kind a few times: TRACER (a model of jackets, and a brand of power banks), TOURNIQUET (in «ΘΗΚΗ TOURNIQUET»))
+      for (const w of words) { const l = learned[w.replace(/[^A-Z]/g, '')]; if (l && l.n >= 10 && l.share >= 0.75) votes.set(l.type, (votes.get(l.type) || 0) + l.share); }
       for (const [t, v] of votes) if (v > bn) { bn = v; best = t; }
     }
     if (best) { const sp = spell.check(best, wordStats().freq); if (sp && sp.fix) best = sp.fix; }
@@ -297,7 +315,20 @@ function titleContext(site) {
   const { freq, latin } = wordStats();
   const latinCommon = new Set([...latin].filter(([, n]) => n >= 3).map(([w]) => w));
   for (const b of brands) latinCommon.add(b);
-  return { latinCommon, dict: spell.dict(), freq, suggestType: typeSuggester(site), memo: new Map(), codes: catalogCodes(), brands };
+  return { latinCommon, dict: spell.dict(), freq, suggestType: typeSuggester(site), memo: new Map(), codes: catalogCodes(), brands, titleTok: titleTokens() };
+}
+/** In how many of our titles each code-like word stands (XQ35 in 3 titles, 223REM in 3: the name of a model, a calibre). */
+let tokMemo = null;
+function titleTokens() {
+  const lists = catalog.SITES.map((s) => catalog.load(s).products);
+  if (tokMemo && tokMemo.lists.every((l, i) => l === lists[i])) return tokMemo.map;
+  const map = new Map();
+  for (const l of lists) for (const p of l) {
+    if (p.type === 'variation') continue;
+    for (const w of new Set(String(p.name || '').split(/\s+/).map((x) => U.normSku(x)).filter((k) => k.length >= 3 && /\d/.test(k)))) map.set(w, (map.get(w) || 0) + 1);
+  }
+  tokMemo = { lists, map };
+  return map;
 }
 // the codes of the catalog (products and variations of both sites, and their bases: K05068 of «K05068-54»): a word of a
 // title that is one of them is a code, not a word of the title
@@ -332,7 +363,11 @@ function codesInTitle(name, p, ctx) {
     // (…or a maker's item number by its shape — K05068, D19041: one or two letters and five digits or more — even when no
     // product of ours has it as its code; seen 24/11: «PANTS K05068» stayed in the title, the code was not in the catalog)
     const itemNo = /^[A-Z]{1,2}\d{5,}$/.test(w.toUpperCase());
-    const hit = (own && k === own) || (ownBase.length >= 5 && k === ownBase && !modelLike(w.toUpperCase())) || (ctx && ctx.codes && ctx.codes.has(k) && k !== own) || itemNo;
+    // (the code of ANOTHER product that stands in 2+ of our titles is the name of a model / a calibre, not a code:
+    // XQ35 of «… KRYPTON 2 XQ35» is the code of «PULSAR TELOS LRF XQ35» only — seen 24/11, removed at 98%)
+    const inTitles = (ctx && ctx.titleTok && ctx.titleTok.get(k)) || 0;
+    const other = ctx && ctx.codes && ctx.codes.has(k) && k !== own && inTitles < 2;
+    const hit = (own && k === own) || (ownBase.length >= 5 && k === ownBase && !modelLike(w.toUpperCase())) || other || (itemNo && inTitles < 2);
     if (hit) out.push(w0);
   }
   if (!out.length) return [];
@@ -381,6 +416,14 @@ function titleFix(p, ctx) {
     const sug = ctx.suggestType(Object.assign({}, p, { name: t }));
     // a trade name of one kind only (12ΒΟΛΑ → ΦΥΣΙΓΓΙΑ) or the kind already in the title: a rule, sure
     if (sug.fix) { t = U.capsTitle(sug.fix); steps.push({ kind: 'typefirst', why: sug.why + ' (πρότυπο ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ)', level: sug.how === 'compound' || sug.how === 'title' ? 'high' : 'medium', how: sug.how }); }
+  }
+  // the shop's own word for the kind (lib/knowledge.js — owner 24/11: «ΔΙΑΚΡΙΤΙΚΟ», never «ΣΗΜΑ»; ΣΗΜΑΙΑ is another word)
+  const first = t.split(' ')[0] || '';
+  const pref = require('./knowledge').terms().preferred.get(kinds.words(first)[0] || '');
+  if (pref) {
+    t = pref.to + t.slice(first.length);
+    // (a kind just put first by these rules: sure; an existing title renamed: for a look — 89 titles start «ΣΗΜΑ» today)
+    steps.push({ kind: 'term', why: `Λέξη του καταστήματος: «${pref.to}», όχι «${first}» (${pref.source})`, level: steps.some((x) => x.kind === 'typefirst') ? 'high' : 'medium' });
   }
   return { fix: U.collapse(t), steps };
 }

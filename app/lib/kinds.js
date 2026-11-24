@@ -153,4 +153,4 @@ function startsWithoutKind(name) {
 /** Does a category name have Greek words (a real category, not a brand folder like «FEDERAL»)? */
 function plainName(name) { return words(name).some((w) => /^[Α-Ω]{4,}$/.test(w)); }
 
-module.exports = { recogniser, compound, sameStem, words, kindFirst, startsWithoutKind, COMPOUNDS };
+module.exports = { recogniser, compound, sameStem, words, kindFirst, startsWithoutKind, COMPOUNDS, COLOUR, GENITIVE, PREP };

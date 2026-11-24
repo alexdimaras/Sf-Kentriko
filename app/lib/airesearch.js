@@ -63,9 +63,18 @@ function cleanJudge(obj) {
   return { verdict: obj.verdict, model: String(obj.model || '').slice(0, 80), colour: String(obj.colour || '').slice(0, 40), size: String(obj.size || '').slice(0, 20), reason: U.collapse(String(obj.reason || '')).slice(0, 200), confidence: isFinite(c) ? Math.max(0, Math.min(1, c > 1 ? c / 100 : c)) : 0 };
 }
 
+/** The shop's own words, in a few lines (never the whole catalog): its preferred kind words and foreign words. */
+function shopWords() {
+  try {
+    const K = require('./knowledge').terms();
+    const pref = [...K.preferred].map(([f, v]) => `${v.to} (όχι ${f})`);
+    const fw = [...K.foreign].map(([f, v]) => `${f} = ${v.to}`);
+    return (pref.length || fw.length) ? `\nΛέξεις του καταστήματος για το είδος: ${pref.concat(fw).slice(0, 30).join(' · ')}.` : '';
+  } catch (_) { return ''; }
+}
 function suggestPrompt(p, facts) {
   return `Πρότεινε βελτιώσεις για προϊόν ηλεκτρονικού καταστήματος στρατιωτικών / τακτικών ειδών, ΜΟΝΟ από τα στοιχεία που δίνονται.
-Κανόνες τίτλου: μόνο κεφαλαία, μορφή ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ [ΧΡΩΜΑ], χωρίς κωδικό και χωρίς μέγεθος.
+Κανόνες τίτλου: μόνο κεφαλαία, μορφή ΕΙΔΟΣ ΜΑΡΚΑ ΜΟΝΤΕΛΟ [ΧΡΩΜΑ], χωρίς κωδικό και χωρίς μέγεθος. Το ΕΙΔΟΣ στα ελληνικά, με τη λέξη του καταστήματος· αν δεν είναι σαφές από τα στοιχεία, κράτα το είδος του τίτλου.${shopWords()}
 Χαρακτηριστικά: σύντομες γραμμές, μόνο ό,τι αναφέρεται στα στοιχεία. Μην επινοήσεις αριθμούς, υλικά ή πιστοποιήσεις.
 Απάντησε μόνο σε JSON.
 
@@ -81,6 +90,8 @@ function cleanSuggest(obj, p, facts) {
   const localai = require('./localai');
   const known = U.foldKey(facts + ' ' + p.name);
   let title = U.greekUpper(U.collapse(obj.title)).slice(0, 120);
+  // (the shop's word for the kind, whatever the model wrote: ΣΗΜΑ → ΔΙΑΚΡΙΤΙΚΟ)
+  try { const K = require('./knowledge').terms(); const f = title.split(' ')[0]; const pr = K.preferred.get(f); if (pr) title = pr.to + title.slice(f.length); } catch (_) { /* fine */ }
   if (p.sku && U.normSku(title).includes(U.normSku(p.sku)) && U.normSku(p.sku).length >= 4) title = '';
   if ((title.match(/\d+/g) || []).some((n) => !known.includes(n))) title = '';
   const g = localai.guardFacts(obj.features.map((x) => '- ' + String(x).slice(0, 160)).join('\n'), facts + ' ' + p.name);
