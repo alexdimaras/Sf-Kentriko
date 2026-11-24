@@ -636,8 +636,10 @@ function bestIn(f, ix, comp, confirmed, ignored) {
   // not have our colour, «another variant» (family), never the price of another colour (spec 2.0, P1)
   const pick = variantOf(f, c);
   if (pick && pick.none && best.s.match === 'exact' && !(confirmed && confirmed.has(c.u))) best.s = Object.assign({}, best.s, { match: 'family', why: `έχει άλλα χρώματα (${pick.none}), όχι το δικό μας` });
+  // (another colour of the same model at a shop that asks ONE price for every colour: a good sign of our colour's price)
+  const vSame = !!(pick && pick.none && Array.isArray(best.c.v) && best.c.v.length >= 2 && best.c.v.every((x) => x.p > 0 && Math.abs(x.p - best.c.v[0].p) <= 0.011 * best.c.v[0].p));
   if (pick && pick.list) c = Object.assign({}, c, pick.price);
-  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, mpn: c.m || '', brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso(), ...(c.vo ? { variant: c.vo, variantBy: c.vby } : {}) };
+  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, mpn: c.m || '', brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso(), ...(c.vo ? { variant: c.vo, variantBy: c.vby } : {}), ...(vSame ? { vSame: true } : {}) };
 }
 
 // ---------- Stats & decision ----------
@@ -666,6 +668,12 @@ function costInfo(site, p) {
   };
 }
 
+/** How far another colour's price tells ours: ★★ the shop asks one price for every colour · ★ you said it is the same model. */
+function variantEval(c) {
+  if (c.vSame) return { level: 2, why: '★★ το κατάστημα έχει ίδια τιμή σε όλα τα χρώματα' };
+  if (c.variantOk) return { level: 1, why: '★ το επιβεβαίωσες: ίδιο μοντέλο' };
+  return null;
+}
 function doubtOf(url) { try { return require('./accuracy').doubtShops().get(U.hostOf(url)) || ''; } catch (_) { return ''; } }
 const MANUAL_DAYS = 14; // a competitor's price written by hand counts this long, unless «no end» was chosen
 function stats(list, ctx) {
@@ -678,7 +686,7 @@ function stats(list, ctx) {
     if (c.ignored) { c.flag = 'ignored'; continue; }
     // another colour / size of the same model: its price is that variant's (counted only after a person's yes)
     if (c.web && c.pendingShop && !c.confirmed) { c.flag = 'newshop'; c.note = 'νέο κατάστημα του internet: μετράει όταν εγκρίνεις το κατάστημα'; continue; }
-    if (c.match === 'family') { c.flag = 'family'; c.note = c.note || 'άλλη παραλλαγή του ίδιου μοντέλου: η τιμή της δεν μετράει'; continue; }
+    if (c.match === 'family') { c.flag = 'family'; c.vEval = variantEval(c); c.note = c.vEval ? `άλλο χρώμα του ίδιου μοντέλου — ${c.vEval.why}` : (c.note || 'άλλη παραλλαγή του ίδιου μοντέλου: η τιμή της δεν μετράει'); continue; }
     if (c.match !== 'exact') { c.flag = 'similar'; continue; }
     // a shop whose matches a person found wrong again and again: not believed by itself (lib/accuracy.js)
     if (!c.confirmed && !c.manual) { const why = doubtOf(c.url); if (why) { c.flag = 'doubt'; c.note = why; continue; } }
@@ -694,6 +702,18 @@ function stats(list, ctx) {
     if (!c.manual && (c.inStock == null || (c.web && !c.avail))) { c.flag = 'unknown'; c.note = 'άγνωστη διαθεσιμότητα: δεν μετράει'; continue; }
     if (!c.manual && c.seenAt && new Date(c.seenAt).getTime() < (c.web ? Date.now() - WEB_DAYS * 864e5 : weekAgo)) { c.flag = 'stale'; c.note = 'παλιά τιμή (το κατάστημα δεν διαβάστηκε)'; continue; }
     c.used = true; c.flag = 'used';
+  }
+  // another colour of the same model (asked 24/11: «το άλλο χρώμα δεν σημαίνει ότι η τιμή του δεν μετράει — με
+  // σύστημα αξιολόγησης»): when our own colour is found at too few shops, the other colours whose price is reliable
+  // (the shop asks one price for every colour, or you said it is the same model) count as a sign — shown apart
+  const minShops = Math.max(2, Math.round(Number(s.minShops) || 2));
+  if (s.variantPrices !== 'off' && list.filter((c) => c.used).length < minShops) {
+    for (const c of list) {
+      if (c.flag !== 'family' || !c.vEval || c.ignored || c.inStock !== true) continue;
+      if (s.marketGreekOnly && c.country === 'other') continue;
+      if (c.seenAt && new Date(c.seenAt).getTime() < (c.web ? Date.now() - WEB_DAYS * 864e5 : weekAgo)) continue;
+      c.used = true; c.flag = 'variant'; c.note = `άλλο χρώμα του ίδιου μοντέλου, μετράει ως ένδειξη (${c.vEval.why})`;
+    }
   }
   const suspect = (c, why) => { c.used = false; c.flag = 'suspect'; c.note = why; };
   // against what we know: our cost and the supplier's retail price
@@ -730,6 +750,7 @@ function stats(list, ctx) {
     minShop: cheapest ? cheapest.shop : '', maxShop: dearest ? dearest.shop : '',
     similar: list.filter((c) => c.flag === 'similar' || c.flag === 'doubt').length,
     family: list.filter((c) => c.flag === 'family').length,
+    variants: list.filter((c) => c.flag === 'variant').length,
     newShops: list.filter((c) => c.flag === 'newshop').length,
     outOfStock: list.filter((c) => c.flag === 'out').length,
     unknownStock: list.filter((c) => c.flag === 'unknown').length,
@@ -789,7 +810,7 @@ function decision(ours, st, list, floor, costVat) {
     else if (st.unknownStock) reason = `Βρέθηκε σε ${st.unknownStock} ${st.unknownStock === 1 ? 'κατάστημα' : 'καταστήματα'} χωρίς επιβεβαιωμένη διαθεσιμότητα: δεν μετράει για αλλαγή τιμής.`;
     else if (sus.length) reason = 'Οι μόνες τιμές που βρέθηκαν είναι ύποπτες.' + susText;
     else if (st.newShops) reason = `Βρέθηκε σε ${st.newShops} ${st.newShops === 1 ? 'νέο κατάστημα' : 'νέα καταστήματα'} του internet: μετράει μόλις εγκρίνεις το κατάστημα.`;
-    else if (st.family) reason = `Βρέθηκε το ίδιο μοντέλο σε άλλο χρώμα/παραλλαγή (${st.family}): η τιμή του δεν μετράει για το δικό σου, εκτός αν επιβεβαιώσεις ότι ισχύει και γι' αυτό.`;
+    else if (st.family) reason = `Βρέθηκε το ίδιο μοντέλο σε άλλο χρώμα/παραλλαγή (${st.family}): η τιμή του μετράει ως ένδειξη μόνο με αξιολόγηση (★★ ίδια τιμή σε όλα τα χρώματα στο κατάστημα, ή ★ «Άλλο χρώμα / μέγεθος» από σένα) και με διαθεσιμότητα.`;
     else if (st.similar) reason = 'Υπάρχουν μόνο παρόμοια προϊόντα: επιβεβαίωσε αν είναι ίδια.';
     return Object.assign({ action: 'nodata', reason }, none);
   }
@@ -877,8 +898,8 @@ function mergeWeb(byKey) {
     if (!offers.length && !(prev && prev.competitors.some((c) => c.web))) continue;
     const list = (prev ? prev.competitors.filter((c) => !c.web) : []).concat(offers);
     const d = dec[key] || {};
-    const yes = new Set(d.yes || []), no = new Set(d.no || []);
-    for (const x of list) { x.ignored = no.has(x.url); if (yes.has(x.url)) { x.match = 'exact'; x.confirmed = true; } }
+    const yes = new Set(d.yes || []), no = new Set(d.no || []), vr = new Set(d.variant || []);
+    for (const x of list) { x.ignored = no.has(x.url); if (yes.has(x.url)) { x.match = 'exact'; x.confirmed = true; } if (vr.has(x.url)) { x.match = 'family'; x.variantOk = true; } }
     all[key] = compute(site, p, { at: prev ? prev.at : at, name: p.name, competitors: list, prevStats: prev ? prev.prevStats || null : null });
     touchedKeys[key] = all[key];
     n++;
@@ -1028,7 +1049,7 @@ async function run(targets, job, opts) {
     let dropped = false;
     // (the prices found on the internet stay beside them, like the ones written by hand)
     if (prev) for (const c of prev.competitors) { if (c.manual || c.web) manual.push(c); else if (readableIds.has(c.competitorId)) cur.set(c.competitorId, c); else dropped = true; }
-    work.push({ t, p, key, f, prev, cur, manual, touched: !prev || dropped, yes: new Set(d.yes || []), no: new Set(d.no || []), searchable: !!(f.keys.length || f.sku || f.codes.length || f.gtin || f.code) });
+    work.push({ t, p, key, f, prev, cur, manual, touched: !prev || dropped, yes: new Set(d.yes || []), no: new Set(d.no || []), variant: new Set(d.variant || []), searchable: !!(f.keys.length || f.sku || f.codes.length || f.gtin || f.code) });
   }
   // ---- progress that is never lost ----
   // A whole run is done shop by shop, and after each shop what was found is written down together with a note
@@ -1044,7 +1065,7 @@ async function run(targets, job, opts) {
   job && job.progress(0, list.length, 'Σύγκριση με ' + withCatalog.length + ' καταστήματα…');
   const commit = (w) => {
     const offers = [...w.cur.values()].concat(w.manual);
-    for (const o of offers) { o.ignored = w.no.has(o.url); if (w.yes.has(o.url)) { o.match = 'exact'; o.confirmed = true; } }
+    for (const o of offers) { o.ignored = w.no.has(o.url); if (w.yes.has(o.url)) { o.match = 'exact'; o.confirmed = true; } if (w.variant && w.variant.has(o.url)) { o.match = 'family'; o.variantOk = true; } }
     const prev = w.prev;
     const entry = compute(w.t.site, w.p, { at, name: w.p.name, competitors: offers, prevStats: prev && prev.stats && prev.stats.count && prev.at !== at ? { min: prev.stats.min, median: prev.stats.median, at: prev.at } : (prev && prev.prevStats) || null });
     if (!offers.length && !prev && !entry.loss) { delete all[w.key]; return; } // nothing to keep (a sale at a loss is always kept)
@@ -1195,9 +1216,11 @@ function decide(site, id, url, answer, opts) {
   }
   store.update('market-decisions', {}, (all) => {
     const d = all[key] || { yes: [], no: [] };
-    d.yes = d.yes.filter((u) => u !== url); d.no = d.no.filter((u) => u !== url);
-    if (answer === 'yes') d.yes.push(url); else if (answer === 'no') d.no.push(url);
-    if (d.yes.length || d.no.length) all[key] = d; else delete all[key];
+    d.yes = d.yes.filter((u) => u !== url); d.no = d.no.filter((u) => u !== url); d.variant = (d.variant || []).filter((u) => u !== url);
+    // «variant»: the same model in another colour / size — not «the same», not thrown away: its price is evaluated
+    if (answer === 'yes') d.yes.push(url); else if (answer === 'no') d.no.push(url); else if (answer === 'variant') d.variant.push(url);
+    if (!d.variant.length) delete d.variant;
+    if (d.yes.length || d.no.length || (d.variant || []).length) all[key] = d; else delete all[key];
     return all;
   });
   const catalog = require('./catalog');
@@ -1207,7 +1230,11 @@ function decide(site, id, url, answer, opts) {
   if (!e || !p) throw new Error('Δεν βρέθηκε.');
   for (const c of e.competitors) if (c.url === url) {
     c.ignored = answer === 'no';
+    // (what the program had said is kept, so that an undo gives it back)
+    if ((answer === 'yes' || answer === 'variant') && !c.match0) c.match0 = c.match;
     if (answer === 'yes') { c.match = 'exact'; c.confirmed = true; } else if (c.confirmed) { delete c.confirmed; }
+    if (answer === 'variant') { c.match = 'family'; c.variantOk = true; } else if (c.variantOk) delete c.variantOk;
+    if (!answer && c.match0) { c.match = c.match0; delete c.match0; }
   }
   e.competitors = e.competitors.filter((c) => !(c.manual && c.ignored));
   all[key] = compute(site, p, e);

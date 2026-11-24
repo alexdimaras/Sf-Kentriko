@@ -1503,6 +1503,8 @@ function afterStart() {
     }).catch(() => {});
   };
   setTimeout(aiRound, 10 * 60 * 1000).unref();
+  // (answers «Άλλο χρώμα / μέγεθος» kept as «Όχι ίδιο» by the older version → another colour, its price evaluated)
+  setTimeout(() => { try { const n = require('./lib/accuracy').migrateVariants(); if (n) events.record({ severity: 'info', service: 'server', code: 'VARIANT_ANSWERS_MOVED', message: `${n} απαντήσεις «Άλλο χρώμα / μέγεθος» μετράνε πλέον ως ένδειξη τιμής` }); } catch (e) { console.error('variant answers:', e.message); } }, 90 * 1000).unref();
   setInterval(aiRound, Number(process.env.SFK_AI_ROUND_MS) || 3 * 3600 * 1000).unref();
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
   setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();

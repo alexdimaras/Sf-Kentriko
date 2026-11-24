@@ -159,7 +159,7 @@ const section = (t) => console.log('\n' + t);
     const b5 = e5.competitors.find((c) => /bad\.gr/.test(c.url)), g5 = e5.competitors.find((c) => /good\.gr/.test(c.url));
     ok(b5 && b5.flag === 'doubt' && !b5.used && /λάθος 3 από 4/.test(b5.note) && g5 && g5.flag !== 'doubt', 'its matches on other products now wait for a yes (their price does not count by itself); the good shop\'s still count', JSON.stringify([b5 && b5.flag, b5 && b5.note, g5 && g5.flag]));
     const md = store.read('market-decisions');
-    ok(md['sf:101'] && md['sf:101'].no.includes('https://bad.gr/p1') && md['sf:100'].yes.includes('https://good.gr/p0') && !md['sf:104'], 'a «no» here is the same «Όχι ίδιο» of Τιμές, a «yes» the same «Ίδιο»; «not sure» changes nothing');
+    ok(md['sf:102'] && md['sf:102'].no.includes('https://bad.gr/p2') && md['sf:101'].variant.includes('https://bad.gr/p1') && md['sf:100'].yes.includes('https://good.gr/p0') && !md['sf:104'], '«Άλλο προϊόν» here is «Όχι ίδιο» of Τιμές, «Ίδιο» the same «Ίδιο», «Άλλο χρώμα» kept as another colour; «not sure» changes nothing');
     // a person's yes / no in Τιμές is kept too, with what the program had said («similar» → it was the same)
     market.decide('sf', 106, 'https://sim.gr/p6', 'yes', { by: 'alex' });
     const sb2 = acc.scoreboard();
@@ -203,6 +203,31 @@ const section = (t) => console.log('\n' + t);
     const e1 = store.read('market')['sf:101'].competitors.find((c) => c.url === 'https://bad.gr/p1');
     ok(u.was === 'no' && acc.scoreboard().sample.n === before - 1 && !(md2['sf:101'] && md2['sf:101'].no.includes('https://bad.gr/p1')) && e1 && !e1.ignored, 'undo: it no longer counts, «Όχι ίδιο» is taken off in Τιμές too, the page counts again as the program had it', JSON.stringify([u, e1 && e1.ignored]));
     ok(!acc.recent(100).some((x) => x.k === 'sf:101' && x.url === 'https://bad.gr/p1'), 'and it leaves the history (it can be answered again)');
+    // another colour of the same model (24/11): not thrown away — evaluated, and a sign when our colour is at too few shops
+    {
+      const p8 = catalog.byId('sf').get(108);
+      const fam = (host, o) => offer(host, 8, Object.assign({ match: 'family', why: 'άλλο χρώμα', name: 'Pentagon Model8 Olive' }, o));
+      const e8 = market.compute('sf', p8, { at: new Date().toISOString(), competitors: [offer('good.gr', 8), fam('olive1.gr', { variantOk: true }), fam('olive2.gr', { vSame: true }), fam('olive3.gr'), fam('olive4.gr', { vSame: true, inStock: false })] });
+      const f = (h) => e8.competitors.find((c) => c.url.includes(h));
+      ok(f('good.gr').flag === 'used' && f('olive1.gr').flag === 'variant' && f('olive2.gr').flag === 'variant' && f('olive3.gr').flag === 'family' && f('olive4.gr').flag === 'family',
+        'our colour at 1 shop: other colours count as a sign when evaluated (★ you said same model, ★★ one price for all colours), never without evaluation or out of stock', JSON.stringify(e8.competitors.map((c) => [c.shop, c.flag])));
+      ok(/★/.test(f('olive2.gr').note) && e8.stats.variants === 2 && e8.stats.count === 3, 'shown apart, with its evaluation, and counted in the market', JSON.stringify([f('olive2.gr').note, e8.stats.variants, e8.stats.count]));
+      const e9 = market.compute('sf', p8, { at: new Date().toISOString(), competitors: [offer('good.gr', 8), offer('bad2.gr', 8), fam('olive2.gr', { vSame: true })] });
+      ok(e9.competitors.find((c) => c.url.includes('olive2')).flag === 'family', 'our own colour at 2 shops or more: the other colours stay information only');
+      // the answer «Άλλο χρώμα / μέγεθος» → evaluated (★), and an undo gives back what the program had said
+      acc.check({ k: 'sf:107', url: 'https://good.gr/p7', verdict: 'no', reason: 'variant' }, 'alex');
+      const c7 = store.read('market')['sf:107'].competitors.find((c) => c.url === 'https://good.gr/p7');
+      ok(c7.match === 'family' && c7.variantOk && !c7.ignored && store.read('market-decisions')['sf:107'].variant.includes('https://good.gr/p7'), '«Άλλο χρώμα / μέγεθος»: kept as the same model in another colour (its price evaluated), not thrown away', JSON.stringify([c7.match, c7.variantOk, c7.ignored]));
+      // an answer «Άλλο χρώμα / μέγεθος» given with the older version (kept as «Όχι ίδιο» by Τιμές) is moved at start
+      market.decide('sf', 109, 'https://good.gr/p9', 'no', { noRecord: true });
+      acc.record({ k: 'sf:109', url: 'https://good.gr/p9', verdict: 'no', reason: 'variant', by: 'alex' });
+      const moved = acc.migrateVariants();
+      const c9 = store.read('market')['sf:109'].competitors.find((c) => c.url === 'https://good.gr/p9');
+      ok(moved >= 1 && c9.match === 'family' && c9.variantOk && !c9.ignored && acc.migrateVariants() === 0, 'answers «another colour» of the older version are moved once (their price evaluated, no longer thrown away)', JSON.stringify([moved, c9.match, c9.ignored]));
+      acc.undo({ k: 'sf:107', url: 'https://good.gr/p7' }, 'alex');
+      const c7b = store.read('market')['sf:107'].competitors.find((c) => c.url === 'https://good.gr/p7');
+      ok(c7b.match === 'exact' && !c7b.variantOk && !(store.read('market-decisions')['sf:107'] || {}).variant, 'undo: back to what the program had said', JSON.stringify([c7b.match, c7b.variantOk]));
+    }
     ok(acc.wilson(98, 100).low > 92 && acc.wilson(3, 3).low < 45, 'the margin: 98 of 100 → at least ~93%; 3 of 3 says little (from ~44%)', JSON.stringify([acc.wilson(98, 100), acc.wilson(3, 3)]));
   }
 

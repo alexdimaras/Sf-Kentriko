@@ -126,7 +126,8 @@ function check(input, by) {
   const prog = c ? { match: c.match, how: c.how, why: c.why, score: c.score } : { match: input.match || '', how: input.how || '' };
   const row = record({ k, url, kind: c && c.web ? 'web' : input.kind || 'price', prog, verdict, by, sample: !!input.sample, reason: input.reason });
   // (the market's own memory: a yes / no there is the same answer; «not sure» changes nothing)
-  if (verdict !== 'unsure' && c) market.decide(site, Number(id), url, verdict, { by, noRecord: true });
+  // («another colour / size»: not «the same», not thrown away — its price is evaluated as a sign; lib/market.js variantEval)
+  if (verdict !== 'unsure' && c) market.decide(site, Number(id), url, verdict === 'no' && input.reason === 'variant' ? 'variant' : verdict, { by, noRecord: true });
   if (verdict === 'no') try { require('./fixes').invalidate(); } catch (_) { /* fixes not loaded */ }
   return row;
 }
@@ -336,6 +337,28 @@ function undo(input, by) {
   return { ok: true, was: had ? had.verdict : null };
 }
 
+/**
+ * Answers «Άλλο χρώμα / μέγεθος» given before 24/11 (evening) were kept by Τιμές as «Όχι ίδιο» (thrown away): they
+ * become «another colour of the same model» (its price evaluated). Idempotent; run at every start.
+ */
+function migrateVariants() {
+  const market = require('./market');
+  const rows = Object.values(data().items).filter((r) => r.verdict === 'no' && r.reason === 'variant');
+  if (!rows.length) return 0;
+  const dec = market.decisions();
+  const res = market.results();
+  let n = 0;
+  for (const r of rows) {
+    const d = dec[r.k] || {};
+    if ((d.variant || []).includes(r.url)) continue;
+    const [site, id] = r.k.split(':');
+    const e = res[r.k];
+    if (!e || !(e.competitors || []).some((c) => c.url === r.url)) continue;
+    try { market.decide(site, Number(id), r.url, 'variant', { by: r.by, noRecord: true }); n++; } catch (_) { /* product gone */ }
+  }
+  return n;
+}
+
 /** What was answered lately (newest first), with the product and the shop — each one can be taken back (undo). */
 function recent(n) {
   const catalog = require('./catalog');
@@ -346,4 +369,4 @@ function recent(n) {
   });
 }
 
-module.exports = { undo, aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };
+module.exports = { migrateVariants, undo, aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };
