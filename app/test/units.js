@@ -98,6 +98,71 @@ const section = (t) => console.log('\n' + t);
   const l = await audit.list(5);
   ok(Array.isArray(l) && l[0] && l[0].actor === 'alex' && l[0].action === 'έγκριση', 'who did what and when is kept');
 
+
+  section('Ακρίβεια & εκμάθηση: πόσες από τις 100 αντιστοιχίες είναι σωστές, μετρημένο από τους ελέγχους σου');
+  {
+    const catalog = require(APP + '/lib/catalog');
+    const acc = require(APP + '/lib/accuracy');
+    const market = require(APP + '/lib/market');
+    const prods = Array.from({ length: 12 }, (_, i) => catalog.fromStoreApi({ id: 100 + i, name: 'ΣΑΚΙΔΙΟ PENTAGON MODEL' + i + ' ΜΑΥΡΟ', slug: 's' + i, type: 'simple', permalink: 'https://shop.example/s' + i, sku: 'K' + (100 + i), prices: { price: '5000', regular_price: '5000', currency_minor_unit: 2 }, images: [], categories: [], is_in_stock: true }));
+    store.write('catalog-sf', { syncedAt: new Date().toISOString(), source: 'api', products: prods, categories: [] });
+    store.write('catalog-st', { syncedAt: new Date().toISOString(), source: 'api', products: [], categories: [] });
+    const offer = (host, i, o) => Object.assign({ shop: host, competitorId: host, url: `https://${host}/p${i}`, name: 'Pentagon Model' + i + ' Black', price: 49, inStock: true, match: 'exact', how: 'sku', ev: ['ίδιος κωδικός'], score: 1, country: 'GR', seenAt: new Date().toISOString() }, o || {});
+    const m = {};
+    for (let i = 0; i < 12; i++) m['sf:' + (100 + i)] = { at: new Date().toISOString(), competitors: [offer('good.gr', i), offer('bad.gr', i), offer('sim.gr', i, { match: 'similar', how: 'words' })] };
+    store.write('market', m);
+    const smp = acc.sample(10);
+    ok(smp.rows.length === 10 && smp.left === 24 && smp.rows.every((r) => r.prog.match === 'exact' && r.ours.name && r.theirs.url), 'the sample: 10 matches the program counts by itself (never the «similar» ones), at random, with ours next to theirs', JSON.stringify([smp.rows.length, smp.left]));
+    // the owner checks: good.gr always right, bad.gr wrong 3 of 4
+    for (let i = 0; i < 4; i++) acc.check({ k: 'sf:' + (100 + i), url: `https://good.gr/p${i}`, verdict: 'yes', sample: true }, 'alex');
+    for (let i = 0; i < 4; i++) acc.check({ k: 'sf:' + (100 + i), url: `https://bad.gr/p${i}`, verdict: i ? 'no' : 'yes', sample: true }, 'alex');
+    acc.check({ k: 'sf:104', url: 'https://good.gr/p4', verdict: 'unsure', sample: true }, 'alex');
+    const sb = acc.scoreboard();
+    ok(sb.sample.n === 8 && sb.sample.yes === 5 && sb.sample.unsure === 1 && sb.sample.p === 62.5 && sb.sample.low < 62.5 && sb.sample.high > 62.5, 'the answer: 5 of 8 right = 62.5%, with its margin (few checks = wide margin); «not sure» does not count', JSON.stringify(sb.sample));
+    ok(acc.sample(30).rows.every((r) => !(r.k === 'sf:100' && /good\.gr/.test(r.theirs.url))), 'a checked match is not asked again');
+    ok(sb.doubtShops.includes('bad.gr') && !sb.doubtShops.includes('good.gr'), 'it learns: a shop with 3 wrong of 4 is no longer believed by itself', JSON.stringify(sb.doubtShops));
+    const e5 = market.compute('sf', catalog.byId('sf').get(105), store.read('market')['sf:105']);
+    const b5 = e5.competitors.find((c) => /bad\.gr/.test(c.url)), g5 = e5.competitors.find((c) => /good\.gr/.test(c.url));
+    ok(b5 && b5.flag === 'doubt' && !b5.used && /λάθος 3 από 4/.test(b5.note) && g5 && g5.flag !== 'doubt', 'its matches on other products now wait for a yes (their price does not count by itself); the good shop\'s still count', JSON.stringify([b5 && b5.flag, b5 && b5.note, g5 && g5.flag]));
+    const md = store.read('market-decisions');
+    ok(md['sf:101'] && md['sf:101'].no.includes('https://bad.gr/p1') && md['sf:100'].yes.includes('https://good.gr/p0') && !md['sf:104'], 'a «no» here is the same «Όχι ίδιο» of Τιμές, a «yes» the same «Ίδιο»; «not sure» changes nothing');
+    // a person's yes / no in Τιμές is kept too, with what the program had said («similar» → it was the same)
+    market.decide('sf', 106, 'https://sim.gr/p6', 'yes', { by: 'alex' });
+    const sb2 = acc.scoreboard();
+    ok(sb2.confirmations.n === 1 && sb2.confirmations.yes === 1, 'the answers in Τιμές count too («similar» that was the same)', JSON.stringify(sb2.confirmations));
+    const d = acc.dossier('sf', 101);
+    ok(d.rows.length === 3 && d.rows[0].prog.match === 'exact' && d.rows.some((r) => r.check && r.check.verdict === 'no'), 'one product: every match with what the program decided, why, and the owner\'s answer', JSON.stringify(d.rows.map((r) => [r.theirs.shop, r.prog.match, r.check && r.check.verdict])));
+    // the AI's second opinion (a fake AI here: «no» for sim-looking shop bad.gr, «yes» otherwise)
+    const judge = async (r) => ({ verdict: /bad\.gr/.test(r.theirs.url) ? 'no' : 'yes', why: 'δοκιμή', model: 'fake' });
+    const ar = await acc.aiRound(50, { judge });
+    const sb3 = acc.scoreboard();
+    ok(ar.judged === 15 && sb3.ai.n === 15 && sb3.ai.doubts > 0, 'the AI judges the matches nobody judged (not those you answered), kept apart from yours', JSON.stringify([ar, sb3.ai.n, sb3.ai.doubts]));
+    ok(acc.aiDoubts(20).every((r) => /bad\.gr/.test(r.theirs.url) && r.ai.verdict === 'no'), 'the AI\'s «no» are shown to you first (outside the random sample)');
+    ok(!acc.aiAgreement().proven, 'the AI does not count in what is learned before it has agreed with you on ≥20 matches');
+    const keepAi = store.read('match-checks').ai; store.update('match-checks', {}, (d) => { d.ai = {}; return d; });
+    let bad = 0; const ar2 = await acc.aiRound(5, { judge: async () => { if (++bad >= 2) throw new Error('Ollama off'); return { verdict: 'yes', why: '', model: 'fake' }; } });
+    ok(ar2.judged === 1 && /Ollama off/.test(ar2.error), 'an AI that stops answering: the round stops at once and says why');
+    store.update('match-checks', {}, (d) => { d.ai = keepAi; return d; });
+    // the certainty of proposals corrected by what happened: «sure» photos approved 14 of 20 → 70%, no longer sure
+    const dec = {};
+    for (let i = 0; i < 20; i++) dec['sf:' + i + ':images'] = { status: i < 14 ? 'approved' : 'rejected', cf: 94, fd: 'images', og: 'sources', at: new Date().toISOString() };
+    for (let i = 0; i < 25; i++) dec['sf:' + i + ':brand'] = { status: 'approved', cf: 92, fd: 'brand', og: 'sources', at: new Date().toISOString() };
+    store.write('fixes', dec);
+    await new Promise((r) => setTimeout(r, 5));
+    const ac2 = require(APP + '/lib/accuracy');
+    ac2.record({ k: 'sf:111', url: 'https://x.gr/1', verdict: 'unsure' }); // (clears the memo)
+    const ci = ac2.calibrationFor('images', 94), cb = ac2.calibrationFor('brand', 92);
+    ok(ci && ci.p === 70 && ci.n === 20 && cb && cb.p === 100 && !ac2.calibrationFor('gtin', 95), 'measured: «sure» photos approved 70% (20), brands 100% (25); a kind with too few answers is not touched', JSON.stringify([ci, cb]));
+    const fixes = require(APP + '/lib/fixes');
+    const c = { site: 'sf', pid: 1, field: 'images', to: ['x'], level: 'high', source: { kind: 'web', label: 'x' }, sources: [{ kind: 'web' }] };
+    fixes.finishForTest(c);
+    ok(c.confidence === 70 && c.level === 'medium' && c.confidence0 >= 90 && /εγκρίθηκαν 14 από 20/.test(c.why), 'a «sure» photo proposal now says 70% and is «look at it» (not in «approve all sure»), with why', JSON.stringify([c.confidence, c.confidence0, c.level, c.why]));
+    const cb2 = { site: 'sf', pid: 1, field: 'brand', to: 'X', level: 'high', source: { kind: 'competitor', label: 'x' }, sources: [{ kind: 'competitor' }] };
+    fixes.finishForTest(cb2);
+    ok(cb2.level === 'high' && !cb2.calibrated, 'a kind that is approved as often as said stays as it is (only ever more careful)');
+    ok(acc.wilson(98, 100).low > 92 && acc.wilson(3, 3).low < 45, 'the margin: 98 of 100 → at least ~93%; 3 of 3 says little (from ~44%)', JSON.stringify([acc.wilson(98, 100), acc.wilson(3, 3)]));
+  }
+
   console.log(`\n${passes} ok, ${fails} failed`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   process.exit(fails ? 1 : 0);

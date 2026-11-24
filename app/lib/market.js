@@ -666,6 +666,7 @@ function costInfo(site, p) {
   };
 }
 
+function doubtOf(url) { try { return require('./accuracy').doubtShops().get(U.hostOf(url)) || ''; } catch (_) { return ''; } }
 const MANUAL_DAYS = 14; // a competitor's price written by hand counts this long, unless «no end» was chosen
 function stats(list, ctx) {
   ctx = ctx || {};
@@ -679,6 +680,8 @@ function stats(list, ctx) {
     if (c.web && c.pendingShop && !c.confirmed) { c.flag = 'newshop'; c.note = 'νέο κατάστημα του internet: μετράει όταν εγκρίνεις το κατάστημα'; continue; }
     if (c.match === 'family') { c.flag = 'family'; c.note = c.note || 'άλλη παραλλαγή του ίδιου μοντέλου: η τιμή της δεν μετράει'; continue; }
     if (c.match !== 'exact') { c.flag = 'similar'; continue; }
+    // a shop whose matches a person found wrong again and again: not believed by itself (lib/accuracy.js)
+    if (!c.confirmed && !c.manual) { const why = doubtOf(c.url); if (why) { c.flag = 'doubt'; c.note = why; continue; } }
     if (s.marketGreekOnly && c.country === 'other') { c.flag = 'foreign'; c.note = 'κατάστημα εξωτερικού'; continue; }
     if (c.inStock === false) { c.flag = 'out'; c.note = 'εξαντλημένο: δεν μετράει'; continue; }
     // not known whether it is in stock (a page that does not say; an internet price found before this was kept): it
@@ -725,7 +728,7 @@ function stats(list, ctx) {
   return {
     count: prices.length, min: prices[0] || 0, max: prices[prices.length - 1] || 0, median: U.median(prices),
     minShop: cheapest ? cheapest.shop : '', maxShop: dearest ? dearest.shop : '',
-    similar: list.filter((c) => c.flag === 'similar').length,
+    similar: list.filter((c) => c.flag === 'similar' || c.flag === 'doubt').length,
     family: list.filter((c) => c.flag === 'family').length,
     newShops: list.filter((c) => c.flag === 'newshop').length,
     outOfStock: list.filter((c) => c.flag === 'out').length,
@@ -1183,8 +1186,13 @@ async function researchOne(p, comps, gap) {
 }
 
 // ---------- The user's corrections ----------
-function decide(site, id, url, answer) {
+function decide(site, id, url, answer, opts) {
   const key = site + ':' + Number(id);
+  // every yes / no is kept with what the program had said (Ακρίβεια & εκμάθηση: how right it is, what it learns)
+  if (!(opts && opts.noRecord) && (answer === 'yes' || answer === 'no')) {
+    const c0 = ((results()[key] || {}).competitors || []).find((c) => c.url === url);
+    if (c0) try { require('./accuracy').record({ k: key, url, kind: c0.web ? 'web' : 'price', prog: { match: c0.confirmed ? 'confirmed' : c0.match, how: c0.how, why: c0.why, score: c0.score }, verdict: answer, by: (opts && opts.by) || '' }); } catch (_) { /* measuring only */ }
+  }
   store.update('market-decisions', {}, (all) => {
     const d = all[key] || { yes: [], no: [] };
     d.yes = d.yes.filter((u) => u !== url); d.no = d.no.filter((u) => u !== url);

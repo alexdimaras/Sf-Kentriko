@@ -174,7 +174,7 @@ function witnessesFor(C, site, pid) {
     // colour and size of a model: good enough for the brand, never for an EAN or a photo)
     const ev = c.ev || [];
     const exact = !!c.confirmed || c.how === 'ean' || ev.includes('ίδιος κωδικός');
-    out.push({ shop: c.shop, url: c.url, brand: c.brand || '', ean: c.ean || '', img: c.img || '', proof: exact || c.how !== 'sku' || byWords ? proof : 'ίδιος κωδικός μοντέλου', exact: exact && !byWords, byWords, name: c.name || '', code: c.mpn || c.sku || '' });
+    out.push({ multi: !!c.variant, shop: c.shop, url: c.url, brand: c.brand || '', ean: c.ean || '', img: c.img || '', proof: exact || c.how !== 'sku' || byWords ? proof : 'ίδιος κωδικός μοντέλου', exact: exact && !byWords, byWords, name: c.name || '', code: c.mpn || c.sku || '' });
   }
   return out;
 }
@@ -203,6 +203,31 @@ function safeWitness(p, w) {
   if (m.coloursOf(p.name).size > 0 && m.coloursOf(w.name).size > 0) return 'sure';
   // our title names no colour: maybe a product in one colour, maybe not — at most «look at it»
   return m.coloursOf(p.name).size === 0 ? 'maybe' : false;
+}
+/**
+ * May a shop's photo be used for OUR product? Stricter than for a code or a brand (asked 24/11: «a photo of an olive
+ * product for a black one»): the listing's main photo shows ONE colour, whatever variant the price was taken from.
+ *   • a listing in several colours (we took our colour's price from it): its photo is of any colour → never;
+ *   • our title names a colour and theirs names none: only with the whole code / EAN (one listing = one variant), at most «look at it»;
+ *   • the titles name different colours → never.
+ */
+function photoWitness(p, w) {
+  if (w.multi) return false;
+  if (!sameColours(p.name, w.name)) return false;
+  const m = require('./market');
+  if (m.coloursOf(p.name).size && !m.coloursOf(w.name).size) return w.exact ? 'maybe' : false;
+  return safeWitness(p, w);
+}
+/** A photo whose FILE NAME names another colour than our title (…-olive-1.jpg for a black product) → never proposed. */
+function otherColourPhoto(p, u) {
+  const m = require('./market');
+  const ours = m.coloursOf(p.name);
+  if (!ours.size) return false;
+  const file = String(u || '').split('?')[0].split('/').pop().replace(/\.[a-z0-9]+$/i, '');
+  const theirs = m.coloursOf(U.foldKey(file.replace(/[-_.+%0-9]+/g, ' ')));
+  if (!theirs.size) return false;
+  for (const c of theirs) if (ours.has(c)) return false;
+  return true;
 }
 /** The sizes / colours of a product that have no code yet (WooCommerce variations), by product. */
 function variationsOf(C, site) {
@@ -324,7 +349,11 @@ function webHits(C, site, p) {
   if (!C.web) C.web = (store.read('web-codes', null) || {}).products || {};
   let e = C.web[site + ':' + p.id];
   if (!e && site === 'st') { const sfId = C.L.stToSf.get(p.id); if (sfId != null) e = C.web['sf:' + sfId]; }
-  return e && Array.isArray(e.hits) ? e.hits : [];
+  if (!e || !Array.isArray(e.hits)) return [];
+  // a page a person said is NOT the same product (Τιμές «Όχι ίδιο», or the check of Ακρίβεια): nothing is taken from it
+  if (!C.mdec) C.mdec = store.read('market-decisions', null) || {};
+  const no = new Set([].concat(((C.mdec[site + ':' + p.id] || {}).no) || []));
+  return no.size ? e.hits.filter((h) => !no.has(h.url)) : e.hits;
 }
 /**
  * A product code as shops write it, cleaned: the first word of «8020860 Katadyn BeFree…»; never an EAN, a long
@@ -454,7 +483,22 @@ function originOf(c) {
   if (k === 'rule' || k === 'mirror') return c.field === 'varsku' || c.field === 'sku' ? 'site' : 'rules';
   return k ? 'sources' : 'rules';
 }
-const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); c.confidence = confidenceOf(c); c.origin = originOf(c); return c; };
+const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); c.confidence = confidenceOf(c); c.origin = originOf(c); calibrate(c); return c; };
+/**
+ * The certainty said, corrected by what really happened (lib/accuracy.js): proposals of this kind given as this sure
+ * were approved less often → the measured certainty; under 90% no longer «sure». Silent, by measurement only, and
+ * it never approves anything: it only makes the program more careful.
+ */
+function calibrate(c) {
+  c.confidence0 = c.confidence;
+  let g = null;
+  try { g = require('./accuracy').calibrationFor(c.field, c.confidence); } catch (_) { g = null; }
+  if (!g || g.p == null || g.p >= c.confidence) return;
+  c.confidence = Math.max(1, Math.round(g.p));
+  c.calibrated = { n: g.n, ok: g.ok, claimed: c.confidence0 };
+  if (c.level === 'high' && g.p < 90) c.level = 'medium';
+  c.why = (c.why || '') + ` (Σιγουριά διορθωμένη από τις αποφάσεις σου: τέτοιες προτάσεις εγκρίθηκαν ${g.ok} από ${g.n}.)`;
+}
 
 function buildCtx() {
   const catalog = require('./catalog');
@@ -598,13 +642,15 @@ function proposalsFor0(site, p, C) {
       fromTwin = !!twinMore;
       // (a page found by the older photo research: its photos only when its title shows OUR colour — it took a whole gallery)
       const oldResearch = found && found.src && found.src.kind === 'research' && !(require('./market').coloursOf(p.name).size === 0 ? require('./market').coloursOf(found.data.name || '').size <= 1 : sameColours(p.name, found.data.name || '') && require('./market').coloursOf(found.data.name || '').size > 0);
-      let cand = twinMore ? twin.images : found && found.data && !oldResearch ? found.data.images || [] : [];
+      // (the supplier's item of ANOTHER colour of the model — its text fits, its photos do not)
+      const otherVariant = found && found.data && (found.data.otherVariant || !sameColours(p.name, found.data.name || ''));
+      let cand = twinMore ? twin.images : found && found.data && !oldResearch && !otherVariant ? found.data.images || [] : [];
       if (fromTwin) { imgSource = { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }; imgLevel = 'high'; }
       else if (cand.length) { imgSource = found.src; imgLevel = found.src.level; }
       else if ((p.images || []).length < ((s.webResearch || {}).minImages || 3)) {
         // only the photo of a shop that has the SAME product (code / EAN, or brand + model + colour), never of a look-alike
         const byKey = new Map();
-        for (const w of wit) { const safe = safeWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
+        for (const w of wit) { const safe = photoWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
         // …and the shops of the internet with the same product (each photo of their page; the same file at two shops = the maker's)
         for (const hh of webHits(C, site, p)) {
           // only photos the research tied to OUR variant (its own photos, a one-colour page in our colour, or the file
@@ -616,7 +662,7 @@ function proposalsFor0(site, p, C) {
           for (const u0 of (hh.images || []).slice(0, 4)) {
             // (a short file name has no «maker's file» key: the address itself is its key — never dropped silently)
             const u = fullImage(u0); const k = imageKey(u) || String(u).split('?')[0].toLowerCase();
-            if (!u || !k || (p.images || []).some((x) => sameImage(x, u))) continue;
+            if (!u || !k || (p.images || []).some((x) => sameImage(x, u)) || otherColourPhoto(p, u)) continue;
             const e = byKey.get(k) || { u, shops: [] };
             if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w);
             if (safe === 'maybe') e.weak = true;
@@ -634,7 +680,7 @@ function proposalsFor0(site, p, C) {
           imgWhy = (best.shops.length >= 2 ? ` Η ίδια φωτογραφία (ίδιο αρχείο) σε ${best.shops.length} καταστήματα: είναι του κατασκευαστή.` : ' Είναι φωτογραφία άλλου καταστήματος: δες ότι είναι του κατασκευαστή (χωρίς λογότυπο καταστήματος) πριν την έγκριση.') + ((p.images || []).length ? ' Προστίθεται δίπλα στην υπάρχουσα: δες ότι δεν είναι η ίδια λήψη.' : '');
         }
       }
-      for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u))) extraImgs.push(u);
+      for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u)) && !otherColourPhoto(p, u)) extraImgs.push(u);
       // the same photo file at a shop with the same product: a second witness for the supplier's photos
       if (imgSource && imgSource.kind !== 'competitor') for (const w of wit) { const k = imageKey(fullImage(w.img)); if (k && extraImgs.some((u) => imageKey(u) === k) && !imgAlso.some((x) => x.label.endsWith(w.shop))) imgAlso.push({ kind: 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url }); }
       if (imgAlso.length && imgLevel === 'medium' && imgSource && imgSource.kind !== 'competitor') imgLevel = 'high';
@@ -994,7 +1040,8 @@ function decide0(ids, status, by, edited) {
       if (!c) continue;
       if (status === 'pending') { delete d[id]; n++; continue; }
       const prev = d[id] || {};
-      d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '' };
+      // (with the certainty it was given and where it came from: «we said 98% — how often was it approved?»)
+      d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '', cf: c.confidence0 || c.confidence || 0, og: c.origin || '', fd: c.field };
       if (edited !== undefined && ids.length === 1) d[id].edited = editedValue(c, edited);
       else if (prev.edited !== undefined) d[id].edited = prev.edited;
       if (c.field === 'name') learnQueue.push({ site: c.site, pid: c.pid, from: c.from, to: c.to, status, edited: d[id].edited, by });
@@ -1176,10 +1223,13 @@ async function findSources(job, opts) {
           if ((pg.data.images || []).length > data.images.length) data.images = pg.data.images;
           data.features = pg.data.features || []; data.specs = pg.data.specs || [];
           data.brand = data.brand || pg.data.brand || ''; data.ean = data.ean || pg.data.ean || '';
+          if (pchk.match === 'family') data.otherVariant = true; // (its page is of another colour / variant: no photos from it)
           if (pchk.match === 'similar' && best.level === 'high' && !/EAN|κωδικ/i.test(best.c.how)) best.level = 'medium';
         } else url = '';
       }
     }
+    // the supplier's item of another colour / variant of the model: its text fits, its photos do not (proposals skip them)
+    if (best.chk.match === 'family') data.otherVariant = true;
     if (!stripText(data.descHtml) && !data.images.length && !data.brand && !data.features.length) { delete ec.products[key]; continue; }
     const prev = ec.products[key];
     data.supplier = best.c.sup.name;
@@ -1287,4 +1337,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { finishForTest: (c) => finish(c), photoWitness, otherColourPhoto, aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

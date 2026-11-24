@@ -5,7 +5,7 @@
 'use strict';
 const SHELL = 'sfk-shell-v1';
 const FILES = ['/', '/app.css', '/icon.svg', '/manifest.webmanifest',
-  '/js/core.js', '/js/v-today.js', '/js/v-products.js', '/js/v-checks.js', '/js/v-new.js', '/js/v-suppliers.js', '/js/v-market.js', '/js/v-flow.js', '/js/v-fixes.js', '/js/v-settings.js', '/js/boot.js'];
+  '/js/core.js', '/js/v-today.js', '/js/v-products.js', '/js/v-checks.js', '/js/v-new.js', '/js/v-suppliers.js', '/js/v-market.js', '/js/v-learn.js', '/js/v-flow.js', '/js/v-fixes.js', '/js/v-settings.js', '/js/boot.js'];
 const fresh = (c) => Promise.all(FILES.map((f) => fetch(f, { cache: 'no-store', credentials: 'same-origin' }).then((r) => (r.ok ? c.put(f, r) : null)).catch(() => null)));
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(SHELL).then(fresh).then(() => self.skipWaiting())); });

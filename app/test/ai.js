@@ -146,6 +146,21 @@ function fakeOllama(state) {
     ok(!fixes.compute().items.some((x) => x.site === 'sf' && x.pid === 501 && x.field === 'desc'), 'once the site has the text, it is no longer proposed');
   }
 
+  section('Δεύτερη γνώμη του AI για μια αντιστοιχία (Ακρίβεια & εκμάθηση)');
+  {
+    settings.save({ localAI: { enabled: true, url: ol.url, model: 'qwen2.5' } });
+    state.calls.length = 0;
+    state.answer = '{"same":"no","why":"άλλο χρώμα: λαδί αντί για μαύρο"}';
+    const acc = require(APP + '/lib/accuracy');
+    const v = await acc.aiJudge({ ours: { name: 'ΣΑΚΙΔΙΟ PENTAGON KYLER 36L ΜΑΥΡΟ', sku: 'K16110-01' }, theirs: { name: 'Pentagon Kyler 36L Olive', sku: 'K16110-06' } });
+    const pr = state.calls[0] || {};
+    ok(v.verdict === 'no' && /λαδί/.test(v.why) && v.model === 'qwen2.5:7b', 'the AI answers in the agreed form (same: yes / no / unsure, why)', JSON.stringify(v));
+    ok(/Άλλο χρώμα, άλλη έκδοση/.test(pr.prompt || '') && /K16110-06/.test(pr.prompt || '') && pr.format && pr.format.properties && pr.format.properties.same, 'the question carries the rules of «the same product» and both products, with a fixed answer form (JSON Schema)');
+    state.answer = 'μάλλον ναι';
+    let bad = null; try { await acc.aiJudge({ ours: { name: 'A' }, theirs: { name: 'B' } }); } catch (e) { bad = e; }
+    ok(bad && bad.code === 'bad_json', 'an answer outside the form is never taken as a verdict');
+  }
+
   section('Μετάφραση σε κομμάτια (δεν κόβεται)');
   state.calls.length = 0;
   state.answer = (j) => j.prompt.split('\n\n').pop().split('\n').map((l) => l.startsWith('- ') ? '- ΕΛ ' + l.slice(2) : 'ΕΛ ' + l).join('\n');

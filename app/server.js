@@ -493,7 +493,14 @@ const routes = {
   'GET /api/flow': (q) => require('./lib/flow').view(q),
   'POST /api/market/manual': (b) => market.addManual(b.site, b.id, b),
   'POST /api/market/ignore': (b) => market.toggleIgnore(b.site, b.id, b.url),
-  'POST /api/market/decide': (b) => market.decide(b.site === 'st' ? 'st' : 'sf', b.id, String(b.url || ''), b.answer),
+  // Ακρίβεια & εκμάθηση: how right the matches are (from a person's checks), a random sample, one product's matches
+  'GET /api/learn': () => require('./lib/accuracy').scoreboard(),
+  'GET /api/learn/sample': (q) => require('./lib/accuracy').sample(q.n, { site: q.site === 'st' ? 'st' : q.site === 'sf' ? 'sf' : '' }),
+  'GET /api/learn/product': (q) => require('./lib/accuracy').dossier(q.site === 'st' ? 'st' : 'sf', q.id),
+  'GET /api/learn/ai-doubts': (q) => ({ rows: require('./lib/accuracy').aiDoubts(q.n || 10) }),
+  'POST /api/learn/ai': () => jobs.start('learn-ai', 'Έλεγχος αντιστοιχιών από το AI', async (job) => { job.progress(0, 1, 'Το AI ελέγχει 15 τυχαίες αντιστοιχίες…'); const r = await require('./lib/accuracy').aiRound(15); if (!r.judged && r.error) throw new Error('Το AI δεν απάντησε: ' + r.error); job.progress(1, 1, `Έλεγξε ${r.judged}`); return r; }),
+  'POST /api/learn/check': (b, _, ctx) => require('./lib/accuracy').check(b, ctx.user ? ctx.user.name : ''),
+  'POST /api/market/decide': (b, _, ctx) => market.decide(b.site === 'st' ? 'st' : 'sf', b.id, String(b.url || ''), b.answer, { by: ctx.user ? ctx.user.name : '' }),
   'POST /api/market/export': (b) => {
     const site = b.site === 'st' ? 'st' : 'sf';
     const ov = market.overview(site);
@@ -833,7 +840,7 @@ function serveReport(req, res, url) {
 let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
-  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/learn/check': 'έλεγχος αντιστοιχίας (ίδιο / όχι)', 'POST /api/learn/ai': 'έλεγχος αντιστοιχιών από το AI', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων', 'POST /api/knowledge/forget': 'αναίρεση όσων έμαθε το πρόγραμμα',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
@@ -1484,6 +1491,17 @@ function afterStart() {
   setInterval(() => { try { events.flush(); } catch (e) { console.error('events:', e.message); } }, 60 * 1000).unref();
   // the real checks of the data every 15 minutes (so «Σύστημα» is never green only because nothing was checked)
   if (SERVER) { setTimeout(() => healthProbe().catch(() => {}), 20 * 1000).unref(); setInterval(() => { healthProbe().then(() => require('./lib/repair').auto(repairDeps())).catch((e) => console.error('health:', e.message)); }, 15 * 60000).unref(); }
+  // the AI's silent second opinion on the matches (Ακρίβεια & εκμάθηση): every few hours, a few random ones, only when
+  // the local AI is on (in the cloud it runs on the computer with the model); nothing changes on the sites
+  const aiRound = () => {
+    if (!(settings.all().localAI || {}).enabled || jobs.heavyWorking()) return;
+    require('./lib/accuracy').aiRound(Number(process.env.SFK_AI_ROUND_N) || 15).then((r) => {
+      if (r.judged) events.record({ severity: 'info', service: 'ai', code: 'AI_MATCH_ROUND', message: `Το AI έλεγξε ${r.judged} αντιστοιχίες (σιωπηλά)` });
+      else if (r.error) events.record({ severity: 'info', service: 'ai', code: 'AI_MATCH_ROUND_SKIPPED', message: 'Έλεγχος αντιστοιχιών από το AI: όχι τώρα — ' + r.error.slice(0, 160) });
+    }).catch(() => {});
+  };
+  setTimeout(aiRound, 10 * 60 * 1000).unref();
+  setInterval(aiRound, Number(process.env.SFK_AI_ROUND_MS) || 3 * 3600 * 1000).unref();
   // a competitor's price written by hand stops counting at its end date, also when no research runs meanwhile
   setInterval(() => { try { if (market.manualExpired()) market.recomputeAsync().catch((e) => console.error('market recompute:', e.message)); } catch (_) { /* next hour */ } }, 3600 * 1000).unref();
   engine.ready().then(async () => {

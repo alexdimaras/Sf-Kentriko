@@ -955,3 +955,26 @@ body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="f
 @media (max-width: 640px) { .grid2.runs { grid-template-columns: minmax(0, 1fr); } }
 /* Ροή εργασίας: το «Μετά» δίπλα στο πρόβλημα */
 .fc-after { font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+
+/* Ακρίβεια & εκμάθηση */
+.lr-answer h2 { margin-bottom: 6px; }
+.lr-big { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 4px 0 8px; }
+.lr-big b { font-size: 44px; line-height: 1; font-weight: 760; letter-spacing: -.03em; color: var(--ok); font-variant-numeric: tabular-nums; }
+.lr-big span { color: var(--ink-2); font-size: 13.5px; }
+.lr-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.lr-kpi { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; }
+.lr-kpi span { font-size: 12.5px; color: var(--ink-2); font-weight: 600; }
+.lr-kpi b { font-size: 24px; font-variant-numeric: tabular-nums; }
+.lr-kpi small { color: var(--ink-3); font-size: 12px; }
+.lr-tbl { margin-top: 10px; width: 100%; }
+.lr-card.done { opacity: .72; }
+.lr-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0; }
+.lr-side { display: grid; gap: 3px; align-content: start; min-width: 0; overflow-wrap: anywhere; }
+.lr-img { width: 72px; height: 72px; object-fit: contain; border-radius: 8px; background: var(--surface-2, #fff); border: 1px solid var(--line); }
+.lr-result { margin-top: 6px; }
+.lr-pick { display: flex; align-items: center; gap: 8px; text-align: left; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; }
+.lr-thumb { width: 36px; height: 36px; object-fit: contain; border-radius: 6px; }
+.lr-steps { display: grid; gap: 8px; padding-left: 18px; }
+@media (max-width: 560px) { .lr-pair { grid-template-columns: 1fr; } .lr-big b { font-size: 38px; } }
+.lr-big.few b { color: var(--amber); }
+.lr-pair.one { grid-template-columns: 1fr; }

@@ -293,6 +293,40 @@ function shop() {
     const k7 = items2.find((c) => c.pid === 7 && c.field === 'sku');
     ok(k7 && k7.to === 'K07012-13' && k7.level === 'high' && (k7.sources || []).length === 1, 'a missing code comes from the research: two shops give the same maker code → sure, both named', JSON.stringify(k7 && [k7.to, k7.level, k7.source.label]));
     ok(!items2.find((c) => c.pid === 6 && c.field === 'sku'), 'a shop\'s own variation number («3498.vs1») is never proposed as our code');
+    // photos (24/11: «a photo of an olive product for a black one»): the listing's photo shows ONE colour
+    {
+      const ev = { how: 'ean', ev: ['ίδιο EAN 5205550001117'] };
+      store.write('market', { 'sf:15': entry(15, [
+        // a listing in several colours: we took the black price from it, its main photo may be the olive one
+        off('m1', Object.assign({ name: 'Pentagon Rush 8', variant: 'Black', img: 'https://m1.example/rush8-main.jpg' }, ev)),
+        off('m2', Object.assign({ name: 'Pentagon Rush 8', variant: 'Black', img: 'https://m2.example/rush8-main.jpg' }, ev)),
+        // a title without colour, matched by words only
+        off('w1', { name: 'Pentagon Rush 8 σακίδιο', how: 'words', ev: ['ίδια μάρκα', 'λέξεις μοντέλου: RUSH'], img: 'https://w1.example/rush8.jpg' }),
+        // our colour in the title, but the FILE is the olive one
+        off('f1', Object.assign({ name: 'Pentagon Rush 8 Black', img: 'https://f1.example/uploads/k16099-olive-1.jpg' }, ev)),
+        off('f2', Object.assign({ name: 'Pentagon Rush 8 Black', img: 'https://f2.example/media/k16099-olive-1.jpg' }, ev)),
+      ]) });
+      fixes.invalidate();
+      const im = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+      ok(!im || !im.to.some((u) => /rush8-main|w1\.example|olive/.test(u)), 'a black product never gets: the main photo of a listing in several colours, the photo of a title without colour matched by words, a file named «olive»', JSON.stringify(im && im.to));
+      store.write('market', { 'sf:15': entry(15, [
+        off('g1', Object.assign({ name: 'Pentagon Rush 8 Black', img: 'https://g1.example/uploads/k16099-01-black.jpg' }, ev)),
+        off('g2', Object.assign({ name: 'PENTAGON RUSH 8 ΜΑΥΡΟ', img: 'https://g2.example/img/k16099-01-black.jpg' }, ev)),
+      ]) });
+      fixes.invalidate();
+      const im2 = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+      ok(im2 && im2.to.some((u) => /k16099-01-black/.test(u)) && im2.level === 'high', 'the same black photo at two shops whose titles say black (same EAN) → proposed, sure', JSON.stringify(im2 && [im2.to, im2.level]));
+      // the supplier's item of ANOTHER colour of the model: its text fits, its photos do not
+      store.write('market', {});
+      const keepEc = store.read('enrich-cache', null);
+      store.write('enrich-cache', { products: { 'sf:15': { at: new Date().toISOString(), src: { kind: 'supplier', label: 'Αντιπρόσωπος · κωδικός', level: 'high' }, data: { name: 'PENTAGON RUSH 8 OLIVE', brand: 'PENTAGON', descHtml: '<p>' + 'Σακίδιο ημέρας 8 λίτρων. '.repeat(8) + '</p>', images: ['https://sup.example/k16099-06-a.jpg', 'https://sup.example/k16099-06-b.jpg'], features: [] } } }, pages: {} });
+      fixes.invalidate();
+      const im3 = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+      ok(!im3 || !im3.to.some((u) => /sup\.example/.test(u)), 'the supplier\'s OLIVE item matched to our BLACK product: no photos from it', JSON.stringify(im3 && im3.to));
+      store.write('enrich-cache', keepEc || { products: {}, pages: {} });
+      ok(fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8 ΜΑΥΡΟ' }, 'https://x/k16099-olive-2_1024x.jpg') && !fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8 ΜΑΥΡΟ' }, 'https://x/k16099-black.jpg') && !fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8' }, 'https://x/olive.jpg'),
+        'a file name that says another colour is never used (our title has no colour: nothing to compare, nothing dropped)');
+    }
     c7.sku = s7sku;
     store.write('market', {}); fixes.invalidate();
     // codes from the internet: shops that show the SAME product, the code sure only when two of them agree

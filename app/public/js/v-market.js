@@ -9,7 +9,7 @@
     hold: ['Σωστή τιμή', 'Μέσα στην αγορά.'],
     nodata: ['Χωρίς στοιχεία', 'Δεν βρέθηκε το ίδιο προϊόν διαθέσιμο αλλού.'],
   };
-  const FLAG = { used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], unknown: ['άγνωστη διαθεσιμότητα', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], family: ['άλλη παραλλαγή', 'warn'], newshop: ['νέο κατάστημα', 'warn'], ignored: ['δεν μετράει', ''] };
+  const FLAG = { doubt: ['θέλει το «ναι» σου (κατάστημα με λάθη)', 'warn'], used: ['μετράει', 'ok'], suspect: ['ύποπτη τιμή', 'crit'], out: ['εξαντλημένο', ''], unknown: ['άγνωστη διαθεσιμότητα', ''], stale: ['παλιά τιμή', ''], high: ['πολύ ακριβό', ''], foreign: ['εξωτερικό', ''], similar: ['παρόμοιο;', 'warn'], family: ['άλλη παραλλαγή', 'warn'], newshop: ['νέο κατάστημα', 'warn'], ignored: ['δεν μετράει', ''] };
   const flagOf = (c) => c.flag || (c.ignored ? 'ignored' : c.match === 'exact' ? (c.used === false ? 'out' : 'used') : c.match === 'family' ? 'family' : 'similar');
   const pct = (v) => (v > 0 ? '+' : '') + Math.round(v * 100) + '%';
   /**

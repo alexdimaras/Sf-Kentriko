@@ -731,7 +731,7 @@ function startSync(sites, full) {
 // ---------- router & shell ----------
 const NAV = [
   ['today', 'Σήμερα', 'today'], ['flow', 'Ροή εργασίας', 'bolt'], ['fixes', 'Διορθώσεις', 'fixes'], ['products', 'Προϊόντα', 'products'], ['checks', 'Έλεγχοι καταλόγου', 'checks'], ['new', 'Νέα προϊόντα', 'new'],
-  ['suppliers', 'Αντιπρόσωποι', 'suppliers'], ['market', 'Τιμές αγοράς', 'market'], ['settings', 'Ρυθμίσεις', 'settings'],
+  ['suppliers', 'Αντιπρόσωποι', 'suppliers'], ['market', 'Τιμές αγοράς', 'market'], ['learn', 'Ακρίβεια & εκμάθηση', 'check'], ['settings', 'Ρυθμίσεις', 'settings'],
 ];
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -750,7 +750,7 @@ const SHORT = { today: 'Σήμερα', flow: 'Ροή', fixes: 'Διορθώσε�
 const GROUPS = [
   ['Σήμερα', ['today']],
   ['Εργασίες & Προϊόντα', ['flow', 'fixes', 'products', 'checks', 'new']],
-  ['Αγορά', ['market', 'suppliers']],
+  ['Αγορά', ['market', 'learn', 'suppliers']],
   ['Σύστημα', ['system', 'settings']],
 ];
 function renderNav(active) {
