@@ -578,6 +578,29 @@ function* quickIndexGen(compId, work) {
 }
 
 /** Best offer of one competitor for one of our products. */
+/**
+ * Our variant among the variants of a competitor's product (its own colours, kept by compcat): by our EAN, else by our
+ * colour. → null (nothing to choose: one colour, or ours has no colour) · { list, price: {p, pm, r, st, s, g, vo} } ·
+ * { none: 'their colours' } (they do not sell our colour)
+ */
+function variantOf(f, c) {
+  const vs = c && c.v;
+  if (!Array.isArray(vs) || vs.length < 2) return null;
+  let list = f.gtin ? vs.filter((v) => v.g && v.g === f.gtin) : [];
+  let by = 'ean';
+  if (!list.length) {
+    if (!f.colors || !f.colors.size) return null;
+    by = 'colour';
+    list = vs.filter((v) => { const cs = colorsOf(tokensOf(v.o)); return cs.size && [...f.colors].every((x) => cs.has(x)); });
+    if (!list.length) return { none: [...new Set(vs.map((v) => [...colorsOf(tokensOf(v.o))].join('+')).filter(Boolean))].slice(0, 4).join(', ') || 'άλλα' };
+  }
+  const avail = list.filter((v) => v.st);
+  const pool = avail.length ? avail : list;
+  const prices = pool.map((v) => v.p).filter((x) => x > 0);
+  const skus = [...new Set(list.map((v) => v.s).filter(Boolean))];
+  const gs = [...new Set(list.map((v) => v.g).filter(Boolean))];
+  return { list, by, price: { p: prices.length ? Math.min(...prices) : c.p, pm: prices.length ? Math.max(...prices) : 0, r: Math.max(0, ...pool.map((v) => v.r || 0)), st: avail.length > 0, s: skus.length === 1 ? skus[0] : c.s, g: gs.length === 1 ? gs[0] : c.g, vo: list.map((v) => v.o).slice(0, 6).join(' · '), vby: by } };
+}
 function bestIn(f, ix, comp, confirmed, ignored) {
   const cand = new Set();
   const add = (k) => { const a = ix.post.get(k); if (a && a.length <= 600) for (const i of a) cand.add(i); };
@@ -600,8 +623,13 @@ function bestIn(f, ix, comp, confirmed, ignored) {
     if (!best || rank > best.rank || (rank === best.rank && c.p < best.c.p)) best = { rank, c, s };
   }
   if (!best) return null;
-  const c = best.c;
-  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, mpn: c.m || '', brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso() };
+  let c = best.c;
+  // their product comes in several colours (kept one by one): OUR colour's price, stock, code and EAN — or, when they do
+  // not have our colour, «another variant» (family), never the price of another colour (spec 2.0, P1)
+  const pick = variantOf(f, c);
+  if (pick && pick.none && best.s.match === 'exact' && !(confirmed && confirmed.has(c.u))) best.s = Object.assign({}, best.s, { match: 'family', why: `έχει άλλα χρώματα (${pick.none}), όχι το δικό μας` });
+  if (pick && pick.list) c = Object.assign({}, c, pick.price);
+  return { shop: comp.name, competitorId: comp.id, name: c.n, sku: c.s, mpn: c.m || '', brand: c.b, url: c.u, price: c.p, priceMax: c.pm > c.p ? c.pm : 0, regular: c.r > c.p ? c.r : 0, inStock: c.st, img: c.i, match: best.s.match, score: best.s.score, why: best.s.why || '', how: best.s.how || '', ev: best.s.ev || [], ean: c.g || '', country: comp.foreign ? 'other' : 'GR', seenAt: c.t || (ix.cat && ix.cat.at) || U.nowIso(), ...(c.vo ? { variant: c.vo, variantBy: c.vby } : {}) };
 }
 
 // ---------- Stats & decision ----------
@@ -1075,7 +1103,7 @@ async function run(targets, job, opts) {
 }
 const PROGRESS = 'market-progress';
 // bump when the rules of «the same product» change: every shop is then compared again once
-const MATCH_VERSION = 7; // 7: the same valid EAN is checked before «another brand» (MIL-TEC / Sturm / Mil Tec) // 6: another colour = the same family, another variant (not counted) // 5: 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
+const MATCH_VERSION = 8; // 8: a competitor's product in several colours (Shopify, kept one by one): OUR colour's price / stock / code, or «another variant» when they lack it // 7: the same valid EAN is checked before «another brand» (MIL-TEC / Sturm / Mil Tec) // 6: another colour = the same family, another variant (not counted) // 5: 5: EANs of their variants count; same model code + another EAN = similar // 4: 4: a product without a brand takes theirs when our title names it // 3: pieces written as PCS / ΤΕΜ / ΤΜΧ are the same word
 
 /** The date on this PC's calendar (not UTC), e.g. 2026-10-29. */
 function localDay(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -1333,7 +1361,7 @@ function setCost(site, id, cost, source, rrp) {
   });
 }
 
-module.exports = { catalogCoverage, manualExpired, MANUAL_DAYS, sameBrand, MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
+module.exports = { variantOf, catalogCoverage, manualExpired, MANUAL_DAYS, sameBrand, MODIFIERS, setQueuedWeb, mergeWeb, WEB_DAYS, LOGIC_VERSION, ACTIONS, costInfo, decision, localDay, setCosts,
   quickCounts, competitors, competitorsView, saveCompetitor, removeCompetitor, detect, detectAll, searchUrlFor, run, dailyDue, addManual, decide, toggleIgnore, recompute, recomputeAsync, overview,
   wantedPages, coloursOf: (name) => colorsOf(tokensOf(name)), bestIn, indexGen, compute, decisions, PROGRESS, MATCH_VERSION, clearIndexes: () => idxCache.clear(),
   resultFor, results, suggest, stats, score, compare, features, candFeatures, codeBase, codeSame, codeClash, gtinOf, imageKey, queriesFor, keyTokens, setCost, floorFor, researchOne, targetsAll, readable,

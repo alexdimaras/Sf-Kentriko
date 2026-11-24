@@ -63,6 +63,16 @@ function fromShopify(p, base) {
   const skus = [...new Set(vs.map((v) => String(v.sku || '').trim()).filter(Boolean))];
   const eans = [...new Set(vs.map((v) => gtinOf(v.barcode)).filter(Boolean))];
   const sku = skus.length <= 1 ? skus[0] || '' : require('./extract').commonCode(skus);
+  // the variants, kept one by one ONLY when they differ in colour (a product in Black / Coyote / Olive): the price, the
+  // stock, the code and the EAN of OUR colour are then taken, never the cheapest of any colour (spec 2.0, P1). Sizes
+  // alone are the same product (ours has the sizes too): not kept — the memory of the small cloud machine is spared.
+  let vlist = null;
+  if (vs.length > 1) {
+    const mk = require('./market');
+    const opt = (v) => U.collapse([v.option1, v.option2, v.option3].filter((x) => x && !/^default title$/i.test(x)).join(' / ') || v.title || '');
+    const cols = new Set(vs.map((v) => [...mk.coloursOf(opt(v))].sort().join('+')).filter(Boolean));
+    if (cols.size >= 2) vlist = vs.slice(0, 40).map((v) => ({ o: opt(v).slice(0, 60), s: String(v.sku || '').trim(), g: gtinOf(v.barcode) || '', p: U.parseNumber(v.price) || 0, r: U.parseNumber(v.compare_at_price) || 0, st: v.available !== false }));
+  }
   return {
     id: p.id,
     n: U.decodeEntities(p.title || ''),
@@ -77,6 +87,7 @@ function fromShopify(p, base) {
     st: avail.length > 0,
     i: img ? img.replace(/(\.[a-z]+)(\?|$)/i, '_200x$1$2') : '',
     c: 'EUR',
+    ...(vlist ? { v: vlist } : {}),
   };
 }
 

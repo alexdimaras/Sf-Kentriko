@@ -109,6 +109,8 @@
           h('td', null, h('div', { class: 'row tight', style: { flexWrap: 'nowrap', minWidth: 0 } }, c.img ? thumb(c.img, 'sm') : null,
             h('div', { style: { minWidth: 0 } }, h('b', null, c.shop), c.manual ? h('span', { class: 'pill' + (c.flag === 'stale' ? ' warn' : ''), style: { marginLeft: '6px' }, title: c.expires === null ? 'Χωρίς λήξη' : 'Μετράει έως ' + new Date(c.expires || (new Date(c.at || 0).getTime() + 14 * 864e5)).toLocaleDateString('el-GR') }, c.flag === 'stale' ? 'χειροκίνητα · έληξε' : c.expires === null ? 'χειροκίνητα · χωρίς λήξη' : 'χειροκίνητα · ως ' + new Date(c.expires || (new Date(c.at || 0).getTime() + 14 * 864e5)).toLocaleDateString('el-GR')) : null,
               h('div', { class: 'faint ell', title: c.name }, c.name), c.why && (f === 'similar' || f === 'family') ? h('div', { class: 'hint', style: { margin: 0 } }, c.why) : null,
+              // (their product in several colours: which of them was counted — ours, by EAN or by colour)
+              c.variant ? h('div', { class: 'hint', style: { margin: 0 }, title: 'Η τιμή και η διαθεσιμότητα είναι αυτής της παραλλαγής τους' }, 'Παραλλαγή: ' + c.variant + (c.variantBy === 'ean' ? ' (ίδιο EAN)' : ' (ίδιο χρώμα)')) : null,
               // why the program says it is the same product (code, EAN, brand, model words, photo)
               c.confirmed ? h('div', { class: 'ev' }, 'ίδιο: το επιβεβαίωσες εσύ') : (c.ev && c.ev.length && f !== 'similar' ? h('div', { class: 'ev', title: 'Με τι αναγνωρίστηκε ως το ίδιο προϊόν' }, c.ev.join(' · ')) : null)))),
           h('td', { class: 'num' }, h('b', null, fmt.money(c.price)), c.prevPrice ? h('div', { class: 'hint', style: { margin: 0 } }, 'πριν ' + fmt.money(c.prevPrice)) : null),

@@ -76,6 +76,25 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
     ok(sm.count === 2 && f.fresh === 'used' && f['no-end'] === 'used' && f.ended === 'stale' && f['old-no-date'] === 'stale' && /έληξε/.test(list[1].note), 'a hand-written price counts until its end (14 days; an older one without a date too), «no end» counts on', JSON.stringify(f));
   }
 
+  {
+    // (spec 2.0, P1) a Shopify product in three colours: the price / stock / code of OUR colour, never the cheapest of any
+    const compcat = require(APP + '/lib/compcat');
+    const sh = compcat.fromShopify({ id: 7, title: 'Mil-Tec Assault Pack Small', vendor: 'Mil-Tec', handle: 'ap', images: [], variants: [
+      { option1: 'Black', sku: '14002002', barcode: '', price: '29.90', available: true },
+      { option1: 'Olive', sku: '14002001', barcode: '', price: '34.90', available: false },
+      { option1: 'Coyote', sku: '14002005', barcode: '', price: '33.90', available: true }] }, 'https://s.example');
+    ok(Array.isArray(sh.v) && sh.v.length === 3 && sh.p === 29.9, 'a product in several colours keeps each colour (price, stock, code); sizes alone are not kept', JSON.stringify(sh.v && sh.v.map((x) => x.o)));
+    const sizesOnly = compcat.fromShopify({ id: 8, title: 'Pentagon Kyler', vendor: 'Pentagon', handle: 'k', images: [], variants: [{ option1: 'S', price: '10', available: true }, { option1: 'M', price: '10', available: true }] }, 'https://s.example');
+    ok(!sizesOnly.v, 'sizes only: one product, nothing kept apart (the memory is spared)');
+    const coy = market.variantOf({ colors: market.coloursOf('COYOTE'), gtin: '' }, sh);
+    ok(coy && coy.price.p === 33.9 && coy.price.st === true && coy.price.s === '14002005', 'our COYOTE: 33,90 € in stock, code 14002005 — not the 29,90 € of the black one', JSON.stringify(coy && coy.price));
+    const oli = market.variantOf({ colors: market.coloursOf('OLIVE'), gtin: '' }, sh);
+    ok(oli && oli.price.st === false && oli.price.p === 34.9, 'our OLIVE: sold out there (the other colours in stock do not make it «in stock»)', JSON.stringify(oli && oli.price));
+    const red = market.variantOf({ colors: market.coloursOf('ΚΟΚΚΙΝΟ'), gtin: '' }, sh);
+    ok(red && red.none, 'a colour they do not have → «another variant», not a price for ours', JSON.stringify(red));
+    ok(market.variantOf({ colors: new Set(), gtin: '' }, sh) === null, 'our product without a colour: the product as a whole (as before)');
+  }
+
   section('Φωτογραφίες: μόνο της δικής μας παραλλαγής');
   const OL = market.coloursOf(olive.name);
   const pageMany = { name: 'Mil-Tec Assault Pack Small', images: ['https://s.gr/i/olive-front.jpg', 'https://s.gr/i/black-front.jpg', 'https://s.gr/i/coyote.jpg'], variants: [
