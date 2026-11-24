@@ -321,6 +321,13 @@ function page(o) {
   await new Promise((x) => shop.listen(0, '0.0.0.0', x));
   const base = 'http://127.0.0.1:' + shop.address().port;
   process.env.SFK_SEARCH_DDG = base + '/ddg'; process.env.SFK_SEARCH_BING = base + '/bing'; process.env.SFK_SEARCH_YAHOO = base + '/bing';
+  {
+    // (seen 24/11: «Bing ok 218» and nothing found — an answer 200 that is not a page of results is not «0 results»)
+    const sfw = require(APP + '/lib/supplierfind');
+    const r = await sfw.searchWide('nitecore mh40', { blocked: new Set(), used: new Set() });
+    const st = Object.fromEntries((r.engines || []).map((e) => [e.id, e.state]));
+    ok(st.ddg === 'ok' && st.bing === 'ok' && st.yahoo === 'unrecognized', 'search engines: results · its own «no results» page (ok, 0) · a page that is not one of results → «unrecognized», not ok', JSON.stringify(r.engines));
+  }
   W('web-codes', {}); store.forget('web-codes');
   // the computer was last seen long ago (offline)
   const wo = await coord.workersView();

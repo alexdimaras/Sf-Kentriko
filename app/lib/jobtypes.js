@@ -99,7 +99,7 @@ function registerAI() {
       const out = { at: new Date().toISOString(), worker: job.workerId === 'cloud' ? 'cloud' : String(job.workerName || '').slice(0, 60), summary: String(r.summary || '').slice(0, 600),
         stats: { products: num(st.products), found: num(st.found), sku: num(st.sku), ean: num(st.ean), price: num(st.price), images: num(st.images), family: num(st.family), wrongColour: num(st.wrongColour), ms: num(st.ms),
           statuses: Object.fromEntries(Object.entries(st.statuses || {}).slice(0, 20).map(([k, v]) => [String(k).slice(0, 20), num(v)])),
-          engines: Object.fromEntries(Object.entries(st.engines || {}).slice(0, 10).map(([k, v]) => [String(k).slice(0, 20), { ok: num(v && v.ok), failed: num(v && v.failed), blocked: num(v && v.blocked) }])),
+          engines: Object.fromEntries(Object.entries(st.engines || {}).slice(0, 10).map(([k, v]) => [String(k).slice(0, 20), { ok: num(v && v.ok), failed: num(v && v.failed), blocked: num(v && v.blocked), results: num(v && v.results), odd: num(v && v.odd) }])),
           rows: (Array.isArray(st.rows) ? st.rows : []).slice(0, 100).map((x) => ({ name: String(x.name || '').slice(0, 100), status: String(x.status || '').slice(0, 20), queries: num(x.queries), found: (Array.isArray(x.found) ? x.found : []).slice(0, 8).map((h) => String(h).slice(0, 80)), family: num(x.family) })) } };
       store.write('research-measure', out);
       try { require('./events').record({ severity: 'info', service: 'search', code: 'SEARCH_QUALITY', message: (out.worker ? out.worker + ': ' : '') + out.summary }); } catch (_) { /* fine */ }

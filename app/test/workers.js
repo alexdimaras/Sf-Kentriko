@@ -57,7 +57,8 @@ function web() {
     if (req.url.startsWith('/ddg')) { state.searches++; res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(`<html><body><div class="result"><a class="result__a" href="http://127.0.0.2:${port}/shop1/glove">a</a></div><div class="result"><a class="result__a" href="http://localhost:${port}/shop2/glove">b</a></div></body></html>`); }
     if (req.url === '/ollama/api/tags') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] })); }
     if (req.url === '/ollama/api/generate') { let b = ''; req.on('data', (c) => { b += c; }); return req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ response: 'Απάντηση: ' + JSON.parse(b).model })); }); }
-    if (req.url.startsWith('/bing')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body></body></html>'); }
+    // (an engine that answers «no results» with its own page of results: Bing's list, Yahoo's «web» part — an empty page would be «unrecognized»)
+    if (req.url.startsWith('/bing')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end('<html><body><ol id="b_results"></ol><div id="web"></div></body></html>'); }
     if (req.url.startsWith('/shop1/') || req.url.startsWith('/shop2/')) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(page(req.url.startsWith('/shop1/') ? 1 : 2).replace(/PORT/g, port)); }
     res.writeHead(404); res.end();
   });
@@ -76,7 +77,7 @@ function web() {
   const port = 19600 + Math.floor(Math.random() * 300);
   const base = `http://127.0.0.1:${port}`;
   const env = Object.assign({}, process.env, { SFK_MODE: 'server', SFK_PORT: String(port), SFK_DATA: DATA, APPDATA: path.join(tmp, 'cfg'), SFK_NO_AUTOSYNC: '1', SFK_ADMIN_USER: 'admin', SFK_ADMIN_PASSWORD: 'Test-pass-123456', SFK_SECRET_KEY: 'k'.repeat(40),
-    SFK_LEASE_MS: '4000', SFK_FEED_MS: '1500', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,127.0.0.2,localhost', no_proxy: '127.0.0.1,127.0.0.2,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
+    SFK_LEASE_MS: '4000', SFK_FEED_MS: '1500', SFK_WEB_FIXES_MS: '3000', SFK_UI_GRACE_MS: '1500', SFK_OFFLINE_MS: '6000', SFK_CLOUD_AFTER_MS: '600000', NO_PROXY: '127.0.0.1,127.0.0.2,localhost', no_proxy: '127.0.0.1,127.0.0.2,localhost', SFK_GITHUB_DATA: '', SFK_GITHUB_TOKEN: '' });
   if (process.env.COORD_PG) {
     // an empty database, as on the first start with Supabase (the data of this test then comes from its folder)
     env.SFK_DATABASE_URL = process.env.COORD_PG;
@@ -160,6 +161,35 @@ function web() {
       ok(me.id && /(ο υπολογιστής|το cloud)/i.test(me.who || ''), 'the measurement starts anyway and says who does it and why (with no current computer on: the cloud, with the reason)', me.who);
       await post('/api/jobs/cancel', { id: me.id });
       await post('/api/workers/revoke', { id: pr2.id });
+    }
+    // (seen 24/11: «only while the program is open» + a screen left idle → the computer cut its 12 jobs in the middle)
+    {
+      const REV = require(APP + '/lib/workerrev');
+      const pc = await post('/api/workers/pair');
+      const CAPS = { rev: REV, types: ['research.measure'], ramMB: 8000, slots: 2 };
+      const pa = await (await fetch(base + '/api/worker/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: pc.code, name: 'PC-APP', caps: CAPS }) })).json();
+      const WH = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + pa.token };
+      const wpost = async (p, b) => (await fetch(base + p, { method: 'POST', headers: WH, body: JSON.stringify(b || {}) })).json();
+      await wpost('/api/worker/hello', { caps: CAPS });
+      await post('/api/workers/mode', { id: pa.id, mode: 'app' });
+      const me = await post('/api/system/measure', { n: 5 });
+      const cl = await wpost('/api/worker/claim', { max: 1, types: ['research.measure'] });
+      const mj = (cl.jobs || []).find((x) => x.id === me.id);
+      ok(mj && mj.attempt === 1, 'with the program open, the computer «only while the program is open» takes the job', JSON.stringify(cl));
+      await sleep(Number(env.SFK_UI_GRACE_MS) + 600); // no screen asks anything now (the program looks closed)
+      const h1 = await wpost('/api/worker/hello', { caps: CAPS });
+      const c2 = await wpost('/api/worker/claim', { max: 1, types: ['research.measure'] });
+      ok(h1.active === true && h1.finishing === 1 && c2.paused, 'the program closed: no new work, but the job it holds is NOT cut — «active» until it ends (also an older worker goes on)', JSON.stringify([h1.active, h1.finishing, c2]));
+      const stale = await wpost('/api/worker/heartbeat', { id: mj.id, attempt: mj.attempt + 1 });
+      ok(stale.gone, 'a «still working» of another try is not taken');
+      const rel = await wpost('/api/worker/release', { id: mj.id, attempt: mj.attempt, why: 'ο υπολογιστής ενημερώνεται' });
+      const jr = (await get('/api/jobs')).find((x) => x.id === me.id);
+      ok(rel.ok && jr && jr.status === 'queued', 'a computer that has to stop gives the job back at once (to the queue, the try not counted)', JSON.stringify([rel, jr && jr.status]));
+      await sleep(Number(env.SFK_UI_GRACE_MS) + 600); // (the look at the jobs above was a screen asking: wait again)
+      const h2 = await wpost('/api/worker/hello', { caps: CAPS });
+      ok(h2.active === false, 'holding nothing and the program closed: the computer rests', JSON.stringify(h2));
+      await post('/api/jobs/cancel', { id: me.id });
+      await post('/api/workers/revoke', { id: pa.id });
     }
     const dg = await get('/api/diagnostics?severity=info');
     ok(Array.isArray(dg.events) && dg.summary && typeof dg.summary.by === 'object', 'the log of events is read in one place (Ρυθμίσεις → Σύστημα → Συμβάντα)');

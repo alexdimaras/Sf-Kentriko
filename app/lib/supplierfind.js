@@ -139,9 +139,11 @@ function parseYahoo(html) {
   return out;
 }
 const ENGINES = [
-  { id: 'ddg', name: 'DuckDuckGo', url: (q) => (process.env.SFK_SEARCH_DDG || 'https://html.duckduckgo.com/html/') + '?q=' + encodeURIComponent(q) + '&kl=gr-el', parse: parseDdg, host: 'duckduckgo.com' },
-  { id: 'bing', name: 'Bing', url: (q) => (process.env.SFK_SEARCH_BING || 'https://www.bing.com/search') + '?q=' + encodeURIComponent(q) + '&setlang=el&cc=GR', parse: parseBing, host: 'bing.com' },
-  { id: 'yahoo', name: 'Yahoo', url: (q) => (process.env.SFK_SEARCH_YAHOO || 'https://search.yahoo.com/search') + '?p=' + encodeURIComponent(q) + '&ei=UTF-8', parse: parseYahoo, host: 'yahoo.com', wideOnly: true },
+  // known: the page IS a page of results (its list of results, or its own «no results») — an answer 200 without it
+  // (a consent page, a page for robots, a changed layout) is not «0 results» (seen 24/11: «Bing ok 218» with nothing found)
+  { id: 'ddg', name: 'DuckDuckGo', url: (q) => (process.env.SFK_SEARCH_DDG || 'https://html.duckduckgo.com/html/') + '?q=' + encodeURIComponent(q) + '&kl=gr-el', parse: parseDdg, host: 'duckduckgo.com', known: /result__a|no-results|class="[^"]*\bresults\b/ },
+  { id: 'bing', name: 'Bing', url: (q) => (process.env.SFK_SEARCH_BING || 'https://www.bing.com/search') + '?q=' + encodeURIComponent(q) + '&setlang=el&cc=GR', parse: parseBing, host: 'bing.com', known: /id="b_results"|class="b_no|b_algo/ },
+  { id: 'yahoo', name: 'Yahoo', url: (q) => (process.env.SFK_SEARCH_YAHOO || 'https://search.yahoo.com/search') + '?p=' + encodeURIComponent(q) + '&ei=UTF-8', parse: parseYahoo, host: 'yahoo.com', wideOnly: true, known: /RU=|id="web"|compText|[Nn]o results for/ },
 ];
 // Optional search APIs (the user's choice, with the user's key): never required — without them the engines above are
 // used. SearXNG is free (a person's own instance, also on the shop's PC); Brave and Google Programmable Search have free
@@ -228,6 +230,7 @@ async function searchWide(q, state) {
         const r = await http.get(eng.url(q), { retries: 0, timeout: 20000, signal: state.signal });
         if (r.status === 202) throw new Blocked(eng.name);
         res = eng.parse(r.text);
+        if (!res.length && eng.known && !eng.known.test(String(r.text || ''))) { engines.push({ id: eng.id, state: 'unrecognized', error: `απάντηση ${r.status} χωρίς σελίδα αποτελεσμάτων (${String(r.text || '').length} bytes)` }); return; }
       }
       any = true;
       state.used.add(eng.name);

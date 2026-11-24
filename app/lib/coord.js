@@ -110,7 +110,7 @@ async function claim(workerId, max, types) {
   for (let i = 0; i < room; i++) {
     const j = await backend.takeNext((x) => fits(w, x) && (!only || only.has(x.type)) && (!x.notBefore || x.notBefore <= now()), (x) => {
       x.status = 'assigned'; x.workerId = w.id; x.workerName = w.name; x.attempts++; x.leaseUntil = now() + LEASE_MS;
-      x.startedAt = iso(); x.progress = { done: 0, total: 0, msg: 'Ξεκινάει στο ' + w.name };
+      x.startedAt = iso(); x.beatAt = now(); x.progress = { done: 0, total: 0, msg: 'Ξεκινάει στο ' + w.name };
     });
     if (!j) break;
     const h = handler(j.type);
@@ -121,11 +121,14 @@ async function claim(workerId, max, types) {
 }
 
 /** «Still working»: the lease is extended, the progress shown. → { cancel } (the person stopped it: end now). */
-async function heartbeat(workerId, jobId, progress, logLines, partial) {
+// (attempt fencing: a try of a job that was given out again — even to the same computer — is not the job any more)
+const staleTry = (j, attempt) => attempt != null && attempt !== '' && Number(attempt) !== Number(j.attempts);
+async function heartbeat(workerId, jobId, progress, logLines, partial, attempt) {
   const j = await backend.job(jobId);
-  if (!j || j.workerId !== workerId || !LIVE.has(j.status)) return { cancel: true, gone: true };
+  if (!j || j.workerId !== workerId || !LIVE.has(j.status) || staleTry(j, attempt)) return { cancel: true, gone: true };
   j.status = 'running';
   j.leaseUntil = now() + LEASE_MS;
+  j.beatAt = now();
   if (progress) j.progress = { done: Number(progress.done) || 0, total: Number(progress.total) || 0, msg: String(progress.msg || '').slice(0, 300) };
   if (Array.isArray(logLines) && logLines.length) { j.log = (j.log || []).concat(logLines.map((l) => String(l).slice(0, 300))).slice(-100); }
   // a part of the result, handed in while the work goes on: taken in now (a computer that goes off loses nothing)
@@ -151,11 +154,11 @@ async function takePartial(j, partial) {
  * The result of a job. Taken in once: a second delivery of the same result (same idempotency key) is answered «ok»
  * without doing anything; a result for a job that is no longer this worker's is refused.
  */
-async function complete(workerId, jobId, idemKey, result) {
+async function complete(workerId, jobId, idemKey, result, attempt) {
   const j = await backend.job(jobId);
   if (!j) return { ok: false, error: 'Η εργασία δεν υπάρχει.' };
   if (j.status === 'completed') return j.idem && j.idem === idemKey ? { ok: true, again: true } : { ok: false, error: 'Η εργασία έχει ήδη ολοκληρωθεί από άλλον.' };
-  if (j.workerId !== workerId || !LIVE.has(j.status)) return { ok: false, error: 'Η εργασία δεν είναι πια δική σου (έληξε ο χρόνος ή σταμάτησε).' };
+  if (j.workerId !== workerId || !LIVE.has(j.status) || staleTry(j, attempt)) return { ok: false, error: 'Η εργασία δεν είναι πια δική σου (έληξε ο χρόνος ή σταμάτησε).' };
   const h = handler(j.type);
   let summary = null;
   try { summary = h.apply ? await h.apply(j, result) : result; } catch (e) {
@@ -179,13 +182,28 @@ async function finish(j, status) {
 }
 
 /** The worker could not do it. Retryable errors go back to the queue (a little later), up to maxAttempts. */
-async function fail(workerId, jobId, error, retryable) {
+async function fail(workerId, jobId, error, retryable, attempt) {
   const j = await backend.job(jobId);
-  if (!j || j.workerId !== workerId || !LIVE.has(j.status)) return { ok: false };
+  if (!j || j.workerId !== workerId || !LIVE.has(j.status) || staleTry(j, attempt)) return { ok: false };
   j.error = String(error || 'Άγνωστο σφάλμα').slice(0, 500);
   if (j.cancel) return finish(j, 'cancelled');
   if (retryable !== false && j.attempts < j.maxAttempts) return requeue(j, 30000 * j.attempts);
   return finish(j, 'failed');
+}
+/**
+ * The computer gives a job back (it updates itself, a person switched it off, it closes): to the queue at once and the
+ * try is not counted — up to 5 times for one job (a computer that always gives it back does not hold it for ever).
+ */
+async function release(workerId, jobId, attempt, why) {
+  const j = await backend.job(jobId);
+  if (!j || j.workerId !== workerId || !LIVE.has(j.status) || staleTry(j, attempt)) return { ok: false };
+  if (j.cancel) return finish(j, 'cancelled');
+  j.releases = (j.releases || 0) + 1;
+  if (j.releases <= 5) j.attempts = Math.max(0, (j.attempts || 1) - 1);
+  j.error = String(why || 'Ο υπολογιστής την έδωσε πίσω.').slice(0, 200);
+  ev({ severity: 'info', service: 'queue', code: 'JOB_RELEASED', message: `${j.label || j.type}: ${j.workerName || workerId} την έδωσε πίσω (${j.error}) — ξανά στη σειρά`, jobId: j.id });
+  if (j.attempts >= j.maxAttempts) return finish(j, 'failed');
+  return requeue(j, 0);
 }
 async function requeue(j, delayMs) {
   j.status = 'queued'; j.workerId = ''; j.leaseUntil = 0; j.notBefore = now() + (delayMs || 0);
@@ -206,16 +224,39 @@ async function cancel(jobId) {
   return view(j);
 }
 
+/**
+ * Is this job still worked on, by what its computer says (the jobs of its runners, in its load report every 3 s)?
+ * Set by the program; lib/coord knows no load reports. → true | false | null (nothing known: the lease decides).
+ */
+let aliveCheck = null;
+function setAliveCheck(fn) { aliveCheck = typeof fn === 'function' ? fn : null; }
+// a computer that says its runner still works on the job, while its «still working» does not arrive (a slow answer of
+// the cloud, a request that hangs): the job waits up to 10 minutes since its last «still working», not 90 seconds
+const ALIVE_GRACE_MS = Number(process.env.SFK_ALIVE_GRACE_MS) || 10 * 60000;
+let lastSweep = 0;
 /** Every few seconds: leases that ended go back to the queue; workers not heard of are offline. */
 async function sweep() {
   const t = now();
+  // the program itself could not run for a while (a small cloud machine busy, a restart): the «still working» of the
+  // computers waited in line too — the leases that ended meanwhile get one more lease before they are taken away
+  const SWEEP_GAP = Number(process.env.SFK_SWEEP_GAP_MS) || 45000;
+  // (the real clock of this machine: how long the program itself did not run — not the time of the queue)
+  const wall = Number(process.hrtime.bigint() / 1000000n); // (monotonic: a changed clock does not count)
+  const stalled = !!lastSweep && wall - lastSweep > SWEEP_GAP;
+  lastSweep = wall;
   for (const j of await backend.live()) {
     // work the program queued by itself that nobody could take for days (all computers off): it ends, said why;
     // the program queues what is still needed anew (a person's request never expires)
     const h = handler(j.type);
     if (j.status === 'queued' && j.auto && h && h.expireMs && t - new Date(j.createdAt).getTime() > h.expireMs) { j.error = 'Κανείς δεν την πήρε για μέρες (υπολογιστές κλειστοί): μπαίνει ξανά στη σειρά όταν χρειαστεί.'; await finish(j, 'cancelled'); continue; }
     if (j.status === 'queued' || !j.leaseUntil || j.leaseUntil > t) continue;
-    j.error = `Ο υπολογιστής «${j.workerName || j.workerId}» σταμάτησε να απαντά.`;
+    let still = null;
+    if (j.workerId !== 'cloud' && !j.cancel) {
+      try { still = aliveCheck ? aliveCheck(j) : null; } catch (_) { still = null; }
+      if (stalled || (still === true && t - (j.beatAt || 0) < ALIVE_GRACE_MS)) { j.leaseUntil = t + LEASE_MS; await backend.save(j, { light: true }); continue; }
+    }
+    // (the computer answers and says none of its runners has this job: said so — not «stopped answering»)
+    j.error = still === false ? `Ο υπολογιστής «${j.workerName || j.workerId}» απαντά, αλλά κανένας εργάτης του δεν δουλεύει πια αυτή την εργασία.` : `Ο υπολογιστής «${j.workerName || j.workerId}» σταμάτησε να απαντά.`;
     ev({ severity: 'warn', service: 'queue', code: 'LEASE_EXPIRED', message: `${j.label || j.type}: ${j.error} — ${j.cancel ? 'ακυρώνεται' : j.attempts < j.maxAttempts ? 'ξανά στη σειρά' : 'τέλος προσπαθειών'}`, jobId: j.id });
     if (j.cancel) await finish(j, 'cancelled');
     else if (j.attempts < j.maxAttempts) await requeue(j, 0);
@@ -289,6 +330,9 @@ async function setMode(id, mode) {
   if (!w || w.revoked) return false;
   w.mode = ['always', 'app', 'off'].includes(mode) ? mode : 'always';
   await backend.saveWorker(w);
+  // switched off by a person: what it was doing goes back to the queue now (another computer or the cloud takes it),
+  // without using up a try; its runners learn it at their next «still working» and stop
+  if (w.mode === 'off') for (const j of await backend.byWorker(id)) if (!QUICK.has(j.type)) await release(id, j.id, null, 'Ο υπολογιστής σταμάτησε από τις Ρυθμίσεις.');
   changed();
   return true;
 }
@@ -399,6 +443,8 @@ async function job(id) { return view(await backend.job(id)); }
 /** The job itself (the server checks with it that a computer only fetches data for its own job). */
 async function rawJob(id) { return backend ? backend.job(id) : null; }
 /** The waiting / running jobs of one type, as they are (with their payload): for whoever keeps the queue fed. */
+/** How many jobs (not the quick questions to the AI) a computer holds now — it finishes them before it rests. */
+async function heldBy(workerId) { return (await backend.byWorker(workerId)).filter((j) => !QUICK.has(j.type) && (j.status === 'assigned' || j.status === 'running') && !j.cancel).length; }
 async function liveOf(type) { return (await backend.live()).filter((j) => j.type === type); }
 async function live() { return (await backend.live()).sort(order).map(view); }
 async function recent(n) { return (await backend.recent(n || 20)).map(view); }
@@ -426,4 +472,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { heldBy, release, setAliveCheck, healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };

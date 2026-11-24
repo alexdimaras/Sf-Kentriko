@@ -61,7 +61,8 @@ function bundle(d) {
   if (!workers.length) lines.push('- κανένας συνδεδεμένος');
   for (const w of workers) lines.push(`- ${w.name}: ${w.online ? 'online' : 'offline'} · mode ${w.mode} · προφίλ ${w.perf} · rev ${w.rev || '—'}${w.rev && w.rev < d.workerRev ? ' (ΠΑΛΙΑ)' : ''} · Ollama ${w.ollama ? (w.ollama.ok ? 'ok ' + w.ollama.models.join(', ') : 'όχι: ' + L(w.ollama.error)) : '—'} · εργασίες ${w.jobs}`);
   lines.push('');
-  if (d.queue) lines.push('## Ουρά', `- σε αναμονή ${d.queue.queued} · τρέχουν ${d.queue.running} · κολλημένες ${d.queue.stuck} · >2 μέρες ${d.queue.old} · αποτυχίες 24ώρου ${d.queue.failed}`, '');
+  // (the moment of this pack: the health line above was measured at its own time — the two can differ, said so)
+  if (d.queue) lines.push('## Ουρά (τώρα, ' + new Date(d.made || Date.now()).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ')', `- σε αναμονή ${d.queue.queued} · τρέχουν ${d.queue.running} · κολλημένες ${d.queue.stuck} · >2 μέρες ${d.queue.old} · αποτυχίες 24ώρου ${d.queue.failed}`, '');
   if (json.failedJobs.length) { lines.push('## Τελευταίες αποτυχημένες εργασίες'); for (const j of json.failedJobs) lines.push(`- ${j.at || ''} ${j.type} «${L(j.label)}»: ${L(j.error)} (προσπάθειες ${j.attempts})`); lines.push(''); }
   lines.push('## Συμβάντα (προσοχή / σφάλματα, νεότερα πρώτα)');
   if (!ev.length) lines.push('- κανένα');

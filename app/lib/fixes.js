@@ -389,6 +389,19 @@ let ctx = null;       // what the proposals of one product need (kept to refresh
 let memo = null;      // the proposals with the decisions laid over them
 function setLazy(on, fn) { lazy = !!on; onDirty = fn || null; }
 function invalidate() { dirty = true; ctx = null; if (onDirty) onDirty('fixes'); }
+/**
+ * The same, at most once every `ms` (the research on the internet hands in a few products every few seconds, from
+ * 12 runners at once: on the small cloud machine each rebuild of the proposals takes ~90 s — seen 24/11 on /ping as
+ * «Έτοιμες διορθώσεις…» without end, the program slow for everyone). Not in the background engine: at once.
+ */
+let soonTimer = null;
+function invalidateSoon(ms) {
+  if (!lazy || !(ms > 0)) return invalidate();
+  dirty = true;
+  if (soonTimer) return;
+  soonTimer = setTimeout(() => { soonTimer = null; invalidate(); }, ms);
+  if (soonTimer.unref) soonTimer.unref();
+}
 function isDirty() { return dirty || !prop; }
 
 /**
@@ -1155,4 +1168,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

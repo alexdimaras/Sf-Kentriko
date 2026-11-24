@@ -36,7 +36,7 @@ async function run(n, opts) {
     try { r = await cf.lookUp(it, io); } catch (e) { log(`  ✗ ${p.name}: ${e.message}`); M.statuses.error = (M.statuses.error || 0) + 1; continue; }
     M.products++; M.ms += Date.now() - t0;
     M.statuses[r.status] = (M.statuses[r.status] || 0) + 1;
-    for (const [id, e] of Object.entries(r.sum.engines || {})) { const x = M.engines[id] || (M.engines[id] = { ok: 0, failed: 0, blocked: 0 }); x.ok += e.ok; x.failed += e.failed; x.blocked += e.blocked; }
+    for (const [id, e] of Object.entries(r.sum.engines || {})) { const x = M.engines[id] || (M.engines[id] = { ok: 0, failed: 0, blocked: 0, results: 0, odd: 0 }); x.ok += e.ok; x.failed += e.failed; x.blocked += e.blocked; x.results += e.results || 0; x.odd += e.odd || 0; }
     if (r.hits.length) M.found++;
     if (r.hits.some((h) => h.code)) M.sku++;
     if (r.hits.some((h) => market.gtinOf(h.ean))) M.ean++;
@@ -49,7 +49,7 @@ async function run(n, opts) {
     log(`  ${r.hits.length ? '✓' : '·'} ${p.name.slice(0, 60)} — ${r.status} · ${r.queries} αναζητ. · ίδιο σε: ${r.hits.map((h) => h.host).join(', ') || '—'}`);
   }
   const pc = (x) => (M.products ? Math.round((100 * x) / M.products) : 0) + '%';
-  const summary = `Μέτρηση έρευνας (${M.products} προϊόντα, ${Math.round(M.ms / Math.max(1, M.products) / 1000)}″/προϊόν): βρέθηκε το ίδιο ${pc(M.found)} · κωδικός ${pc(M.sku)} · EAN ${pc(M.ean)} · τιμή διαθέσιμου ${pc(M.price)} · φωτο ${pc(M.images)} · λάθος χρώμα ${M.wrongColour} · καταστάσεις ${JSON.stringify(M.statuses)} · μηχανές ${Object.entries(M.engines).map(([k2, e]) => `${k2} ok ${e.ok}/σφάλμα ${e.failed}/παύση ${e.blocked}`).join(', ')}`;
+  const summary = `Μέτρηση έρευνας (${M.products} προϊόντα, ${Math.round(M.ms / Math.max(1, M.products) / 1000)}″/προϊόν): βρέθηκε το ίδιο ${pc(M.found)} · κωδικός ${pc(M.sku)} · EAN ${pc(M.ean)} · τιμή διαθέσιμου ${pc(M.price)} · φωτο ${pc(M.images)} · λάθος χρώμα ${M.wrongColour} · καταστάσεις ${JSON.stringify(M.statuses)} · μηχανές ${Object.entries(M.engines).map(([k2, e]) => `${k2} ok ${e.ok} (αποτελέσματα ${e.results})/σφάλμα ${e.failed}${e.odd ? ' (άγνωστη σελίδα ' + e.odd + ')' : ''}/παύση ${e.blocked}`).join(', ')}`;
   return { stats: M, summary };
 }
 

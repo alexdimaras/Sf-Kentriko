@@ -842,6 +842,8 @@ function cleanLoad(l) {
     at: Date.now(), cpu: lnum(l.cpu, 100), ram: lnum(l.ram, 100), ramTotalMB: lnum(l.ramTotalMB, 1e7), procMB: lnum(l.procMB, 1e6),
     runners: lnum(l.runners, 64), slots: lnum(l.slots, 64), busy: lnum(l.busy, 64), battery: !!l.battery,
     jobs: (Array.isArray(l.jobs) ? l.jobs : []).slice(0, 16).map((x) => String(x || '').slice(0, 80)),
+    // the jobs its runners hold now, with the try (a worker from 2026-11-24 on): the queue tells a slow «still working» from a lost job
+    ...(Array.isArray(l.held) ? { held: l.held.slice(0, 33).filter((x) => x && typeof x === 'object').map((x) => ({ id: String(x.id || '').slice(0, 40), attempt: Number(x.attempt) || 0 })) } : {}),
     perHour: { products: lnum(ph.products, 1e6), pages: lnum(ph.pages, 1e6), searches: lnum(ph.searches, 1e6), jobs: lnum(ph.jobs, 1e6) },
     engines: { ddg: eng.ddg === 'paused' ? 'paused' : 'ok', bing: eng.bing === 'paused' ? 'paused' : 'ok', yahoo: eng.yahoo === 'paused' ? 'paused' : 'ok' }, dormant: !!l.dormant,
     ...(l.perf && typeof l.perf === 'object' ? { perf: { profile: ['gentle', 'normal', 'boost'].includes(l.perf.profile) ? l.perf.profile : 'normal', used: ['gentle', 'normal', 'boost'].includes(l.perf.used) ? l.perf.used : 'normal', label: String(l.perf.label || '').slice(0, 20), slots: lnum(l.perf.slots, 64), max: lnum(l.perf.max, 64), pages: lnum(l.perf.pages, 10), domainGap: lnum(l.perf.domainGap, 60000), down: !!l.perf.down, reason: String(l.perf.reason || '').slice(0, 160) } } : {}),
@@ -910,8 +912,14 @@ async function handleWorker(req, res, url, q, key0) {
       const sent = updateSent.get(w.id);
       if (sent && rv && rv <= sent.from && Date.now() - sent.at > 3 * 60000 && !sent.told) { sent.told = true; events.record({ severity: 'warn', service: 'worker', code: 'WORKER_UPDATE_NOT_APPLIED', message: `${w.name}: κατέβασε την ενημέρωση αλλά τρέχει ακόμα την ${rv} — δεν μπόρεσε να γράψει τα αρχεία ή δεν ξεκίνησε ξανά. Λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά.` }); }
       if (sent && rv && rv > sent.from) { events.record({ severity: 'info', service: 'worker', code: 'WORKER_UPDATED', message: `${w.name}: ενημερώθηκε ${sent.from} → ${rv}` }); updateSent.delete(w.id); }
-      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000 && !(staleTold.get(w.id) > Date.now() - 3600e3)) staleTold.set(w.id, Date.now()) && events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — η αυτόματη ενημέρωση δεν πέρασε· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
-      await coord.hello(w.id, b.caps); return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w), rev: WORKER_REV }); }
+      if (rv && rv < WORKER_REV) { const t = staleSince.get(w.id) || Date.now(); staleSince.set(w.id, t); if (Date.now() - t > 20 * 60000 && !(staleTold.get(w.id) > Date.now() - 3600e3)) staleTold.set(w.id, Date.now()) && events.record({ severity: 'warn', service: 'worker', code: 'WORKER_NOT_UPDATING', message: `${w.name}: μένει στην έκδοση ${rv} (τρέχουσα ${WORKER_REV}) — ${sent ? 'κατέβασε την ενημέρωση ' + new Date(sent.at).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ' αλλά δεν την εφάρμοσε' : 'δεν ζήτησε καν την ενημέρωση από τότε που ξεκίνησε το cloud (' + new Date(STARTED_AT).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + '): ο worker του δοκιμάζει ξανά μόνο κάθε 6 ώρες μετά από αποτυχία'}· λύση: «Αρχείο εγκατάστασης υπολογιστή» μία φορά` }); } else staleSince.delete(w.id);
+      await coord.hello(w.id, b.caps);
+      // «active» to the computer: it takes new work only when it should (claim), but a job it already holds is never cut
+      // in the middle — its worker (also an older one, which stops all its runners at once when told «not active») goes on
+      // until the job ends, then rests (seen 24/11: jobs cut when a screen stayed idle, retried, then failed)
+      // (only «with the program open»: a computer a person switched off gives its jobs back at once — coord.setMode)
+      const holds = w.mode === 'app' && !workerActive(w) ? await coord.heldBy(w.id) : 0;
+      return send(res, 200, { ok: true, version: VERSION, name: w.name, mode: w.mode || 'off', perf: w.perf || 'normal', active: workerActive(w) || holds > 0, finishing: holds, rev: WORKER_REV }); }
     // what went wrong on a computer, into the program's log (said with the computer's name; never trusted as more than text)
     if (key0 === 'POST /api/worker/event') {
       const sv = ['worker', 'search', 'ai'].includes(b.service) ? b.service : 'worker';
@@ -921,9 +929,14 @@ async function handleWorker(req, res, url, q, key0) {
     if (key0 === 'POST /api/worker/load') { workerLoad.set(w.id, cleanLoad(b.load)); return send(res, 200, { ok: true }); }
     // a question to its AI is answered whatever the mode; other work only when it is on
     if (key0 === 'POST /api/worker/claim') { const quick = Array.isArray(b.types) && b.types.length === 1 && b.types[0] === 'ai.call'; if (!quick && !workerActive(w)) return send(res, 200, { jobs: [], paused: true, mode: w.mode || 'off' }); return send(res, 200, { jobs: await coord.claim(w.id, b.max, b.types) }); }
-    if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log, b.partial));
-    if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result)); } finally { done(); } }
-    if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false));
+    // (attempt: which try of the job this computer is doing — an older try that wakes up late changes nothing; older
+    // workers send none and are taken as before)
+    if (key0 === 'POST /api/worker/heartbeat') return send(res, 200, await coord.heartbeat(w.id, String(b.id || ''), b.progress, b.log, b.partial, b.attempt));
+    if (key0 === 'POST /api/worker/complete') { const done = bg.request(); try { return send(res, 200, await coord.complete(w.id, String(b.id || ''), String(b.idem || ''), b.result, b.attempt)); } finally { done(); } }
+    if (key0 === 'POST /api/worker/fail') return send(res, 200, await coord.fail(w.id, String(b.id || ''), b.error, b.retryable !== false, b.attempt));
+    // the computer has to stop a job it holds (it updates itself, it was switched off, it closes): back to the queue at
+    // once, without using up a try — not 90 seconds later as «stopped answering»
+    if (key0 === 'POST /api/worker/release') return send(res, 200, await coord.release(w.id, String(b.id || ''), b.attempt, String(b.why || '')));
     return send(res, 404, { error: 'Άγνωστη λειτουργία.' });
   } catch (e) {
     return send(res, e.status || 400, { error: e.message || String(e) });
@@ -977,7 +990,7 @@ async function aiWhy() {
   if (ai.length) return { ok: true, state: 'ok', text: `Υπολογιστής με Ollama: ${ai.map((w) => w.name + (w.models.length ? ' (' + w.models.slice(0, 3).join(', ') + ')' : '')).join(' · ')}.` };
   // a computer is on but its worker is older than this program: it is the folder, not Ollama
   const stale = online.filter((w) => !w.caps.ollamaInfo || (w.caps.rev && w.caps.rev < WORKER_REV));
-  if (online.length && stale.length === online.length) return { ok: false, state: 'stale_worker', text: `Ο υπολογιστής ${stale.map((w) => w.name).join(', ')} τρέχει παλιά έκδοση του worker (${stale.map((w) => w.caps.rev || 'πολύ παλιά').join(', ')}· τρέχουσα ${WORKER_REV}): κατέβασε ξανά τον φάκελο και ξεκίνα τον SF-Kentro-Worker από εκεί. Το Ollama μάλλον είναι εντάξει.` };
+  if (online.length && stale.length === online.length) return { ok: false, state: 'stale_worker', text: `Ο υπολογιστής ${stale.map((w) => w.name).join(', ')} τρέχει παλιά έκδοση του worker (${stale.map((w) => w.caps.rev || 'πολύ παλιά').join(', ')}· τρέχουσα ${WORKER_REV}). Ollama: ${stale.map((w) => { const i = w.caps.ollamaInfo; return i ? (i.ok ? (i.error ? i.error : 'απαντά') : 'ΔΕΝ απαντά — ' + (i.error || 'δεν βρέθηκε')) : 'άγνωστο (πολύ παλιός worker)'; }).join(' · ')}.` };
   if (!all.length) return { ok: false, state: 'no_worker', text: 'Δεν υπάρχει υπολογιστής που βοηθά. Το Ollama είναι στο PC σου, όχι στο cloud: Ρυθμίσεις → Υπολογιστές → σύζευξη του PC με το Ollama (SF-Kentro-Worker).' };
   if (!online.length) return { ok: false, state: 'offline', text: `Κανένας υπολογιστής δεν είναι ανοιχτός τώρα (${all.map((w) => w.name).join(', ')}). Άνοιξε το PC με το Ollama και τον SF-Kentro-Worker.` };
   const info = online.map((w) => { const i = w.caps.ollamaInfo; return `${w.name}: ${i ? (i.ok ? i.error || 'χωρίς μοντέλο' : i.error || 'δεν βρέθηκε το Ollama') : 'παλιά έκδοση του worker (δεν ελέγχει το Ollama)'}`; });
@@ -1016,7 +1029,16 @@ async function systemStatus() {
   const paused = loads.flatMap((l) => Object.entries(l.engines || {}).filter(([, v]) => v === 'paused').map(([k]) => k));
   const rv = researchView(loads);
   const meas = store.read('research-measure', null);
-  if (meas && meas.at) add('measure', 'Μέτρηση έρευνας', meas.stats && meas.stats.wrongColour === 0, meas.stats && meas.stats.wrongColour === 0 ? 'ok' : 'warn', `${new Date(meas.at).toLocaleDateString('el-GR', { timeZone: 'Europe/Athens' })}${meas.worker ? ' · ' + meas.worker : ''}: ${meas.summary}`);
+  // (a measurement that found nothing is not «ok»: seen 24/11, 0% everywhere with every product «coverage_limited» shown
+  // green — said why: the engines did not give results to that machine, so it measured the engines, not the research)
+  if (meas && meas.at) {
+    const st = meas.stats || {};
+    const empty = st.products > 0 && !st.found;
+    const limited = st.products > 0 && Object.entries(st.statuses || {}).filter(([k]) => ['coverage_limited', 'blocked', 'search_failed'].includes(k)).reduce((a, [, v]) => a + v, 0) >= st.products / 2;
+    const good = st.wrongColour === 0 && !empty && !limited;
+    const why = empty || limited ? ` — ΔΕΝ είναι αντιπροσωπευτική: οι μηχανές αναζήτησης δεν έδωσαν χρήσιμα αποτελέσματα${meas.worker === 'cloud' ? ' στο cloud (συχνά δεν απαντούν σε διευθύνσεις datacenter)' : ''}. Ξανά από τον υπολογιστή του καταστήματος.` : '';
+    add('measure', 'Μέτρηση έρευνας', good, good ? 'ok' : 'warn', `${new Date(meas.at).toLocaleString('el-GR', { timeZone: 'Europe/Athens' })}${meas.worker ? ' · ' + meas.worker : ''}: ${meas.summary}${why}`);
+  }
   add('research', 'Έρευνα internet', !paused.length, paused.length ? 'paused' : 'ok', `${rv.waiting} προϊόντα μένουν · ${rv.perHour} / ώρα${paused.length ? ' · σε παύση: ' + [...new Set(paused)].join(', ') + ' (ξαναδοκιμάζει μόνη της)' : ''}${act0(ws) ? '' : ' · τη δουλειά την κάνει το cloud (αργά)'}`);
   // one level per line (ok / warn / crit / unknown) and the whole: never green only because nothing was written down
   const LEVEL = { ok: 'ok', working: 'ok', stopped: 'ok', disabled: 'ok', none: 'warn', offline: 'warn', updating: 'warn', paused: 'warn', warn: 'warn', error: 'crit', crit: 'crit', unknown: 'unknown', unreachable: 'crit', no_model: 'warn', model_missing: 'warn', stale_worker: 'warn', no_worker: 'warn', generation_failed: 'crit', starting: 'unknown' };
@@ -1329,8 +1351,16 @@ function workerZip() {
   const branch = /^[\w./-]+$/.test(process.env.RENDER_GIT_BRANCH || '') ? process.env.RENDER_GIT_BRANCH : 'claude/friendly-sagan-bfjrkj';
   return `https://github.com/${slug}/archive/refs/heads/${branch}.zip`;
 }
-/** Should this computer work now? 'off' (the default: a new computer uses nothing until it is switched on) · 'app': while a screen of the program was open in the last 2 minutes · 'always'. */
-function workerActive(w) { const m = (w && w.mode) || 'off'; return m === 'off' ? false : m === 'app' ? Date.now() - lastUiAt < 120000 : true; }
+/**
+ * Is the program open somewhere? A screen asked something in the last 5 minutes, or a signed-in screen keeps its live
+ * connection open (a tab in the background, a screen left on overnight: browsers slow down its timers, the live
+ * connection stays). Seen 24/11: with 2 minutes and no count of the live connection, an idle open screen switched the
+ * computer off every few minutes, its 12 jobs were cut in the middle and failed (LEASE_EXPIRED ×12).
+ */
+const UI_GRACE_MS = Number(process.env.SFK_UI_GRACE_MS) || 5 * 60000;
+function uiOpen() { return Date.now() - lastUiAt < UI_GRACE_MS || [...streams].some((st) => st.sid && alive(st)); }
+/** Should this computer TAKE work now? 'off' (the default: a new computer uses nothing until it is switched on) · 'app': while the program is open · 'always'. */
+function workerActive(w) { const m = (w && w.mode) || 'off'; return m === 'off' ? false : m === 'app' ? uiOpen() : true; }
 // which change of the code runs here: from the host (Render gives the commit), its title and date from GitHub (public)
 const build = { version: VERSION, sha: String(process.env.RENDER_GIT_COMMIT || process.env.SFK_GIT_COMMIT || '').slice(0, 40), branch: process.env.RENDER_GIT_BRANCH || '', startedAt: new Date(STARTED_AT).toISOString(), message: '', committedAt: '' };
 function buildInfo() { return Object.assign({}, build, { url: build.sha ? 'https://github.com/alexdimaras/Sf-Kentriko/commit/' + build.sha : '' }); }
@@ -1366,6 +1396,8 @@ function afterStart() {
     // what the cloud itself was doing when it stopped goes back to the queue now (not after an hour)
     try { const n = await coord.recoverCloud(); if (n) console.log(`queue: ${n} εργασίες του cloud ξανά στη σειρά μετά την επανεκκίνηση`); } catch (e) { console.error('queue recover:', e.message); }
     coord.setActiveCheck(workerActive); // a stopped computer never keeps work from the cloud
+    // a job whose «still working» is late, while its computer reports (every 3 s) that a runner of it still has it
+    coord.setAliveCheck((j) => { const l = workerLoad.get(j.workerId); if (!l || !l.held || Date.now() - l.at > 20000) return null; return l.held.some((x) => x.id === j.id && (!x.attempt || x.attempt === j.attempts)); });
     coordReady = true;
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)

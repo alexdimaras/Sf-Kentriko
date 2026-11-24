@@ -449,7 +449,7 @@ async function lookUp(it, io) {
       queries++;
     }
     const eng = (results && results.engines) || null;
-    if (eng) for (const x of eng) { if (x.id === 'catalog') continue; sum.engines[x.id] = sum.engines[x.id] || { ok: 0, failed: 0, blocked: 0, results: 0 }; if (x.state === 'ok') { sum.engines[x.id].ok++; sum.engines[x.id].results += x.n || 0; engineOk++; } else if (x.state === 'blocked' || x.state === 'paused' || x.state === 'quota') sum.engines[x.id].blocked++; else { sum.engines[x.id].failed++; engineErr++; } }
+    if (eng) for (const x of eng) { if (x.id === 'catalog') continue; sum.engines[x.id] = sum.engines[x.id] || { ok: 0, failed: 0, blocked: 0, results: 0, odd: 0 }; if (x.state === 'ok') { sum.engines[x.id].ok++; sum.engines[x.id].results += x.n || 0; engineOk++; } else if (x.state === 'blocked' || x.state === 'paused' || x.state === 'quota') sum.engines[x.id].blocked++; else { sum.engines[x.id].failed++; if (x.state === 'unrecognized') sum.engines[x.id].odd = (sum.engines[x.id].odd || 0) + 1; engineErr++; } }
     else if (!step.known) engineOk++;
     if (eng && !step.known) deadRun = eng.some((x) => x.state === 'ok') ? 0 : deadRun + 1;
     const qi = trace.queries.length;
@@ -675,7 +675,9 @@ function save(results) {
   }
   // the prices of those shops go into the price research (for the products with no price from the competitors too)
   try { require('./market').mergeWeb(merged); } catch (e) { console.error('internet prices:', e.message); }
-  try { require('./fixes').invalidate(); } catch (_) { /* not loaded */ }
+  // (a research a person asked for is shown at once; the automatic one, in batches — every 10 minutes at most)
+  const asked = Object.values(results || {}).some((r) => r && r.trace && r.trace.mode && r.trace.mode !== 'auto');
+  try { const fx = require('./fixes'); if (asked) fx.invalidate(); else fx.invalidateSoon(Number(process.env.SFK_WEB_FIXES_MS) || 10 * 60000); } catch (_) { /* not loaded */ }
 }
 function ownHosts() { const s = require('./settings').all(); return new Set(['sf', 'st'].map((x) => hostOf(s.sites[x] && s.sites[x].url)).filter(Boolean)); }
 /** The hosts the research classes as competitors / suppliers (sent with the jobs). */

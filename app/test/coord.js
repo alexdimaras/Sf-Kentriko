@@ -17,6 +17,7 @@ function ok(cond, name, detail) {
   if (cond) passes++; else fails++;
   console.log((cond ? '  ok   ' : '  FAIL ') + name + (cond || detail === undefined ? '' : ' — ' + detail));
 }
+const LIVE = (st) => st === 'assigned' || st === 'running';
 const section = (t) => console.log('\n' + t);
 
 // a clock the tests move forward
@@ -220,6 +221,47 @@ async function makeBackend() {
     let e3 = null; try { const b = Buffer.from('module.exports = ;'); su.apply(tamper((q) => { q.files['lib/perf.js'] = { b64: b.toString('base64'), sha: require('crypto').createHash('sha256').update(b).digest('hex') }; }), dir, { want: rev }); } catch (e) { e3 = e; }
     ok(e3 && /περνά τον έλεγχο/.test(e3.message) && fs.readFileSync(path.join(dir, 'worker.js'), 'utf8') === 'mine', 'a new file Node cannot read → nothing is replaced (the running worker stays as it is)');
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  section('Πακέτο διάγνωσης 24/11: προσπάθεια, επιστροφή, «ζωντανός αλλά αργός»');
+  {
+    const cA = await coord.newPairing('alex');
+    const pcA = await coord.pair(cA.code, 'PC Fence', { cpus: 8, ramMB: 8000, slots: 4 });
+    coord.register('test.fence', { label: 'Φράχτης', apply: (j2, r) => { applied.push([j2.id, r.n]); return r; } });
+    const fj = await coord.enqueue('test.fence', { n: 70 }, {});
+    const g1 = (await coord.claim(pcA.id, 1, ['test.fence'])).find((x) => x.id === fj.id);
+    ok(g1 && g1.attempt === 1, 'a computer takes a job: try 1', JSON.stringify(g1 && g1.attempt));
+    later(100000); await coord.sweep();
+    const g2 = (await coord.claim(pcA.id, 1, ['test.fence'])).find((x) => x.id === fj.id);
+    ok(g2 && g2.attempt === 2, 'it lost it (silent) and took it again: try 2 — the same computer');
+    ok((await coord.heartbeat(pcA.id, fj.id, {}, null, null, 1)).gone && !(await coord.heartbeat(pcA.id, fj.id, {}, null, null, 2)).gone, 'a «still working» of the older try changes nothing; the newer one goes on');
+    const oldDone = await coord.complete(pcA.id, fj.id, 'try-1', { n: 1 }, 1);
+    ok(!oldDone.ok && !applied.some((x) => x[0] === fj.id), 'the result of the older try is refused (a runner that woke up late never writes over the newer try)');
+    ok((await coord.heldBy(pcA.id)) === 1, 'the queue knows how many jobs a computer holds (it finishes them before it rests)');
+    const rel = await coord.release(pcA.id, fj.id, 2, 'ο υπολογιστής ενημερώνεται');
+    let jj = await coord.job(fj.id);
+    ok(rel.ok && jj.status === 'queued' && jj.attempts === 1 && /ενημερώνεται/.test(jj.error), 'a computer that has to stop gives the job back: to the queue at once, the try not counted', JSON.stringify([jj.status, jj.attempts]));
+    ok(!(await coord.release(pcA.id, fj.id, 2, 'x')).ok, 'a job given back cannot be given back twice');
+    await coord.claim(pcA.id, 1, ['test.fence']);
+    await coord.setMode(pcA.id, 'off');
+    jj = await coord.job(fj.id);
+    ok(jj.status === 'queued' && jj.attempts === 1, 'switched off by a person: its jobs go back to the queue now (not 90 s later, no try used)', JSON.stringify([jj.status, jj.attempts]));
+    await coord.setMode(pcA.id, 'always');
+    const take = async () => { for (let i = 0; i < 5; i++) { const g = await coord.claim(pcA.id, 4, ['test.fence']); if (g.some((x) => x.id === fj.id)) return true; if (!g.length) return false; } return false; };
+    ok(await take(), 'switched on again: it takes the job again');
+    // its load report says a runner still has the job, its «still working» is late: it keeps the job (up to 10 minutes)
+    coord.setAliveCheck((x) => x.id === fj.id ? true : null);
+    later(100000); await coord.sweep();
+    { const z = await coord.job(fj.id); ok(LIVE(z.status) && z.worker === 'PC Fence', 'a slow «still working» while the computer says it still works on the job: the job stays its own', JSON.stringify([z.status, z.worker, z.error])); }
+    later(11 * 60000); await coord.sweep();
+    ok((await coord.job(fj.id)).status === 'queued', '…but not for ever: 10 minutes without any «still working» → back to the queue');
+    await take();
+    coord.setAliveCheck((x) => x.id === fj.id ? false : null);
+    later(100000); await coord.sweep();
+    jj = await coord.job(fj.id);
+    ok(jj.status !== 'assigned' && /κανένας εργάτης του/.test(jj.error), 'the computer answers but none of its runners has the job: said so (not «stopped answering»)', jj.error);
+    coord.setAliveCheck(null);
+    await coord.revoke(pcA.id);
   }
 
   console.log(`\n${passes} ok, ${fails} failed`);

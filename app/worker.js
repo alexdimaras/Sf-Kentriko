@@ -170,7 +170,7 @@ async function runJob(api, conf, j) {
     const part = parts; parts = null;
     beating = (async () => {
       try {
-        const r = await api.call('POST', '/api/worker/heartbeat', Object.assign({ id: j.id, progress: prog, log: lines.splice(0) }, part ? { partial: part } : {}));
+        const r = await api.call('POST', '/api/worker/heartbeat', Object.assign({ id: j.id, attempt: j.attempt, progress: prog, log: lines.splice(0) }, part ? { partial: part } : {}));
         if (r.cancel) { cancel = true; ctl.abort(); }
       } catch (e) {
         if (e.fatal) { cancel = true; ctl.abort(); }
@@ -194,7 +194,7 @@ async function runJob(api, conf, j) {
     clearInterval(iv);
     if (beating) await beating; // a part on its way arrives before the whole result (each product written once)
     for (let i = 0; ; i++) {
-      try { const r = await api.call('POST', '/api/worker/complete', { id: j.id, idem, result }); log(`εργασία ${j.id}: ${r.ok ? 'παραδόθηκε' : 'δεν έγινε δεκτή — ' + (r.error || '')}`); break; } catch (e) {
+      try { const r = await api.call('POST', '/api/worker/complete', { id: j.id, attempt: j.attempt, idem, result }); log(`εργασία ${j.id}: ${r.ok ? 'παραδόθηκε' : 'δεν έγινε δεκτή — ' + (r.error || '')}`); break; } catch (e) {
         if (e.fatal || i >= 5) { log(`εργασία ${j.id}: το αποτέλεσμα δεν παραδόθηκε (${e.message})`); break; }
         await new Promise((x) => setTimeout(x, 5000 * (i + 1)));
       }
@@ -202,7 +202,7 @@ async function runJob(api, conf, j) {
   } catch (e) {
     clearInterval(iv);
     log(`εργασία ${j.id}: ${cancel ? 'σταμάτησε' : 'σφάλμα — ' + e.message}`);
-    await api.call('POST', '/api/worker/fail', { id: j.id, error: cancel ? 'Σταμάτησε.' : e.message, retryable: !cancel && !(e && e.fatal) }).catch(() => {});
+    await api.call('POST', '/api/worker/fail', { id: j.id, attempt: j.attempt, error: cancel ? 'Σταμάτησε.' : e.message, retryable: !cancel && !(e && e.fatal) }).catch(() => {});
   }
 }
 
@@ -233,7 +233,7 @@ async function runnerLoop() {
         const j = (r.jobs || [])[0];
         if (j) {
           running++;
-          toParent({ t: 'job', job: { id: j.id, type: j.type, label: (coord.handler(j.type) || {}).label || j.type } });
+          toParent({ t: 'job', job: { id: j.id, type: j.type, attempt: j.attempt, label: (coord.handler(j.type) || {}).label || j.type } });
           await runJob(api, conf, j).finally(() => { running--; toParent({ t: 'job', job: null }); toParent({ t: 'count', k: 'job' }); });
           wait = 300;
         } else wait = POLL;
@@ -317,16 +317,29 @@ async function supervise() {
       if (stopping || (dormant && !lane)) return; // stopped on purpose (the mode of this computer)
       if (code === 3 || code === 2) { stopping = true; for (const x of runners.values()) x.p.kill(); log('ο υπολογιστής δεν αναγνωρίζεται πια: τέλος'); process.exit(code); }
       if (code) tell('RUNNER_EXIT', 'warn', `ένας εργάτης σταμάτησε απρόσμενα (κωδικός ${code}${r.job ? ', εργασία: ' + r.job.label : ''}): ξεκινά ξανά σε 5″`);
+      // its job: back to the queue now, as one try (a job that breaks its runner every time still ends, said why)
+      if (r.job && r.job.id && !r.stopped) api.call('POST', '/api/worker/fail', { id: r.job.id, attempt: r.job.attempt, error: `Ο εργάτης του υπολογιστή σταμάτησε απρόσμενα (κωδικός ${code}).`, retryable: true }).catch(() => {});
       setTimeout(() => start(i, lane), 5000);
     });
     if (!lane) { if (paused || i >= Math.min(K, P.slots)) p.send({ t: 'pause', on: true }); p.send({ t: 'perf', pages: P.pages }); }
+  };
+  // Stop runners (all, or those of `which`) — the jobs they hold go back to the queue AT ONCE, without using up a try
+  // (before 2026-11-24a they were simply cut: the cloud waited 90 s, «stopped answering», and counted a try — seen
+  // 24/11 as LEASE_EXPIRED ×12 and failed research when the program screen went idle)
+  const stopRunners = async (why, which) => {
+    const list = [...runners.entries()].filter(([i]) => !which || which(i));
+    const held = list.map(([, r]) => r.job).filter((x) => x && x.id);
+    for (const [, r] of list) { r.stopped = true; try { r.p.kill(); } catch (_) { /* gone */ } }
+    await Promise.all(held.map((x) => api.call('POST', '/api/worker/release', { id: x.id, attempt: x.attempt, why }).catch(() => {})));
+    if (held.length) log(`${held.length} εργασίες δόθηκαν πίσω στη σειρά (${why})`);
   };
   // a runner beyond the profile's number takes no new work (it ends what it does: nothing is lost)
   const applyPerf = () => { for (const [i, r] of runners) if (i < K) { try { r.p.send({ t: 'pause', on: paused || i >= Math.min(K, P.slots) }); r.p.send({ t: 'perf', pages: P.pages }); } catch (_) { /* gone */ } } };
   for (let i = 0; i < K; i++) start(i);
   // one more runner, only for questions to the AI of this computer (answered in seconds, never behind the long jobs)
   start(K, 'ai.call');
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; for (const x of runners.values()) x.p.kill(); process.exit(0); });
+  // (closing the window / Windows shutting down: the jobs go back first, within 5 seconds at most)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) { try { process.on(sig, () => { if (stopping) return; stopping = true; Promise.race([stopRunners('ο υπολογιστής κλείνει'), new Promise((x) => setTimeout(x, 5000))]).finally(() => process.exit(0)); }); } catch (_) { /* not on this system */ } }
 
   // the load, every 3 seconds: processor and memory of the whole computer, what each runner does, how fast
   let prev = cpuTimes();
@@ -343,6 +356,7 @@ async function supervise() {
       procMB: Math.round(([...runners.values()].reduce((a, r) => a + r.rss, 0) + process.memoryUsage().rss) / 1048576),
       runners: runners.size, slots: K, busy: [...runners.values()].filter((r) => r.job).length,
       jobs: [...runners.values()].filter((r) => r.job).map((r) => r.job.label).slice(0, 16),
+      held: [...runners.values()].filter((r) => r.job && r.job.id).map((r) => ({ id: r.job.id, attempt: r.job.attempt || 0 })),
       perHour: { products: per('product'), pages: per('page'), searches: per('search'), jobs: per('job') },
       engines: Object.fromEntries(['ddg', 'bing', 'yahoo'].map((e) => [e, (pausedUntil[e] || 0) > Date.now() ? 'paused' : 'ok'])),
       gaps: Object.assign({}, gapBy),
@@ -380,7 +394,7 @@ async function supervise() {
             const r = await api.call('GET', '/api/worker/update', null, true);
             const done = su.apply(r.buf, __dirname, { want: h.rev });
             log(`ενημερώθηκε στην έκδοση ${done.rev} (${done.files} αρχεία): ξεκινά ξανά`);
-            stopping = true; for (const x of runners.values()) x.p.kill();
+            stopping = true; await stopRunners('ο υπολογιστής ενημερώνεται');
             process.exit(4); // the starter (SF-Kentro-Worker.vbs) starts it again, now with the new files
           } catch (e) { tried[h.rev] = Date.now(); writeTried(tried); log('η ενημέρωση δεν έγινε: ' + e.message + ' (συνεχίζει με την τωρινή)'); tell('WORKER_UPDATE_FAILED', 'error', `η αυτόματη ενημέρωση στην ${h.rev} δεν έγινε: ${e.message}`); }
         }
@@ -396,7 +410,7 @@ async function supervise() {
       const should = !h || h.active !== false;
       if (!should && !dormant) {
         dormant = true;
-        for (const [i, r] of runners) if (i < K) r.p.kill();
+        await stopRunners(h && h.mode === 'off' ? 'ο υπολογιστής σταμάτησε από τις Ρυθμίσεις' : 'το πρόγραμμα έκλεισε', (i) => i < K);
         log(h && h.mode === 'off' ? 'σταμάτησε από τις Ρυθμίσεις (κανένας πόρος δεν χρησιμοποιείται)' : 'το πρόγραμμα είναι κλειστό: αναμονή χωρίς χρήση πόρων');
       } else if (should && dormant) {
         dormant = false;
