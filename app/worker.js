@@ -119,9 +119,10 @@ function client(conf) {
     const r = await fetch(conf.server + p, { method, headers: Object.assign({ Authorization: 'Bearer ' + token, 'User-Agent': 'sf-kentro-worker/' + VERSION }, body ? { 'Content-Type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(raw ? 300000 : 120000) });
     if (r.status === 401 || r.status === 403) { const e = new Error('Ο υπολογιστής δεν αναγνωρίζεται πια (αφαιρέθηκε;). Κάνε ξανά σύζευξη.'); e.fatal = true; throw e; }
     if (r.status === 503) { const e = new Error('Το πρόγραμμα στο cloud ξεκινάει.'); e.retry = true; throw e; }
-    if (raw) { if (!r.ok) throw new Error('HTTP ' + r.status); return { buf: Buffer.from(await r.arrayBuffer()), etag: r.headers.get('etag') || '' }; }
+    // (the cloud's own words for an error, also for a file it could not give: «HTTP 400» alone said nothing — 24/11)
+    if (raw) { if (!r.ok) { const t = await r.text().catch(() => ''); let m = ''; try { m = JSON.parse(t).error || ''; } catch (_) { m = ''; } throw Object.assign(new Error((m ? m + ' ' : '') + '(HTTP ' + r.status + ')'), { status: r.status }); } return { buf: Buffer.from(await r.arrayBuffer()), etag: r.headers.get('etag') || '' }; }
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+    if (!r.ok) throw Object.assign(new Error(j.error || 'HTTP ' + r.status), { status: r.status, retry: r.status >= 500 || !!j.starting });
     return j;
   };
   return { call };
@@ -191,18 +192,34 @@ async function runJob(api, conf, j) {
   const idem = crypto.createHash('sha256').update(conf.id + ':' + j.id + ':' + j.attempt).digest('hex').slice(0, 32);
   try {
     const result = await h.run(j.payload, japi, remoteIO(api, j.id));
-    clearInterval(iv);
     if (beating) await beating; // a part on its way arrives before the whole result (each product written once)
-    for (let i = 0; ; i++) {
-      try { const r = await api.call('POST', '/api/worker/complete', { id: j.id, attempt: j.attempt, idem, result }); log(`εργασία ${j.id}: ${r.ok ? 'παραδόθηκε' : 'δεν έγινε δεκτή — ' + (r.error || '')}`); break; } catch (e) {
-        if (e.fatal || i >= 5) { log(`εργασία ${j.id}: το αποτέλεσμα δεν παραδόθηκε (${e.message})`); break; }
-        await new Promise((x) => setTimeout(x, 5000 * (i + 1)));
-      }
-    }
+    // The result is handed in until the cloud takes it — through a restart of the program in the cloud (a deploy:
+    // it answers «starting» / not at all for a minute or more). Meanwhile the «still working» goes on, so the cloud
+    // knows a runner still has it. (Before 24/11: 5 tries in ~75″, then the result was thrown away and the cloud
+    // waited for it in vain — «απαντά, αλλά κανένας εργάτης του δεν δουλεύει πια αυτή την εργασία».)
+    const r = await deliver(api, '/api/worker/complete', { id: j.id, attempt: j.attempt, idem, result }, `εργασία ${j.id}`);
+    clearInterval(iv);
+    log(`εργασία ${j.id}: ${r && r.ok ? 'παραδόθηκε' : 'δεν έγινε δεκτή' + (r && r.error ? ' (' + r.error + ')' : '')}`);
   } catch (e) {
     clearInterval(iv);
     log(`εργασία ${j.id}: ${cancel ? 'σταμάτησε' : 'σφάλμα — ' + e.message}`);
-    await api.call('POST', '/api/worker/fail', { id: j.id, attempt: j.attempt, error: cancel ? 'Σταμάτησε.' : e.message, retryable: !cancel && !(e && e.fatal) }).catch(() => {});
+    await deliver(api, '/api/worker/fail', { id: j.id, attempt: j.attempt, error: cancel ? 'Σταμάτησε.' : e.message, retryable: !cancel && !(e && e.fatal) }, `εργασία ${j.id}`).catch(() => {});
+  }
+}
+/**
+ * Hand something to the cloud until it is taken: errors that may pass (the network, the cloud starting / restarting,
+ * 5xx) are tried again with longer pauses for up to 20 minutes; an answer of the cloud («not yours any more», a
+ * fatal error) ends it at once. → the cloud's answer, or null when it never could be delivered.
+ */
+async function deliver(api, p, body, what) {
+  const until = Date.now() + (Number(process.env.SFK_DELIVER_MS) || 20 * 60000);
+  for (let i = 0; ; i++) {
+    try { return await api.call('POST', p, body); } catch (e) {
+      const passing = !e.fatal && (e.retry || !e.status || e.status >= 500 || e.status === 404 || e.status === 429);
+      if (!passing || Date.now() > until) { log(`${what}: δεν παραδόθηκε (${e.message})`); return null; }
+      if (i === 2) log(`${what}: το cloud δεν το παίρνει ακόμα (${e.message}) — ξανά σε λίγο`);
+      await new Promise((x) => setTimeout(x, Math.min(60000, (Number(process.env.SFK_DELIVER_GAP_MS) || 5000) * Math.pow(1.6, i))));
+    }
   }
 }
 

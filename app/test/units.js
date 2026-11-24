@@ -82,6 +82,22 @@ const section = (t) => console.log('\n' + t);
     woo.close(); fw.close(); delete process.env.SFK_ALLOW_PRIVATE; delete process.env.SFK_CF_WAITS;
   }
 
+  section('Ενημέρωση υπολογιστών: το cloud (Docker) έχει όλα τα αρχεία του πακέτου');
+  {
+    // 24/11: every update answered HTTP 400 — the image of the cloud had no worker.js / vendor, the pack could not be built
+    const su = require(APP + '/lib/selfupdate');
+    const docker = fs.readFileSync(path.join(APP, 'Dockerfile'), 'utf8');
+    const copied = [...docker.matchAll(/^COPY\s+(.+?)\s+\S+\s*$/gm)].flatMap((m) => m[1].split(/\s+/));
+    const img = fs.mkdtempSync(path.join(os.tmpdir(), 'sfk-img-'));
+    for (const c of copied) { const from = path.join(APP, c); if (!fs.existsSync(from)) continue; fs.cpSync(from, path.join(img, c), { recursive: true }); }
+    let pk = null, perr = null;
+    try { pk = su.build(img, { forRev: '2026-11-24a' }); } catch (e) { perr = e; }
+    ok(pk && pk.buf.length > 100000 && !perr, 'the pack of the computers is built from exactly the files the cloud image has (worker.js, lib, vendor)', perr && perr.message);
+    const names = pk ? Object.keys(JSON.parse(require('zlib').gunzipSync(pk.buf).toString('utf8')).files) : [];
+    ok(names.includes('worker.js') && names.includes('vendor/node-html-parser.js') && names.includes('lib/workerrev.js'), 'it has the worker, its HTML reader and its revision', names.filter((n) => !n.startsWith('lib/')).join(','));
+    fs.rmSync(img, { recursive: true, force: true });
+  }
+
   section('Διαφημίσεις: τι επιτρέπεται σε Google / Meta');
   const ad = require(APP + '/lib/adrules');
   const ev = (name, cats, brand) => ad.evaluate({ name, brand: brand || '' }, cats ? [cats.map((c) => ({ name: c, slug: c.toLowerCase() }))] : []);

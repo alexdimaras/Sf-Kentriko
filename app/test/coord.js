@@ -258,10 +258,34 @@ async function makeBackend() {
     later(11 * 60000); await coord.sweep();
     ok((await coord.job(fj.id)).status === 'queued', '…but not for ever: 10 minutes without any «still working» → back to the queue');
     await take();
+    // given out but never started (no «still working» at all) and no runner has it: the hand-out was lost on the way
+    // (a restart of the program, the network) — back to the queue WITHOUT using up a try
+    const tries0 = (await coord.rawJob(fj.id)).attempts;
     coord.setAliveCheck((x) => x.id === fj.id ? false : null);
     later(100000); await coord.sweep();
+    jj = await coord.rawJob(fj.id);
+    ok(jj.status === 'queued' && jj.attempts === tries0 - 1, 'a hand-out that never reached a runner: back to the queue, no try used', JSON.stringify([jj.status, jj.attempts, tries0]));
+    await take();
+    await coord.heartbeat(pcA.id, fj.id, { done: 1, total: 5, msg: 'x' }, [], null, (await coord.rawJob(fj.id)).attempts);
+    later(200000); await coord.sweep();
     jj = await coord.job(fj.id);
-    ok(jj.status !== 'assigned' && /κανένας εργάτης του/.test(jj.error), 'the computer answers but none of its runners has the job: said so (not «stopped answering»)', jj.error);
+    ok(jj.status !== 'assigned' && /κανένας εργάτης του/.test(jj.error), 'the computer answers but none of its runners has the job (it had started): said so (not «stopped answering»)', jj.error);
+    {
+    // a restart of the program (a deploy): a job that was running before it gets ONE more lease, not taken at once
+    const fresh = await coord.enqueue('test.fence', { n: 2 }, { label: 'fence 2' });
+    const fj = { id: fresh.id };
+    for (let i = 0; i < 5; i++) { const g = await coord.claim(pcA.id, 4, ['test.fence']); if (g.some((x) => x.id === fj.id)) break; }
+    await coord.heartbeat(pcA.id, fj.id, { done: 1, total: 5, msg: 'x' }, [], null, (await coord.rawJob(fj.id)).attempts);
+    coord.setAliveCheck(() => null);
+    coord._setStartedAt(Date.now() + 1000);
+    later(150000); await coord.sweep();
+    let rg = await coord.rawJob(fj.id);
+    ok(['assigned', 'running'].includes(rg.status) && rg.restartGrace, 'after a restart of the program: a job the computer was running keeps one more lease (it could not reach us meanwhile)', JSON.stringify([rg.status, rg.restartGrace]));
+    later(400000); await coord.sweep();
+    rg = await coord.rawJob(fj.id);
+    ok(['queued', 'failed'].includes(rg.status), '…once: still silent after it → back to the queue (or the end of its tries) as usual', rg.status);
+    coord._setStartedAt(0);
+    }
     coord.setAliveCheck(null);
     // (24/11: a click on «Έρευνα» waited for a free runner) — the research of ONE product has a lane of its own:
     // a computer full of long batches still takes it at once

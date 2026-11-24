@@ -899,7 +899,9 @@ const staleSince = new Map(); // worker id → since when it reports an older re
 const staleTold = new Map();
 const updateSent = new Map(); // worker id → { at, from } when it fetched the new version
 async function handleWorker(req, res, url, q, key0) {
-  if (!SERVER || !coordReady) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
+  if (!SERVER) return send(res, 404, { error: 'Δεν υπάρχει εδώ.' });
+  // (the program is starting: «wait», not «not here» — a computer then keeps its result and tries again)
+  if (!coordReady) return send(res, 503, { error: 'Το πρόγραμμα στο cloud ξεκινάει.', starting: true }, 'application/json', { 'Retry-After': '20' });
   try {
     if (key0 === 'POST /api/worker/pair') {
       const ip = clientIp(req), t = pairTries.get(ip) || { n: 0, at: Date.now() };
@@ -1036,6 +1038,18 @@ async function aiWhy() {
   return { ok: false, state: noModel ? 'no_model' : 'unreachable', text: 'Ο υπολογιστής που βοηθά δεν μπορεί να απαντήσει: ' + info.join(' · ') + '. Στο PC: άνοιξε το Ollama, περίμενε 1 λεπτό και ξαναδοκίμασε (στο PC: «node worker.js ai-test» δείχνει όλα τα βήματα).' };
 }
 /** One look at everything (fast, nothing is run): → { items: [{ id, label, ok, state, text }] } */
+let packCheck = null;
+function updatePackCheck() {
+  if (packCheck) return packCheck;
+  try {
+    const su = require('./lib/selfupdate');
+    updatePack = updatePack || {};
+    updatePack.new = updatePack.new || su.build(__dirname, { forRev: WORKER_REV });
+    const files = Object.keys(JSON.parse(require('zlib').gunzipSync(updatePack.new.buf).toString('utf8')).files).length;
+    packCheck = { ok: true, rev: updatePack.new.rev, files };
+  } catch (e) { packCheck = { ok: false, error: e.message }; }
+  return packCheck;
+}
 async function systemStatus() {
   const items = [];
   const add = (id, label, ok, state, text) => items.push({ id, label, ok, state, text });
@@ -1060,6 +1074,9 @@ async function systemStatus() {
     add('computer', 'Υπολογιστής', !old.length, old.length ? 'updating' : act.length ? 'working' : 'stopped',
       on.map((w) => { const u = updateSent.get(w.id); return `${w.name}: ${workerActive(w) ? 'δουλεύει' : w.mode === 'app' ? 'περιμένει (δουλεύει μόνο με ανοιχτό πρόγραμμα)' : 'σταματημένος — δεν χρησιμοποιεί πόρους'} · έκδοση ${w.caps.rev || '—'}${(w.caps.rev || '') < WORKER_REV ? updateWord(w, u) : ''}`; }).join(' · '));
   }
+  // the update of the computers: can the cloud build it? (24/11: it never could on Render — worker.js was not in the
+  // image — and every computer got «HTTP 400»)
+  { const pk = updatePackCheck(); add('update', 'Ενημέρωση υπολογιστών', pk.ok, pk.ok ? 'ok' : 'error', pk.ok ? `Έτοιμη η έκδοση ${pk.rev} για κάθε υπολογιστή (${pk.files} αρχεία).` : 'Το cloud ΔΕΝ μπορεί να φτιάξει την ενημέρωση των υπολογιστών: ' + pk.error); }
   const s = settings.all();
   if (!(s.localAI && s.localAI.enabled)) add('ai', 'AI (Ollama)', false, 'disabled', 'Κλειστό (Ρυθμίσεις → AI → «Ενεργό»).');
   else { const w = await aiWhy(); add('ai', 'AI (Ollama)', w.ok, w.state || (w.ok ? 'ok' : 'error'), w.text); }
@@ -1462,7 +1479,9 @@ function afterStart() {
     try { const n = await coord.recoverCloud(); if (n) console.log(`queue: ${n} εργασίες του cloud ξανά στη σειρά μετά την επανεκκίνηση`); } catch (e) { console.error('queue recover:', e.message); }
     coord.setActiveCheck(workerActive); // a stopped computer never keeps work from the cloud
     // a job whose «still working» is late, while its computer reports (every 3 s) that a runner of it still has it
-    coord.setAliveCheck((j) => { const l = workerLoad.get(j.workerId); if (!l || !l.held || Date.now() - l.at > 20000) return null; return l.held.some((x) => x.id === j.id && (!x.attempt || x.attempt === j.attempts)); });
+    // («no runner has it» is said only from a report made well AFTER the job was handed out: a report from before the
+    // runner got it says nothing about it)
+    coord.setAliveCheck((j) => { const l = workerLoad.get(j.workerId); if (!l || !l.held || Date.now() - l.at > 20000) return null; if (l.held.some((x) => x.id === j.id && (!x.attempt || x.attempt === j.attempts))) return true; return l.at > new Date(j.startedAt || 0).getTime() + 6000 ? false : null; });
     coordReady = true;
     setInterval(() => { coord.sweep().catch((e) => console.error('queue:', e.message)); }, 15000).unref();
     // the cloud takes a waiting job only when no computer of the shops can (one at a time, in this program)
@@ -1503,6 +1522,8 @@ function afterStart() {
     }).catch(() => {});
   };
   setTimeout(aiRound, 10 * 60 * 1000).unref();
+  // (said at once in Συμβάντα when the update of the computers cannot be built here)
+  setTimeout(() => { const pk = updatePackCheck(); if (!pk.ok) events.record({ severity: 'error', service: 'worker', code: 'WORKER_UPDATE_PACK_BROKEN', message: 'Η ενημέρωση των υπολογιστών δεν φτιάχνεται στο cloud: ' + pk.error }); }, 30 * 1000).unref();
   // (answers «Άλλο χρώμα / μέγεθος» kept as «Όχι ίδιο» by the older version → another colour, its price evaluated)
   setTimeout(() => { try { const n = require('./lib/accuracy').migrateVariants(); if (n) events.record({ severity: 'info', service: 'server', code: 'VARIANT_ANSWERS_MOVED', message: `${n} απαντήσεις «Άλλο χρώμα / μέγεθος» μετράνε πλέον ως ένδειξη τιμής` }); } catch (e) { console.error('variant answers:', e.message); } }, 90 * 1000).unref();
   setInterval(aiRound, Number(process.env.SFK_AI_ROUND_MS) || 3 * 3600 * 1000).unref();

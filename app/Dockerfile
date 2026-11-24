@@ -13,6 +13,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js ./
 COPY lib ./lib
 COPY public ./public
+# the computers' own files: the cloud builds their update from these (without them every update answered HTTP 400)
+COPY worker.js ./
+COPY vendor ./vendor
 # the spelling dictionary packed once here: every start reads it in a moment (a small cloud machine needs seconds to build it)
 RUN node -e "console.log(require('./lib/spell').prebuild())"
 RUN mkdir -p /data && chown -R node:node /data

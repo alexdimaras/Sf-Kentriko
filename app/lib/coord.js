@@ -111,7 +111,7 @@ async function claim(workerId, max, types) {
   for (let i = 0; i < room; i++) {
     const j = await backend.takeNext((x) => fits(w, x) && (!only || only.has(x.type)) && (!x.notBefore || x.notBefore <= now()), (x) => {
       x.status = 'assigned'; x.workerId = w.id; x.workerName = w.name; x.attempts++; x.leaseUntil = now() + LEASE_MS;
-      x.startedAt = iso(); x.beatAt = now(); x.progress = { done: 0, total: 0, msg: 'Ξεκινάει στο ' + w.name };
+      x.startedAt = iso(); x.beatAt = now(); x.restartGrace = 0; x.progress = { done: 0, total: 0, msg: 'Ξεκινάει στο ' + w.name };
     });
     if (!j) break;
     const h = handler(j.type);
@@ -234,6 +234,11 @@ function setAliveCheck(fn) { aliveCheck = typeof fn === 'function' ? fn : null; 
 // a computer that says its runner still works on the job, while its «still working» does not arrive (a slow answer of
 // the cloud, a request that hangs): the job waits up to 10 minutes since its last «still working», not 90 seconds
 const ALIVE_GRACE_MS = Number(process.env.SFK_ALIVE_GRACE_MS) || 10 * 60000;
+// A restart of the program (every deploy on Render): the computers could not reach us meanwhile — no «still working»,
+// no result delivered. A job that was running when this program started gets ONE more lease of this length, counted
+// from the start, instead of being taken away at the first sweep (24/11: LEASE_EXPIRED / JOB_FAILED after deploys).
+const RESTART_GRACE_MS = Number(process.env.SFK_RESTART_GRACE_MS) || 3 * 60000;
+let startedAt = Date.now(); // (when this program started: jobs that beat before it ran on the previous instance)
 let lastSweep = 0;
 /** Every few seconds: leases that ended go back to the queue; workers not heard of are offline. */
 async function sweep() {
@@ -251,10 +256,23 @@ async function sweep() {
     const h = handler(j.type);
     if (j.status === 'queued' && j.auto && h && h.expireMs && t - new Date(j.createdAt).getTime() > h.expireMs) { j.error = 'Κανείς δεν την πήρε για μέρες (υπολογιστές κλειστοί): μπαίνει ξανά στη σειρά όταν χρειαστεί.'; await finish(j, 'cancelled'); continue; }
     if (j.status === 'queued' || !j.leaseUntil || j.leaseUntil > t) continue;
+    if (j.workerId !== 'cloud' && !j.cancel && (j.beatAt || 0) < startedAt && !j.restartGrace) {
+      j.restartGrace = startedAt; j.leaseUntil = startedAt + RESTART_GRACE_MS;
+      if (j.leaseUntil > t) { await backend.save(j, { light: true }); continue; }
+    }
     let still = null;
     if (j.workerId !== 'cloud' && !j.cancel) {
       try { still = aliveCheck ? aliveCheck(j) : null; } catch (_) { still = null; }
       if (stalled || (still === true && t - (j.beatAt || 0) < ALIVE_GRACE_MS)) { j.leaseUntil = t + LEASE_MS; await backend.save(j, { light: true }); continue; }
+    }
+    // given out, never started (no «still working» at all): the answer of the hand-out was lost on the way (a restart,
+    // the network) — back to the queue at once, WITHOUT using up a try
+    if (still === false && j.status === 'assigned') {
+      j.attempts = Math.max(0, (j.attempts || 1) - 1);
+      j.error = '';
+      ev({ severity: 'info', service: 'queue', code: 'CLAIM_LOST', message: `${j.label || j.type}: η ανάθεση στο ${j.workerName || j.workerId} δεν έφτασε σε εργάτη — ξανά στη σειρά (χωρίς να χαθεί προσπάθεια)` });
+      await requeue(j, 0);
+      continue;
     }
     // (the computer answers and says none of its runners has this job: said so — not «stopped answering»)
     j.error = still === false ? `Ο υπολογιστής «${j.workerName || j.workerId}» απαντά, αλλά κανένας εργάτης του δεν δουλεύει πια αυτή την εργασία.` : `Ο υπολογιστής «${j.workerName || j.workerId}» σταμάτησε να απαντά.`;
@@ -475,4 +493,4 @@ async function stats() {
   return { queued: l.filter((j) => j.status === 'queued').length, running: l.filter((j) => j.status !== 'queued').length, workers: ws.length, online: ws.filter((w) => w.online).length };
 }
 
-module.exports = { heldBy, release, setAliveCheck, healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
+module.exports = { _setStartedAt: (t) => { startedAt = t; }, heldBy, release, setAliveCheck, healthOf, someoneFor, setActiveCheck, recoverCloud, takePartial, setMode, setPerf, cloudRamMB, liveOf, rawJob, use, register, handler, enqueue, claim, heartbeat, complete, fail, cancel, sweep, newPairing, pair, workerByToken, hello, revoke, cloudTick, job, live, recent, workersView, stats, onChange, LEASE_MS, OFFLINE_MS, sha };
