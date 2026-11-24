@@ -45,6 +45,10 @@ const products = [
   // a word seen with a kind only a few times (TRACER: a model of jackets) is no proof for a power bank
   ...Array.from({ length: 6 }, (_, i) => P('ΜΠΟΥΦΑΝ PENTAGON TRACER ' + i, [1000])), P('POWERBANK TRACER 30000MAH 2A ΜΑΥΡΟ', [1100]),
   // two products of the jackets' category whose titles start with the brand (the «similar products» proposal)
+  // the colour of the title against the colour of the product
+  P('ΣΑΚΙΔΙΟ MIL-TEC ASSAULT OLIVE', [1200], { attrs: [{ name: 'Χρώμα', variation: false, terms: ['Μαύρο'] }] }),
+  P('ΘΗΚΗ TASMANIAN TIGER TAC POUCH 3', [1200], { brand: 'TASMANIAN TIGER', type: 'variable', attrs: [{ name: 'Χρώμα', variation: true, terms: ['Λαδί', 'Μαύρο'] }] }),
+  P('ΣΑΚΙΔΙΟ MIL-TEC ASSAULT BLACK', [1200], { attrs: [{ name: 'Χρώμα', variation: false, terms: ['Μαύρο'] }] }),
   P('PENTAGON HYDRA RAIN SHELL', [1000]), P('PENTAGON ATLAS RAIN SHELL', [1000]), P('PENTAGON ORION RAIN SHELL', [1000]),
 ];
 const cat = (cid, name) => ({ id: cid, name, slug: 'c' + cid, parent: 0, count: 1, url: '' });
@@ -92,6 +96,11 @@ W('settings', { firstRunDone: true });
   ok(K.removeRule(r.id, 'alex') && !K.terms().foreign.has('GAITERS'), '…and taken back');
   let bad = null; try { K.addRule({ kind: 'preferred', from: ['X'], to: 'PATCH' }); } catch (e) { bad = e; }
   ok(bad && /ελληνικά/.test(bad.message), 'the shop\'s word is a Greek word (a foreign one is refused)');
+
+  section('Έλεγχος: το χρώμα του τίτλου και το χρώμα του προϊόντος');
+  const colourCk = (ck.raw().checks.find((c) => c.id === 'sf-colour') || { items: [] }).items;
+  ok(colourCk.some((x) => /ASSAULT OLIVE/.test(x.name)) && !colourCk.some((x) => /ASSAULT BLACK/.test(x.name)), 'title OLIVE, colour «Μαύρο» → said; title BLACK, colour «Μαύρο» → fine', JSON.stringify(colourCk.map((x) => x.name)));
+  ok(!colourCk.some((x) => /TASMANIAN/.test(x.name)), 'TIGER of the brand TASMANIAN TIGER is not a colour of the title');
 
   section('Μαθαίνει από τις αποφάσεις σου (με αναίρεση)');
   const hy = byName('PENTAGON HYDRA RAIN SHELL'), at = byName('PENTAGON ATLAS RAIN SHELL'), or = byName('PENTAGON ORION RAIN SHELL');

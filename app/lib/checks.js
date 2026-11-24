@@ -199,7 +199,10 @@ function* runGen() {
     // Titles
     const mixed = [], suspect = [], caps = [], accents = [], spaces = [], long = [], typos = [], typeFirst = [], broken = [], codeTitle = [];
     const suggestType = typeSuggester(site);
-    const codeCtx = { codes: catalogCodes(), brands: new Set([...catalog.knownBrands().keys()].map((k) => k.replace(/[^A-Z0-9]/g, ''))) };
+    // (the same context as the proposals: a code of another product that is in 2+ of our titles is a model — XQ35)
+    const codeCtx = { codes: catalogCodes(), brands: new Set([...catalog.knownBrands().keys()].map((k) => k.replace(/[^A-Z0-9]/g, ''))), titleTok: titleTokens() };
+    const mk = require('./market');
+    const colourBad = [];
     yield;
     for (const p of main) {
       yield;
@@ -232,6 +235,20 @@ function* runGen() {
         const t = base.split(' ').map((tok) => tok.replace(/[Ͱ-Ͽ]+/g, (m) => { const hit = fixes.find(([a]) => a === m); return hit ? hit[1] : m; })).join(' ');
         typos.push(item(p, { why: fixes.map(([a, b, alts]) => `${a} → ${b}` + (alts.length ? ` (ή ${alts.join(', ')})` : '')).join(' · '), fix: t }));
       }
+      // the colour of the title and the colour the product has (its attribute, or its variations) must agree
+      {
+        // (not the brand's words — TASMANIAN TIGER — nor a kind of sight — RED DOT / GREEN DOT —, nor a RAL code)
+        const brandW = new Set(U.foldKey(p.brand || '').split(/[^A-Z0-9Α-Ω]+/).filter(Boolean));
+        const plain = U.foldKey(name).replace(/\b(RED|GREEN)\s+DOT\b/g, ' ').replace(/\bRAL\b/g, ' ').replace(/\bTASMANIAN\s+TIGER\b/g, ' ').split(/\s+/).filter((w) => !brandW.has(w)).join(' ');
+        const tc = mk.coloursOf(plain);
+        if (tc.size) {
+          const attr = (p.attrs || []).find((a) => /χρωμ|χρώμ|colou?r/i.test(a.name || ''));
+          const terms = attr ? (attr.terms || []) : [];
+          const ac = new Set(terms.flatMap((t) => [...mk.coloursOf(t)]));
+          if (attr && !attr.variation && ac.size && ![...tc].some((c) => ac.has(c))) colourBad.push(item(p, { why: `τίτλος: ${[...tc].join(', ')} · ιδιότητα χρώματος: ${terms.join(', ')}` }));
+          else if (attr && attr.variation && terms.length > 1 && ac.size > 1) colourBad.push(item(p, { why: `ο τίτλος γράφει ${[...tc].join(', ')}, αλλά το προϊόν έχει χρώματα-παραλλαγές: ${terms.slice(0, 6).join(', ')}` }));
+        }
+      }
       // type first (also «12ΒΟΛΑ FEDERAL…»: a trade name, not the kind)
       if (kinds.startsWithoutKind(name)) {
         const sug = suggestType(p);
@@ -248,6 +265,7 @@ function* runGen() {
     add({ id: site + '-caps', site, severity: 'low', title: 'Τίτλοι με μικρά γράμματα', help: 'Το πρότυπο είναι όλα κεφαλαία χωρίς τόνους. Κωδικοί και μονάδες με αριθμούς (9x19, 400g) μένουν όπως είναι.', items: caps, fix: nameFix });
     add({ id: site + '-accents', site, severity: 'low', title: 'Κεφαλαία με τόνους', help: 'Στα κεφαλαία δεν μπαίνουν τόνοι.', items: accents, fix: nameFix });
     add({ id: site + '-spaces', site, severity: 'low', title: 'Διπλά ή κρυφά κενά στον τίτλο', help: '', items: spaces, fix: nameFix });
+    add({ id: site + '-colour', site, severity: 'medium', title: 'Το χρώμα του τίτλου δεν συμφωνεί με το χρώμα του προϊόντος', help: 'Ο τίτλος λέει ένα χρώμα και η ιδιότητα «Χρώμα» άλλο (ή το προϊόν έχει πολλά χρώματα ως παραλλαγές). Ο πελάτης και το Google βλέπουν αντιφατικά στοιχεία: διόρθωσε το ένα από τα δύο.', items: colourBad });
     add({ id: site + '-long', site, severity: 'info', title: 'Πολύ μεγάλοι τίτλοι', help: 'Το Google κόβει τους τίτλους μετά τους ~70 χαρακτήρες.', items: long });
 
     // Duplicates (variations of one product may share codes; only whole products count)

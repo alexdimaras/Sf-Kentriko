@@ -2,6 +2,7 @@
 'use strict';
 (function () {
   const { h, clear, btn, fmt, GET, pageHead, siteName, sitePill, debounce } = App;
+  const ORIGIN = { rules: 'Κανόνες', site: 'Δεδομένα του site', sources: 'Αντιπρόσωποι & άλλα sites', infer: 'Συμπέρασμα', mine: 'Δικές σου' };
   const STATE = {
     manual: ['Θέλει δικό σου χέρι', 'crit'],
     approve: ['Έτοιμη διόρθωση: περιμένει έγκριση', 'warn'],
@@ -65,6 +66,8 @@
               h('div', { class: 'faint' }, [r.sku ? 'Κωδικός ' + r.sku : 'Χωρίς κωδικό', r.price ? fmt.money(r.price) : 'Χωρίς τιμή'].join(' · ')),
               h('ul', { class: 'fc-problems' }, r.problems.map((x) => h('li', { class: STATE[x.state] ? STATE[x.state][1] : '' },
                 h('span', { class: 'fc-state' }, (STATE[x.state] || [''])[0]), ' ', x.text,
+                // the ready change, beside the problem: «Μετά: …» and where it comes from
+                x.after && x.state !== 'done' ? h('div', { class: 'fc-after' }, h('span', { class: 'faint' }, 'Μετά: '), h('b', null, x.after), x.origin ? h('span', { class: 'pill o-' + x.origin, style: { marginLeft: '6px' } }, ORIGIN[x.origin] || x.origin) : null) : null,
                 x.hint ? h('div', { class: 'faint' }, x.hint) : null)))),
             h('div', { class: 'fc-act' },
               btn('Άνοιγμα', { cls: 'sm', icon: 'search' }, () => App.openProduct(r.site, r.id)),

@@ -231,8 +231,33 @@ function view(q) {
   if (needle) list = list.filter((r) => r.name.toUpperCase().includes(needle) || skuKey(r.sku).includes(skuKey(needle)));
   return {
     stages, total, next: first ? first.n : 5, stage: want, matches: list.length,
-    rows: list.slice(0, 300).map((r) => ({ site: r.site, id: r.id, name: r.name, sku: r.sku, img: r.img, price: r.price, waitingFile: r.waitingFile, problems: r.problems.filter((x) => x.stage === want || want === 5).map((x) => { const o = Object.assign({}, x); delete o.state0; return o; }) })),
+    rows: list.slice(0, 300).map((r) => ({ site: r.site, id: r.id, name: r.name, sku: r.sku, img: r.img, price: r.price, waitingFile: r.waitingFile, problems: r.problems.filter((x) => x.stage === want || want === 5).map((x) => { const o = Object.assign({}, x); delete o.state0; return withAfter(o); }) })),
   };
+}
+
+/**
+ * The «after» of a problem that has a ready change, beside it (asked: «Πριν / Μετά ευανάγνωστα παντού»), and where the
+ * change comes from (rules · the data of the site · suppliers & other sites · worked out · yours) — only for the rows shown.
+ */
+function withAfter(o) {
+  if (!o.fixId) return o;
+  let c = null;
+  try { c = afterIndex().get(o.fixId); } catch (_) { c = null; }
+  if (!c) return o;
+  const to = c.edited !== undefined && c.to === undefined ? c.edited : c.to;
+  const short = (v) => String(v || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+  let after = '';
+  if (typeof to === 'string' || typeof to === 'number') after = c.field === 'published' ? 'πρόχειρο (εκτός site)' : short(to);
+  else if (Array.isArray(to)) after = c.field === 'images' ? `${to.length} φωτογραφίες` : c.field === 'varsku' ? `${to.length} μεγέθη/χρώματα: ${to.slice(0, 3).map((x) => x.sku || 'ο κωδικός του προϊόντος').join(', ')}` : `${to.length}`;
+  else if (to && typeof to === 'object') after = to.html ? 'νέα περιγραφή: ' + short(to.html).slice(0, 90) : to.regular ? `${to.regular.toFixed ? to.regular.toFixed(2) : to.regular} €${to.sale ? ' (προσφορά ' + to.sale + ' €)' : ''}` : to.name || to.path || '';
+  return Object.assign(o, { after, origin: c.origin || '', level: c.level || '' });
+}
+let afterMemo = null;
+function afterIndex() {
+  const items = require('./fixes').compute().items;
+  if (afterMemo && afterMemo.items === items) return afterMemo.map;
+  afterMemo = { items, map: new Map(items.map((c) => [c.id, c])) };
+  return afterMemo.map;
 }
 
 /** Counts for the Today screen. */

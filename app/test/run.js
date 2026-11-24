@@ -174,6 +174,12 @@ function supplierSite() {
   const fv = flow.view({ stage: 1 });
   ok(fv.stages.length === 5 && fv.stages[4].id === 'ready', 'five steps, the last one is "ready"');
   const rowOf = (site, id) => flow.compute().rows.get(site + ':' + id);
+  {
+    // the «after» of a ready change beside its problem, with where it comes from (Πριν / Μετά everywhere)
+    let px = null;
+    for (const st of [1, 2, 3, 4, 5]) for (const r of flow.view({ stage: st }).rows) for (const x of r.problems) if (!px && x.fixId && x.after) px = x;
+    ok(px && px.after.length > 0 && ['rules', 'site', 'sources', 'infer', 'mine'].includes(px.origin), 'Ροή: a problem with a ready change shows its «Μετά» and where it comes from', JSON.stringify(px));
+  }
   ok(rowOf('sf', 102) && rowOf('sf', 102).stage === 5 && rowOf('sf', 102).waitingFile, 'a product whose fixes are all approved is ready (it only waits for the file to be uploaded)');
   // three new products: no code / the same code twice → step 1; a missing brand → step 2; a missing photo → step 3
   const cur = require(APP + '/lib/catalog').load('sf');
