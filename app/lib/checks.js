@@ -329,7 +329,10 @@ function codesInTitle(name, p, ctx) {
     const k = U.normSku(w);
     if (k.length < 4 || !/\d/.test(k) || isUnit(w)) continue;
     if (own && k === own && modelLike(w.toUpperCase())) continue;
-    const hit = (own && k === own) || (ownBase.length >= 5 && k === ownBase && !modelLike(w.toUpperCase())) || (ctx && ctx.codes && ctx.codes.has(k) && k !== own);
+    // (…or a maker's item number by its shape — K05068, D19041: one or two letters and five digits or more — even when no
+    // product of ours has it as its code; seen 24/11: «PANTS K05068» stayed in the title, the code was not in the catalog)
+    const itemNo = /^[A-Z]{1,2}\d{5,}$/.test(w.toUpperCase());
+    const hit = (own && k === own) || (ownBase.length >= 5 && k === ownBase && !modelLike(w.toUpperCase())) || (ctx && ctx.codes && ctx.codes.has(k) && k !== own) || itemNo;
     if (hit) out.push(w0);
   }
   if (!out.length) return [];

@@ -122,7 +122,7 @@ function report(site, id) {
   // ---- codes ----
   const sku = String(p.sku || '').trim();
   if (!sku) add('SKU / EAN', p.type === 'variable' ? 'warn' : 'crit', 'Χωρίς κωδικό (SKU).', 'Μόνο πραγματικός κωδικός: προμηθευτής ή ο ίδιος σε ≥2 ανεξάρτητα καταστήματα — ποτέ κατασκευασμένος.', 'sku');
-  else if (U.junkSku(sku)) add('SKU / EAN', 'crit', `Ο κωδικός «${sku}» είναι κωδικός αντιγράφου (ημερομηνία στο τέλος), όχι πραγματικός.`, 'Κανένα «καθάρισμα» του κωδικού: αντικατάσταση μόνο με κωδικό από προμηθευτή ή ≥2 καταστήματα.', 'sku');
+  else if (U.junkSku(sku)) add('SKU / EAN', 'crit', `Ο κωδικός «${sku}» δεν είναι πραγματικός κωδικός (ώρα αντιγραφής στο τέλος, ή κείμενο γραμμένο στη θέση του κωδικού).`, 'Κανένα «καθάρισμα» του κωδικού: αντικατάσταση μόνο με κωδικό από προμηθευτή ή ≥2 καταστήματα.', 'sku');
   else if ((D.sku.get(U.normSku(sku)) || 0) > 1) add('SKU / EAN', 'crit', `Ο κωδικός ${sku} υπάρχει σε ${D.sku.get(U.normSku(sku))} προϊόντα.`, 'Ένας κωδικός = ένα προϊόν / παραλλαγή.', 'sku');
   // codes the internet research saw for this very product: one source = an uncertain finding to check by hand
   // (it may be the shop's own code, not the maker's); two independent sources go to Διορθώσεις as a proposal

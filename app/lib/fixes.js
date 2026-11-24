@@ -223,6 +223,29 @@ function variationsOf(C, site) {
  * (K16107-1755357657, 58-1756480828: «-» + ten digits of a date between 2017 and 2033). → the code before it, or ''.
  */
 function junkSku(sku) { return U.junkSku(sku); }
+/**
+ * The code of a size / colour that is its own size with a number of a copy after it (44-4147, 46-68529, 58-1756480828):
+ * not a code of the maker. Seen 24/11 on ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC: 9 of the 12 sizes were caught, these 3 were not.
+ */
+function sizeJunk(v) {
+  const m = String((v && v.sku) || '').trim().match(/^(.+?)[-_ ](\d{3,})$/);
+  if (!m) return false;
+  const want = variantWant(v.varLabel);
+  const head = U.normSku(U.greeklish(m[1]));
+  return !!head && (head === want.size || [...String(v.varLabel || '').split(',')].some((x) => U.normSku(U.greeklish(x.slice(x.indexOf(':') + 1).trim())) === head));
+}
+/**
+ * A product's code that is the code of ANOTHER product of the shop with «-1», «-2» after it: what WordPress writes when a
+ * product is copied (ΠΑΝΤΕΛΟΝΙ PENTAGON BDU ARCTIC PANTS K05068 has «K05001-2.0-MC-1»: the code of the BDU 2.0
+ * MULTICAM it was copied from). Never «the product's code» for its sizes. → the other product, or null.
+ */
+function copiedFrom(C, site, p) {
+  // (one digit 1–9, as WordPress writes it — never «-01» / «-16»: a maker's colour or length, K17140-STL-01, TSR-16)
+  const m = String((p && p.sku) || '').trim().match(/^(.+?)\s*-([1-9])$/);
+  if (!m || !C.skuOwner) return null;
+  const o = C.skuOwner[site] && C.skuOwner[site].get(U.normSku(m[1]));
+  return o && o.id !== p.id ? o : null;
+}
 /** «Μέγεθος: 43 (UK8 1/2), Χρώμα: Μαύρο» → { size: '43UK812', colours: Set } (what a shop's variant must match). */
 function variantWant(label) {
   const parts = String(label || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -248,7 +271,7 @@ function unifyCodes(C, site, p, code, ev) {
   return all.filter((v) => {
     const k = U.normSku(v.sku || '');
     if (!k || done.has(v.id)) return false;
-    return !!junkSku(v.sku) || count.get(k) > 1 || (own.length >= 4 && k !== own && k.startsWith(own)) || (own.length >= 4 && k === own);
+    return !!junkSku(v.sku) || sizeJunk(v) || count.get(k) > 1 || (own.length >= 4 && k !== own && k.startsWith(own)) || (own.length >= 4 && k === own);
   }).map((v) => ({ id: v.id, label: v.varLabel || '', sku: '', was: String(v.sku || ''), srcs: [] }));
 }
 /**
@@ -262,7 +285,7 @@ function variationCodes(C, site, p, code, hits) {
   const all = variationsOf(C, site).get(p.id) || [];
   const count = new Map();
   for (const v of all) if (v.sku) count.set(U.normSku(v.sku), (count.get(U.normSku(v.sku)) || 0) + 1);
-  const bad = (v) => !String(v.sku || '').trim() || !!junkSku(v.sku) || count.get(U.normSku(v.sku)) > 1 || (code && U.normSku(v.sku) === U.normSku(code));
+  const bad = (v) => !String(v.sku || '').trim() || !!junkSku(v.sku) || sizeJunk(v) || count.get(U.normSku(v.sku)) > 1 || (code && U.normSku(v.sku) === U.normSku(code));
   const vs = all.filter(bad);
   if (!vs.length) return [];
   let H = hits;
@@ -416,7 +439,22 @@ function confidenceOf(c) {
   if (c.level === 'high') return Math.min(96, 90 + 2 * (n - 1) + (kinds.includes('supplier') ? 2 : 0));
   return Math.min(85, 70 + 5 * (n - 1) + (kinds.includes('supplier') ? 5 : 0));
 }
-const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); c.confidence = confidenceOf(c); return c; };
+/**
+ * Where a proposal comes from, in four kinds people can tell apart (asked 24/11: «τι βρέθηκε από το site, τι από κανόνες,
+ * τι από τι κατάλαβες»): rules of the shop · the data of our site itself · other sites (supplier first, our other site,
+ * shops, internet) · what the program worked out (similar products, AI) · a person's own change.
+ */
+const ORIGINS = { rules: 'Κανόνες', site: 'Δεδομένα του site', sources: 'Αντιπρόσωποι & άλλα sites', infer: 'Συμπέρασμα', mine: 'Δικές σου' };
+function originOf(c) {
+  const k = (c.source && c.source.kind) || ((c.sources || [])[0] || {}).kind || '';
+  if (k === 'manual') return 'mine';
+  if (k === 'site') return 'site';
+  if (['supplier', 'twin', 'competitor', 'web', 'page'].includes(k)) return 'sources';
+  if (k === 'ai' || /παρόμοια προϊόντα|AI/.test((c.source && c.source.label) || '')) return 'infer';
+  if (k === 'rule' || k === 'mirror') return c.field === 'varsku' || c.field === 'sku' ? 'site' : 'rules';
+  return k ? 'sources' : 'rules';
+}
+const finish = (c) => { c.id = `${c.site}:${c.pid}:${c.field}`; c.group = GROUP[c.field]; c.label = FIELD[c.field]; c.hash = hashOf(c.to); c.confidence = confidenceOf(c); c.origin = originOf(c); return c; };
 
 function buildCtx() {
   const catalog = require('./catalog');
@@ -424,7 +462,8 @@ function buildCtx() {
   const wx = require('./wooexport');
   const L = catalog.links();
   const C = { manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
-  for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) C.skus[st].add(U.normSku(x.sku));
+  C.skuOwner = { sf: new Map(), st: new Map() }; // code → the product (not a variation) that has it
+  for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) { C.skus[st].add(U.normSku(x.sku)); if (x.type !== 'variation') C.skuOwner[st].set(U.normSku(x.sku), x); }
   for (const site of catalog.SITES) {
     const cat = catalog.load(site);
     if (!cat.syncedAt) continue;
@@ -608,7 +647,8 @@ function proposalsFor0(site, p, C) {
         add(Object.assign({}, base, { field: 'brand', from: '', to: top.name, why: 'Χωρίς μάρκα: η μάρκα μπαίνει στα φίλτρα, στο Google και συνδέει το προϊόν με τον αντιπρόσωπο.' + (top.srcs.length > 1 ? ` Συμφωνούν ${top.srcs.length} πηγές.` : '') + (top.known ? '' : ' (Νέα μάρκα για το κατάστημα: έλεγξε τη γραφή.)') + (exportable ? '' : ' (Δεν μπαίνει στο αρχείο: ' + (attrBrands ? 'το προϊόν έχει ήδη ιδιότητες/μεγέθη' : 'το κατάστημα χρησιμοποιεί «Brands»') + ' — βάλ’ τη από τη μαζική επεξεργασία.)'), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium', exportable }));
       }
     }
-    const junk = junkSku(p.sku);
+    const copy = copiedFrom(C, site, p);
+    const junk = junkSku(p.sku) || copy;
     if (!String(p.sku || '').trim() || junk) {
       // Code: our other site → the supplier's list → the shops with the same product (their maker's code). A «code»
       // that is the date of a copy (Mora-1755379572) is replaced only by a code that sources show — never «cleaned»
@@ -625,7 +665,18 @@ function proposalsFor0(site, p, C) {
       const top = ranked[0];
       // two different codes with the same support: nothing (a wrong code is worse than none)
       // replacing a code that is there (the date of a copy): two independent sources at least
-      if (top && junk && top.srcs.filter((x) => x.kind !== 'twin').length < 2 && !top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier')) { /* an uncertain finding: shown in the product's quality report, no proposal */ }
+      let added = false;
+      const warnCopy = (found0) => {
+        added = true;
+        // what the sources say (the supplier first, then the shops): when it is a code another product of ours has, both are said
+        const holder = found0 && C.skuOwner[site].get(U.normSku(found0.code));
+        const srcTxt = found0 ? ` Οι πηγές (${found0.srcs.map((x) => x.label).slice(0, 3).join(' · ')}) δείχνουν «${found0.code}»` + (holder && holder.id !== p.id ? `, όμως αυτόν τον έχει ήδη το «${holder.name}»: ένα από τα δύο προϊόντα έχει λάθος κωδικό — έλεγξέ τα μαζί.` : '.') : '';
+        // (a copied code: nothing replaces it without proof, but it is said — its sizes must never get it as «the product's code»)
+        const mk = require('./market');
+        const inTitle = U.collapse(p.name).split(' ').filter((w) => /\d/.test(w) && /[A-Z]/i.test(w) && mk.codeBase(w) && U.normSku(w) !== U.normSku(p.sku)).slice(0, 2);
+        add(Object.assign({}, base, { field: 'sku', from: p.sku, to: 'ο πραγματικός κωδικός (χειροκίνητα)', exportable: false, why: `Ο κωδικός «${p.sku}» είναι ο κωδικός άλλου προϊόντος (${copy.sku} — ${copy.name}) με «-${String(p.sku).split('-').pop()}»: το προϊόν αντιγράφηκε από εκείνο και κράτησε τον κωδικό του. Δεν μπαίνει ούτε στα μεγέθη/χρώματα.` + (inTitle.length ? ` Ο τίτλος γράφει «${inTitle.join(' ')}»: αν είναι ο κωδικός του κατασκευαστή, γράψ' τον στο προϊόν (και βγάλ' τον από τον τίτλο).` : '') + (srcTxt || ' Δεν βρέθηκε ακόμα πηγή (αντιπρόσωπος ή ≥2 καταστήματα) για τον σωστό.'), source: { kind: 'site', label: 'Από τα δεδομένα του site (αντιγραμμένος κωδικός)' }, level: 'medium' }));
+      };
+      if (top && junk && top.srcs.filter((x) => x.kind !== 'twin').length < 2 && !top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier')) { if (copy) warnCopy(top); /* else: an uncertain finding, shown in the product's quality report */ }
       else if (top && !(ranked[1] && ranked[1].srcs.length >= top.srcs.length) && !C.skus[site].has(U.normSku(top.code))) {
         const fromUs = top.srcs.some((x) => x.kind === 'twin' || x.kind === 'supplier');
         // sure: our own other site, a sure supplier source, or two shops that give the same code on their own
@@ -637,8 +688,10 @@ function proposalsFor0(site, p, C) {
         if (clash) sure = false;
         const ev = p.type === 'variable' ? variationCodes(C, site, p, top.code) : [];
         const vars = p.type === 'variable' ? ev.concat(unifyCodes(C, site, p, top.code, ev)) : [];
-        add(Object.assign({}, base, { field: 'sku', from: junk ? p.sku : '', to: top.code, vars, why: (junk ? `Ο κωδικός «${p.sku}» δεν είναι κωδικός (έχει στο τέλος την ώρα αντιγραφής του προϊόντος). ` : 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.') + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Αβέβαιο εύρημα — μία μόνο πηγή (ίσως κωδικός του καταστήματος, όχι του κατασκευαστή): χρειάζεται χειροκίνητη επιβεβαίωση.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
+        added = true;
+        add(Object.assign({}, base, { field: 'sku', from: junk ? p.sku : '', to: top.code, vars, why: (copy ? `Ο κωδικός «${p.sku}» είναι ο κωδικός άλλου προϊόντος (${copy.sku} — ${copy.name}) με «-${String(p.sku).split('-').pop()}»: αντιγράφηκε από εκεί. ` : junk ? `Ο κωδικός «${p.sku}» δεν είναι κωδικός (έχει στο τέλος την ώρα αντιγραφής του προϊόντος). ` : 'Χωρίς κωδικό: χωρίς αυτόν δεν γίνεται αντιστοίχιση με τιμοκαταλόγους, ανταγωνιστές και Google.') + (top.srcs.length > 1 ? ` Τον ίδιο κωδικό δίνουν ${top.srcs.length} πηγές.` : '') + (clash ? ` Ο τίτλος γράφει άλλον κωδικό (${clash.base}): ποιος είναι ο σωστός;` : sure ? '' : ' Αβέβαιο εύρημα — μία μόνο πηγή (ίσως κωδικός του καταστήματος, όχι του κατασκευαστή): χρειάζεται χειροκίνητη επιβεβαίωση.') + (vars.length ? ` Μαζί παίρνουν κωδικό και ${vars.length} μεγέθη/χρώματα.` : ''), source: top.srcs[0], sources: top.srcs.slice(1), level: sure ? 'high' : 'medium' }));
       }
+      if (copy && !added) warnCopy(top);
     } else if (p.type === 'variable') {
       // the product has a code, some of its sizes / colours do not (or have a date of a copy, or the same code twice)
       const vars = variationCodes(C, site, p, String(p.sku).trim());
@@ -796,6 +849,9 @@ function compute() {
       if (d && (d.hash === c.hash || d.edited !== undefined)) {
         c.status = d.status; c.at = d.at; c.by = d.by || '';
         if (d.edited !== undefined) { c.edited = true; c.to = d.edited; }
+        // in the file, but the site read AFTER it still has the old value: the import did not happen (or did not take) —
+        // back to «waiting», said so (seen 24/11: old changes stood as done while nothing changed on the site)
+        if (d.status === 'exported' && d.exportedAt && syncedAfter(c.site, d.exportedAt)) { c.status = 'pending'; c.notApplied = d.exportedAt; }
       }
       out.push(c);
       if (c.twin != null && c.status !== 'rejected') { lead.push(c); leadKey.add(c.twin + ':' + c.field); }
@@ -824,6 +880,12 @@ function compute() {
   }
   memo = { at: P.at, items: out, cacheAt: P.cacheAt, P, rev: P.rev, dv, iv };
   return memo;
+}
+/** Was this site's catalog read again (15 minutes or more) after that moment? */
+function syncedAfter(site, iso) {
+  const cat = require('./catalog').load(site);
+  const t = new Date(cat.syncedAt || 0).getTime();
+  return t > 0 && t - new Date(iso).getTime() > 15 * 60000;
 }
 /** The value on the site now, for showing "before → after" (looked up only for what is shown). */
 function withFrom(c) {
@@ -867,17 +929,21 @@ function view(q) {
   const all = compute().items;
   const site = q.site === 'st' ? 'st' : q.site === 'sf' ? 'sf' : '';
   const status = ['pending', 'approved', 'exported', 'rejected'].includes(q.status) ? q.status : 'pending';
-  const counts = { groups: {}, status: { pending: 0, approved: 0, exported: 0, rejected: 0 }, high: 0, sites: { sf: 0, st: 0 } };
+  const counts = { groups: {}, origins: {}, status: { pending: 0, approved: 0, exported: 0, rejected: 0 }, high: 0, sites: { sf: 0, st: 0 }, notApplied: 0 };
+  const origin = ORIGINS[q.origin] ? q.origin : '';
   for (const c of all) {
     if (site && c.site !== site) continue;
     counts.status[c.status]++;
     if (c.status !== status) continue;
+    if (c.notApplied) counts.notApplied++;
+    counts.origins[c.origin] = (counts.origins[c.origin] || 0) + 1;
+    if (origin && c.origin !== origin) continue;
     counts.groups[c.group] = (counts.groups[c.group] || 0) + 1;
     // the sure ones of what is shown (the button «approve all the sure ones» takes the chosen group)
     if (c.level === 'high' && (!q.group || c.group === q.group) && c.exportable !== false) counts.high++;
   }
   for (const c of all) if (c.status === 'approved') counts.sites[c.site]++;
-  let list = all.filter((c) => (!site || c.site === site) && c.status === status && (!q.group || c.group === q.group) && (q.level !== 'high' || c.level === 'high'));
+  let list = all.filter((c) => (!site || c.site === site) && c.status === status && (!q.group || c.group === q.group) && (!origin || c.origin === origin) && (q.level !== 'high' || c.level === 'high') && (q.notApplied !== '1' || c.notApplied));
   if (q.q) { const t = U.foldKey(q.q).split(' ').filter(Boolean); list = list.filter((c) => { const h = U.foldKey(c.name + ' ' + (c.sku || '')); return t.every((x) => h.includes(x)); }); }
   // one card per product, the products with the most (and surest) changes first
   const by = new Map();
@@ -888,7 +954,7 @@ function view(q) {
   cards.sort((a, b) => b.changes.filter((c) => c.level === 'high').length - a.changes.filter((c) => c.level === 'high').length || b.changes.length - a.changes.length);
   const per = Math.min(100, Number(q.per) || 30), page = Math.max(1, Number(q.page) || 1);
   return {
-    at: compute().at, cacheAt: compute().cacheAt, counts, total: cards.length, cards: cards.slice((page - 1) * per, page * per).map((cd) => Object.assign({}, cd, { changes: cd.changes.map(withFrom) })), groups: GROUPS, fields: FIELD,
+    at: compute().at, cacheAt: compute().cacheAt, counts, total: cards.length, cards: cards.slice((page - 1) * per, page * per).map((cd) => Object.assign({}, cd, { changes: cd.changes.map(withFrom) })), groups: GROUPS, origins: ORIGINS, fields: FIELD,
     quality: ['sf', 'st'].filter((x) => compute().P.q[x]).map((x) => quality(x)),
     ai: !!(settings.all().localAI || {}).enabled,
   };
@@ -1168,4 +1234,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

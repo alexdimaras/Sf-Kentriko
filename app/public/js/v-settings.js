@@ -237,13 +237,26 @@
         const evList = h('ul', { class: 'todo-list ev-list' });
         const evSel = select([['warn', 'Προσοχή και σφάλματα'], ['error', 'Μόνο σφάλματα'], ['info', 'Όλα']], 'warn', () => drawEv());
         const SV = { server: 'πρόγραμμα', queue: 'ουρά', db: 'βάση', health: 'υγεία', ai: 'AI', search: 'έρευνα', worker: 'υπολογιστής', engine: 'προετοιμασία', backup: 'αντίγραφο' };
-        const drawEv = () => GET('/api/diagnostics', { severity: evSel.value, limit: 40 }).then((r) => {
+        // (one line per KIND of event — the same thing 97 times is one line «×97», the newest message under it; asked
+        // 24/11: «τα συμβάντα πιάνουν πολύ χώρο») · the first 6 kinds, the rest with «Δείξε όλα»
+        let evAll = false;
+        const drawEv = () => GET('/api/diagnostics', { severity: evSel.value, limit: 200 }).then((r) => {
           clear(evList);
           if (!r.events.length) evList.appendChild(h('li', { class: 'faint' }, 'Κανένα συμβάν — τίποτα δεν πήγε στραβά τις τελευταίες 14 μέρες.'));
+          const kinds = new Map();
+          for (const e of r.events) { const k = e.service + ':' + e.code; const g = kinds.get(k); if (!g) kinds.set(k, Object.assign({}, e, { n: e.count || 1 })); else g.n += e.count || 1; }
+          const groups = [...kinds.values()];
+          for (const e of evAll ? groups : groups.slice(0, 6)) evList.appendChild(h('li', { class: 'ev-one ' + (e.severity === 'error' ? 'crit' : e.severity === 'warn' ? 'warn' : '') },
+            h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' } }, h('b', null, (SV[e.service] || e.service) + ' · ' + e.code + (e.n > 1 ? ` ×${e.n}` : '')), h('span', { class: 'faint num' }, fmt.ago(e.last || e.at))),
+            h('div', { class: 'ev-msg', title: e.message }, e.message)));
+          if (groups.length > 6) evList.appendChild(h('li', { class: 'faint' }, h('button', { type: 'button', class: 'linkish', onclick: () => { evAll = !evAll; drawEv(); } }, evAll ? 'Λιγότερα' : `Δείξε όλα (${groups.length} είδη)`)));
+        }).catch(() => {});
+        const drawEvOld = (r) => {
           for (const e of r.events) evList.appendChild(h('li', { class: e.severity === 'error' ? 'crit' : e.severity === 'warn' ? 'warn' : '' },
             h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' } }, h('b', null, (SV[e.service] || e.service) + ' · ' + e.code + (e.count > 1 ? ` ×${e.count}` : '')), h('span', { class: 'faint num' }, fmt.ago(e.last || e.at))),
             h('div', null, e.message), e.jobId || e.rid ? h('div', { class: 'faint', style: { fontSize: '12px' } }, [e.jobId && 'εργασία ' + e.jobId, e.rid && 'κωδικός σφάλματος ' + e.rid].filter(Boolean).join(' · ')) : null));
-        }).catch(() => {});
+        };
+        void drawEvOld;
         const bundleBtn = btn('Πακέτο διάγνωσης για AI', { cls: 'sm', icon: 'download', title: 'Ένα αρχείο με την κατάσταση της στιγμής για να το δώσεις σε ένα AI (π.χ. Claude) — χωρίς κωδικούς και μυστικά' }, () => GET('/api/diagnostics/bundle').then((r) => {
           const ta = h('textarea', { readonly: true, rows: 16, style: { width: '100%', fontFamily: 'ui-monospace, monospace', fontSize: '12px' } }, r.markdown);
           modal.open(h('div', null, dlgHead('Πακέτο διάγνωσης για AI', 'Δες το πριν το στείλεις. Δεν περιέχει κωδικούς, tokens, κλειδιά, διευθύνσεις email ή ονόματα χρηστών.'), ta,

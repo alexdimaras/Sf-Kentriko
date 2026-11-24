@@ -184,7 +184,7 @@ const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r('h
     const junk = Object.assign({}, olive, { id: 999001, sku: 'Mora-1755379572', name: 'ΜΑΧΑΙΡΙ MORAKNIV RISBERG HUNTING (S)', brand: 'Morakniv', images: [] });
     store.write('catalog-sf', { syncedAt: now, source: 'api', products: real.concat([junk]), categories: [] });
     const qj = quality.report('sf', 999001);
-    ok(qj.areas.some((a) => a.level === 'crit' && /κωδικός αντιγράφου/.test(a.text)) && qj.areas.some((a) => a.level === 'crit' && a.area === 'Φωτογραφίες') && qj.needsResearch, 'a copy\'s code and no photo → «Πρέπει», and the full research is offered (not started)', JSON.stringify(qj.areas.filter((a) => a.level === 'crit').map((a) => a.text)));
+    ok(qj.areas.some((a) => a.level === 'crit' && /δεν είναι πραγματικός κωδικός/.test(a.text)) && qj.areas.some((a) => a.level === 'crit' && a.area === 'Φωτογραφίες') && qj.needsResearch, 'a copy\'s code and no photo → «Πρέπει», and the full research is offered (not started)', JSON.stringify(qj.areas.filter((a) => a.level === 'crit').map((a) => a.text)));
     ok(!qj.proposals.some((c) => c.field === 'sku' && /^Mora$/i.test(c.to)), 'no «Mora» made of the copy\'s code');
     // the real case (amerikaniki-agora.gr, 23/11): one shop shows «Mora-14723» for MORAKNIV RISBERG HUNTING (S)
     const wc = store.read('web-codes', null) || {};

@@ -136,6 +136,23 @@ function supplierSite() {
   const ex = fixes.exportFile('sf', 'test');
   ok(/^\uFEFFID,Name,/.test(ex.csv) && ex.csv.includes('Cordura 500D') && ex.csv.includes('GTIN, UPC, EAN, or ISBN'), 'one WooCommerce update file with only the changed columns');
   ok(fixes.compute().items.filter((c) => c.status === 'exported').length === sure.count - fixes.compute().items.filter((c) => c.site === 'st' && c.status === 'approved').length, 'exported fixes are marked');
+  {
+    // (24/11: «it keeps the old changes, while nothing changed on the site») — the site read again 20 minutes after the
+    // file, and it still has the old values: those changes go back to «waiting», said so; the rest stays «in the file»
+    const exp0 = fixes.compute().items.filter((c) => c.status === 'exported' && c.site === 'sf').length;
+    const st0 = store.read('fixes', {});
+    const keep0 = JSON.parse(JSON.stringify(st0));
+    const old = new Date(Date.now() - 30 * 60000).toISOString();
+    for (const v of Object.values(st0)) if (v.status === 'exported') v.exportedAt = old;
+    store.write('fixes', st0);
+    const c0 = store.read('catalog-sf'); const sync0 = c0.syncedAt; store.write('catalog-sf', Object.assign({}, c0, { syncedAt: new Date().toISOString() }));
+    fixes.invalidate();
+    const na = fixes.compute().items.filter((c) => c.notApplied && c.site === 'sf');
+    const vv = fixes.view({ site: 'sf', status: 'pending', notApplied: '1' });
+    ok(exp0 > 0 && na.length === exp0 && na.every((c) => c.status === 'pending') && vv.counts.notApplied === exp0 && vv.cards.length > 0, 'in the file, but the site read after it has not changed: back to «waiting», marked «δεν μπήκε στο site»', JSON.stringify([exp0, na.length, vv.counts.notApplied]));
+    ok(Object.keys(vv.counts.origins).length >= 1 && vv.origins.rules === 'Κανόνες', 'Διορθώσεις: counts by where each proposal comes from', JSON.stringify(vv.counts.origins));
+    store.write('fixes', keep0); store.write('catalog-sf', Object.assign({}, store.read('catalog-sf'), { syncedAt: sync0 })); fixes.invalidate();
+  }
 
   section('Ροή εργασίας: κωδικός → στοιχεία → περιγραφή → τιμή');
   const flow = require(APP + '/lib/flow');

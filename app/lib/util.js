@@ -414,7 +414,10 @@ function uid(prefix) { return (prefix || '') + Date.now().toString(36) + Math.ra
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch (_) { return ''; } }
 /** A code with the date stamp of a copy at its end (Mora-1755379572, 58-1756480828): not a real code → { base } or null. */
 function junkSku(sku) {
-  const m = String(sku || '').trim().match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
+  const s = String(sku || '').trim();
+  // a sentence typed in the code field («Δυνατότητα προ-παραγγελίας – Άφιξη…», «RELEASE OCTOBER 2026»): not a code at all
+  if (/[Α-Ωα-ωάέήίόύώ]{4,}\s/.test(s) || /\b(RELEASE|PRE-?ORDER|COMING SOON)\b/i.test(s) || s.split(/\s+/).length >= 4) return { base: '' };
+  const m = s.match(/^(.*?)[-_]?(1[5-9]\d{8})$/);
   return m ? { base: m[1].replace(/[-_.\s]+$/, '') } : null;
 }
 /** One «source»: the registrable domain of a host (shop.x.gr and www.x.gr = x.gr; x.com.gr / x.co.uk keep three parts). */

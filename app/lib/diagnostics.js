@@ -28,7 +28,17 @@ function runbookSections(codes) {
  */
 function bundle(d) {
   const at = new Date();
-  const ev = events.query({ severity: 'warn', limit: 60 });
+  // (one entry per KIND of event, with how many, first / last time and the newest message — the same thing 97 times was
+  // 97 lines, twice: «πιάνει πολύ χώρο», 24/11)
+  const evRaw = events.query({ severity: 'warn', limit: 400 });
+  const byKind = new Map();
+  for (const e of evRaw) {
+    const k = e.service + ':' + e.code + ':' + e.severity;
+    const g = byKind.get(k);
+    if (!g) byKind.set(k, { at: e.at, last: e.last || e.at, count: e.count || 1, severity: e.severity, service: e.service, code: e.code, message: e.message, jobs: e.jobId ? [e.jobId] : [], rid: e.rid });
+    else { g.count += e.count || 1; if ((e.at || '') < g.at) g.at = e.at; if (e.jobId && g.jobs.length < 3 && !g.jobs.includes(e.jobId)) g.jobs.push(e.jobId); }
+  }
+  const ev = [...byKind.values()].slice(0, 25);
   const sum = events.summary();
   const s = d.settings || {};
   const safeSettings = {
@@ -46,7 +56,7 @@ function bundle(d) {
     status: (d.status && d.status.items || []).map((x) => ({ id: x.id, level: x.level, text: x.text })), overall: d.status ? d.status.level : 'unknown',
     health: d.health || {}, workers, queue: d.queue || null,
     failedJobs: (d.failed || []).slice(0, 15).map((j) => ({ type: j.type, label: j.label, error: j.error, attempts: j.attempts, at: j.endedAt ? new Date(j.endedAt).toISOString() : null })),
-    events: ev.map((e) => ({ at: e.at, last: e.last, count: e.count, severity: e.severity, service: e.service, code: e.code, message: e.message, jobId: e.jobId, rid: e.rid })),
+    events: ev,
     eventSummary24h: sum, settings: safeSettings,
   };
   const L = (x) => events.redact(x, 4000);
@@ -64,14 +74,14 @@ function bundle(d) {
   // (the moment of this pack: the health line above was measured at its own time — the two can differ, said so)
   if (d.queue) lines.push('## Ουρά (τώρα, ' + new Date(d.made || Date.now()).toLocaleTimeString('el-GR', { timeZone: 'Europe/Athens' }) + ')', `- σε αναμονή ${d.queue.queued} · τρέχουν ${d.queue.running} · κολλημένες ${d.queue.stuck} · >2 μέρες ${d.queue.old} · αποτυχίες 24ώρου ${d.queue.failed}`, '');
   if (json.failedJobs.length) { lines.push('## Τελευταίες αποτυχημένες εργασίες'); for (const j of json.failedJobs) lines.push(`- ${j.at || ''} ${j.type} «${L(j.label)}»: ${L(j.error)} (προσπάθειες ${j.attempts})`); lines.push(''); }
-  lines.push('## Συμβάντα (προσοχή / σφάλματα, νεότερα πρώτα)');
+  lines.push('## Συμβάντα (προσοχή / σφάλματα, ένα ανά είδος, νεότερα πρώτα)');
   if (!ev.length) lines.push('- κανένα');
-  for (const e of ev) lines.push(`- ${e.last || e.at} [${e.severity}] ${e.service}/${e.code}${e.count > 1 ? ' ×' + e.count : ''}: ${L(e.message)}${e.jobId ? ' · job ' + e.jobId : ''}${e.rid ? ' · request ' + e.rid : ''}`);
+  for (const e of ev) lines.push(`- [${e.severity}] ${e.service}/${e.code} ×${e.count} · ${e.at === e.last ? e.last : e.at + ' → ' + e.last}: ${L(e.message)}${e.jobs.length ? ' · jobs ' + e.jobs.join(', ') : ''}${e.rid ? ' · request ' + e.rid : ''}`);
   lines.push('');
   lines.push('## Ρυθμίσεις (μόνο όσες δεν είναι μυστικές)', '```json', JSON.stringify(safeSettings, null, 2), '```', '');
   const rb = runbookSections(ev.map((e) => e.code));
   if (rb.length) { lines.push('## Σχετικές οδηγίες (docs/RUNBOOKS.md)', ''); for (const r of rb) lines.push(r, ''); }
-  lines.push('## Τα ίδια ως JSON', '```json', events.redact(JSON.stringify(json, null, 2), 300000), '```'); // (cleaned once more below)
+  lines.push('## Τα ίδια ως JSON (μία γραμμή)', '```json', events.redact(JSON.stringify(json), 300000), '```'); // (cleaned once more below)
   const markdown = events.redact(lines.join('\n'), 600000); // (once more over everything: nothing secret slips through)
   const stamp = at.toISOString().slice(0, 16).replace(/[-:T]/g, '');
   // (the JSON given back to the screen is cleaned the same way, every text of it)

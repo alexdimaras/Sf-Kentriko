@@ -80,6 +80,8 @@
       let site = p.site === 'sf' || p.site === 'st' ? p.site : '';
       let group = p.group || '';
       let level = p.level === 'high' ? 'high' : '';
+      let origin = p.origin || '';
+      let notApplied = p.na === '1';
       let q = p.q || '';
       let page = Math.max(1, Number(p.page) || 1);
       const head = h('div');
@@ -87,6 +89,7 @@
       const tabs = h('div', { class: 'tabs' });
       const bar = h('div', { class: 'toolbar' });
       const chips = h('div', { class: 'row tight' });
+      const ochips = h('div', { class: 'row tight fx-origins' });
       const act = h('div', { class: 'fx-act' });
       const list = h('div', { class: 'stack s' });
       const pager = h('div');
@@ -175,20 +178,27 @@
       };
 
       const load = async () => {
-        App.keep({ tab: status === 'pending' ? '' : status, site, group, level, q, page: page > 1 ? page : '' });
+        App.keep({ tab: status === 'pending' ? '' : status, site, group, level, origin, na: notApplied ? '1' : '', q, page: page > 1 ? page : '' });
         let v;
-        try { v = await GET('/api/fixes', { site, status, group, level, q, page, per: 30 }); } catch (e) { if (e && e.locked) return; clear(list).appendChild(h('div', { class: 'note crit' }, e.message)); return; }
+        try { v = await GET('/api/fixes', { site, status, group, level, origin, notApplied: notApplied ? '1' : '', q, page, per: 30 }); } catch (e) { if (e && e.locked) return; clear(list).appendChild(h('div', { class: 'note crit' }, e.message)); return; }
         if (!main.isConnected || waiting) return; // a newer decision is on its way: its own refresh follows
         drawHead(v);
         clear(tabs);
         for (const [k, l] of STATUS) tabs.appendChild(h('button', { 'aria-selected': String(status === k), 'data-k': k, onclick: () => { status = k; page = 1; load(); } }, l, h('span', { class: 'badge' + (k === 'pending' ? ' coy' : ''), hidden: v.counts.status[k] ? null : '' }, fmt.num(v.counts.status[k] || 0))));
         // the site switch and the search box are made once (the search keeps the focus while you type)
-        if (!bar.firstChild) { bar.appendChild(App.seg([['', 'Και τα δύο'], ['sf', siteName('sf')], ['st', siteName('st')]], site, (x) => { site = x; page = 1; load(); })); bar.appendChild(chips); bar.appendChild(search); }
+        if (!bar.firstChild) { bar.appendChild(App.seg([['', 'Και τα δύο'], ['sf', siteName('sf')], ['st', siteName('st')]], site, (x) => { site = x; page = 1; load(); })); bar.appendChild(chips); bar.appendChild(ochips); bar.appendChild(search); }
         clear(chips);
         chips.appendChild(h('button', { type: 'button', class: 'chip' + (!group ? ' on' : ''), onclick: () => { group = ''; page = 1; load(); } }, 'Όλα'));
         for (const [k, l] of Object.entries(v.groups)) if (v.counts.groups[k] || group === k) chips.appendChild(h('button', { type: 'button', class: 'chip' + (group === k ? ' on' : ''), onclick: () => { group = k; page = 1; load(); } }, l, ' ', h('b', null, fmt.num(v.counts.groups[k] || 0))));
         if (status === 'pending') chips.appendChild(h('button', { type: 'button', class: 'chip' + (level === 'high' ? ' on' : ''), title: 'Μόνο όσα βγαίνουν από κανόνες ή από σίγουρη πηγή (ίδιο EAN / κωδικός)', onclick: () => { level = level === 'high' ? '' : 'high'; page = 1; load(); } }, 'Μόνο σίγουρα'));
+        // where each proposal comes from: rules · the data of the site · suppliers & other sites · worked out · yours
+        clear(ochips);
+        ochips.appendChild(h('span', { class: 'faint', style: { fontSize: '12px', alignSelf: 'center' } }, 'Προέλευση:'));
+        ochips.appendChild(h('button', { type: 'button', class: 'chip' + (!origin ? ' on' : ''), onclick: () => { origin = ''; page = 1; load(); } }, 'Όλες'));
+        for (const [k, l] of Object.entries(v.origins || {})) if ((v.counts.origins || {})[k] || origin === k) ochips.appendChild(h('button', { type: 'button', class: 'chip o-' + k + (origin === k ? ' on' : ''), onclick: () => { origin = k; page = 1; load(); } }, l, ' ', h('b', null, fmt.num((v.counts.origins || {})[k] || 0))));
+        if (status === 'pending' && (v.counts.notApplied || notApplied)) ochips.appendChild(h('button', { type: 'button', class: 'chip warn' + (notApplied ? ' on' : ''), title: 'Μπήκαν σε αρχείο, αλλά το site δεν άλλαξε μετά', onclick: () => { notApplied = !notApplied; page = 1; load(); } }, 'Δεν μπήκαν στο site ', h('b', null, fmt.num(v.counts.notApplied || 0))));
         clear(act);
+        if (status === 'pending' && v.counts.notApplied && !notApplied) act.appendChild(h('div', { class: 'note warn' }, `${fmt.plural(v.counts.notApplied, 'αλλαγή', 'αλλαγές')} μπήκαν σε αρχείο για το site, αλλά το site δεν άλλαξε μετά: το αρχείο δεν ανέβηκε στο WooCommerce (ή δεν πέρασε). Ξαναμπαίνουν εδώ — έγκριση και νέο αρχείο, μετά WooCommerce → Εισαγωγή με «Ενημέρωση υπαρχόντων».`));
         if (status === 'pending' && v.counts.high) act.appendChild(h('div', { class: 'fx-sure' }, icon('check'), h('div', null, h('b', null, `${fmt.plural(v.counts.high, 'σίγουρη διόρθωση', 'σίγουρες διορθώσεις')}${group ? ' (' + v.groups[group] + ')' : ''}`), h('div', { class: 'hint', style: { margin: 0 } }, 'Από κανόνες (κενά, κεφαλαία, τόνοι, γράμματα, τιμές, διαφημίσεις) ή από σίγουρη πηγή (ίδιο EAN / κωδικός στον αντιπρόσωπο, το άλλο μας site).')),
           btn('Έγκριση όλων των σίγουρων', { cls: 'primary', icon: 'check' }, () => POST('/api/fixes/approve-sure', { site, group }).then((r) => { toast(`Εγκρίθηκαν ${fmt.num(r.count)}. Φτιάξε το αρχείο από πάνω δεξιά.`); App.refreshBadges(); load(); }).catch(fail))));
         if (!v.cards.length) {
@@ -225,7 +235,10 @@
           const lv = LEVEL[c.level] || LEVEL.medium;
           el.appendChild(h('div', { class: 'fx-change ' + c.level, 'data-id': c.id },
             h('div', { class: 'fx-ch-head' }, h('span', { class: 'pill' }, c.label), h('span', { class: 'pill ' + lv[1], title: c.level === 'high' ? 'Κανόνας ή σίγουρη πηγή' : 'Πιθανότατα σωστό — ρίξε μια ματιά' }, lv[0]),
-              c.edited ? h('span', { class: 'pill' }, 'αλλαγμένο από εσένα') : null, c.by ? h('span', { class: 'faint', style: { fontSize: '12px' } }, c.by + ' · ' + fmt.ago(c.at)) : null,
+              c.edited ? h('span', { class: 'pill' }, 'αλλαγμένο από εσένα') : null,
+              c.origin && v.origins ? h('span', { class: 'pill o-' + c.origin, title: 'Από πού προέρχεται' }, v.origins[c.origin]) : null,
+              c.notApplied ? h('span', { class: 'pill warn', title: 'Είχε μπει σε αρχείο ' + fmt.ago(c.notApplied) + ', αλλά το site δεν άλλαξε' }, 'δεν μπήκε στο site') : null,
+              c.exportable === false ? h('span', { class: 'pill', title: 'Χρειάζεται δική σου απόφαση στο WooCommerce· δεν μπαίνει σε αρχείο' }, 'μόνο για έλεγχο') : null, c.by ? h('span', { class: 'faint', style: { fontSize: '12px' } }, c.by + ' · ' + fmt.ago(c.at)) : null,
               h('span', { class: 'grow' }),
               status === 'pending' && c.exportable !== false ? btn('Έγκριση', { cls: 'sm', icon: 'check' }, () => decide([c.id], 'approved')) : null,
               status === 'pending' ? btn('Όχι', { cls: 'sm ghost' }, () => decide([c.id], 'rejected')) : null,
