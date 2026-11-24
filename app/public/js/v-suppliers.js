@@ -347,6 +347,28 @@
         btn('Ενημέρωση τώρα', { cls: 'primary sm', icon: 'sync' }, () => POST(autoSrc ? '/api/suppliers/refresh' : '/api/pricelist/refresh', autoSrc ? { id: s.id } : { supplierId: s.id }).then((job) => App.watchJob(job, { done: (r) => { if (r) toast(`Ενημερώθηκε: ${fmt.num(r.items)} κωδικοί, ${fmt.num(r.changed)} αλλαγές τιμής.`); openSupplier(s.id, 'pricelist'); } })).catch(fail)))));
     }
     if (info) {
+      // what changed with the last file (a new file is a new version: nothing that is missing from it is deleted)
+      const vs = await GET('/api/pricelist/versions', { supplierId: s.id }).catch(() => []);
+      if (vs.length && vs[0].counts) {
+        const c = vs[0].counts, ex = vs[0].examples || {};
+        const exList = (arr, f) => (arr || []).length ? h('ul', { class: 'todo-list', style: { fontSize: '13px' } }, arr.slice(0, 10).map((x) => h('li', null, h('span', { class: 'mono' }, x.code || '—'), ' ', x.name || '', f ? ' · ' + f(x) : ''))) : null;
+        const IN = { in: 'διαθέσιμο', out: 'εξαντλημένο' };
+        box.appendChild(h('div', { class: 'panel', style: { marginBottom: '12px' } },
+          h('h2', null, `Έκδοση ${vs[0].v} — τι άλλαξε`), h('p', { class: 'faint', style: { marginTop: '-4px' } }, `${vs[0].file || ''} · ${fmt.dateTime(vs[0].at)}`),
+          h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('tbody', null,
+            h('tr', null, h('td', null, 'Προηγούμενη / νέα έκδοση'), h('td', { class: 'num' }, `${fmt.num(c.before)} → ${fmt.num(c.after)}`)),
+            h('tr', null, h('td', null, 'Νέα προϊόντα'), h('td', { class: 'num' }, '+' + fmt.num(c.added))),
+            h('tr', null, h('td', null, 'Αλλαγές τιμής'), h('td', { class: 'num' }, fmt.num(c.price))),
+            h('tr', null, h('td', null, 'Αλλαγές διαθεσιμότητας'), h('td', { class: 'num' }, fmt.num(c.stock))),
+            h('tr', null, h('td', null, 'Δεν εμφανίζονται πια (κρατιούνται 90 μέρες, δεν διαγράφονται)'), h('td', { class: 'num' }, fmt.num(c.gone))),
+            c.back ? h('tr', null, h('td', null, 'Ξαναεμφανίστηκαν'), h('td', { class: 'num' }, fmt.num(c.back))) : null))),
+          c.added ? h('details', null, h('summary', null, 'Νέα'), exList(ex.added, (x) => fmt.money(x.price))) : null,
+          c.price ? h('details', null, h('summary', null, 'Αλλαγές τιμής'), exList(ex.price, (x) => fmt.money(x.from) + ' → ' + fmt.money(x.to))) : null,
+          c.stock ? h('details', null, h('summary', null, 'Αλλαγές διαθεσιμότητας'), exList(ex.stock, (x) => (IN[x.from] || x.from) + ' → ' + (IN[x.to] || x.to))) : null,
+          c.gone ? h('details', null, h('summary', null, 'Δεν εμφανίζονται πια'), exList(ex.gone)) : null,
+          vs.length > 1 ? h('details', null, h('summary', null, `Προηγούμενες εκδόσεις (${vs.length - 1})`), h('ul', { class: 'todo-list', style: { fontSize: '13px' } }, vs.slice(1).map((x) => h('li', null, `Έκδοση ${x.v} · ${fmt.dateTime(x.at)} · ${fmt.num(x.counts.after)} κωδικοί · +${fmt.num(x.counts.added)} νέα · ${fmt.num(x.counts.price)} τιμές · ${fmt.num(x.counts.stock)} διαθεσιμότητα · ${fmt.num(x.counts.gone)} δεν εμφανίζονται`)))) : null,
+          h('p', { class: 'hint', style: { margin: '6px 0 0' } }, 'Μια νέα τιμή αγοράς δεν αλλάζει ποτέ μόνη της τη λιανική: γίνεται πρόταση στις Τιμές, για έγκριση.')));
+      }
       box.appendChild(h('div', { class: 'note ok', style: { marginBottom: '12px' } }, `Τελευταίος τιμοκατάλογος: ${info.fileName || ''} · ${fmt.num(info.items)} κωδικοί · ${fmt.dateTime(info.importedAt)} · ${info.priceKind === 'cost' ? 'τιμές κόστους' : 'λιανικές'}${info.vatIncluded ? ' με ΦΠΑ' : ' χωρίς ΦΠΑ'}`));
       const cmpBox = h('div');
       box.appendChild(cmpBox);
@@ -376,7 +398,7 @@
         const m = {}; for (const [k, sel] of Object.entries(sels)) if (sel.value) m[k] = sel.value;
         try {
           const r = await POST('/api/pricelist/import', { supplierId: s.id, mapping: m, priceKind: kind.split('-')[0], vatIncluded: kind.endsWith('-vat'), url });
-          toast(`Φορτώθηκαν ${fmt.num(r.items)} κωδικοί${r.changed ? `, ${r.changed} με αλλαγή τιμής από την προηγούμενη φορά` : ''}.`);
+          toast(r.diff && r.version > 1 ? `Έκδοση ${r.version}: ${fmt.num(r.items)} κωδικοί · +${fmt.num(r.diff.added)} νέα · ${fmt.num(r.diff.price)} αλλαγές τιμής · ${fmt.num(r.diff.stock)} διαθεσιμότητα · ${fmt.num(r.diff.gone)} δεν εμφανίζονται (κρατιούνται).` : `Φορτώθηκαν ${fmt.num(r.items)} κωδικοί${r.changed ? `, ${r.changed} με αλλαγή τιμής από την προηγούμενη φορά` : ''}.`);
           openSupplier(s.id, 'pricelist');
         } catch (e) { fail(e); }
       })));

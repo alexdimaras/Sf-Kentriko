@@ -154,6 +154,20 @@ function supplierSite() {
     store.write('fixes', keep0); store.write('catalog-sf', Object.assign({}, store.read('catalog-sf'), { syncedAt: sync0 })); fixes.invalidate();
   }
 
+  section('Τιμοκατάλογος: κάθε νέο αρχείο είναι νέα έκδοση (τίποτα δεν διαγράφεται επειδή λείπει)');
+  {
+    const pl = require(APP + '/lib/pricelist');
+    const it = (code, price, stock) => ({ key: 'c:' + code, code, name: 'Προϊόν ' + code, price, stock });
+    pl.saveVersion('vx', { importedAt: now, fileName: 'a.xml', items: [it('A1', 10, 'ναι'), it('A2', 20, 'ναι'), it('A3', 30, 'ναι')] });
+    const d2 = pl.saveVersion('vx', { importedAt: now, fileName: 'b.xml', items: [it('A1', 12, 'ναι'), it('A2', 20, '0'), it('A4', 40, 'ναι')] });
+    ok(d2.counts.before === 3 && d2.counts.after === 3 && d2.counts.added === 1 && d2.counts.price === 1 && d2.counts.stock === 1 && d2.counts.gone === 1, 'version 2: +1 new, 1 cost changed, 1 out of stock, 1 no longer in the file', JSON.stringify(d2.counts));
+    const saved = store.read('pricelist-vx');
+    ok(saved.version === 2 && saved.items.length === 3 && saved.gone.length === 1 && saved.gone[0].code === 'A3' && saved.gone[0].gone, 'the product missing from the new file is kept apart («gone», since when) — never deleted');
+    const d3 = pl.saveVersion('vx', { importedAt: now, fileName: 'c.xml', items: [it('A1', 12, 'ναι'), it('A2', 20, '0'), it('A3', 31, 'ναι'), it('A4', 40, 'ναι')] });
+    ok(d3.counts.back === 1 && d3.counts.added === 0 && store.read('pricelist-vx').gone.length === 0, 'it comes back by itself when a later file has it again');
+    ok(pl.versions('vx').length === 3 && pl.versions('vx')[0].v === 3 && pl.versions('vx')[1].examples.price[0].from === 10, 'the history of the versions, with examples of each change');
+  }
+
   section('Ροή εργασίας: κωδικός → στοιχεία → περιγραφή → τιμή');
   const flow = require(APP + '/lib/flow');
   const fv = flow.view({ stage: 1 });

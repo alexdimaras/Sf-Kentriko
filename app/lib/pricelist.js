@@ -176,6 +176,52 @@ async function preview(supplierId, input) {
 }
 const pending = new Map();
 
+// ---------- versions: a new file of a supplier is a new version, never a plain replacement ----------
+// (asked 24/11: «να θυμάται τις αλλαγές») — what is new, whose cost changed, whose stock changed, what is no longer in
+// the file. A product missing from one file is NEVER deleted: the list may be partial, or wrong for a day — it is
+// kept apart («gone», with since when) for 90 days, and comes back by itself when a later file has it again.
+const GONE_DAYS = 90;
+function stockWord(v) { const s = U.foldKey(String(v == null ? '' : v)); if (!s) return ''; if (/^(0|ΟΧΙ|NO|OUT|ΕΞΑΝΤΛ|ΜΗ ΔΙΑΘ|ΚΑΤΟΠΙΝ)/.test(s) || /OUT OF STOCK|ΕΞΑΝΤΛΗΜ|ΜΗ ΔΙΑΘΕΣΙΜ/.test(s)) return 'out'; return 'in'; }
+/** prev / next: the saved list and the new one → { counts, examples } (the new one gets its «gone» items carried over) */
+function diffVersions(prev, next) {
+  const before = new Map(((prev && prev.items) || []).map((i) => [i.key, i]));
+  const after = new Map(next.items.map((i) => [i.key, i]));
+  const ex = { added: [], price: [], stock: [], gone: [], back: [] };
+  const c = { before: before.size, after: after.size, added: 0, price: 0, stock: 0, gone: 0, back: 0 };
+  const prevGone = new Map((((prev && prev.gone) || [])).map((i) => [i.key, i]));
+  for (const [k, it] of after) {
+    const o = before.get(k);
+    if (!o) {
+      if (prevGone.has(k)) { c.back++; if (ex.back.length < 20) ex.back.push({ code: it.code, name: it.name }); } else { c.added++; if (ex.added.length < 20) ex.added.push({ code: it.code, name: it.name, price: it.price }); }
+      continue;
+    }
+    if (o.price > 0 && Math.abs(o.price - it.price) > 0.009) { c.price++; if (ex.price.length < 20) ex.price.push({ code: it.code, name: it.name, from: o.price, to: it.price }); }
+    const s0 = stockWord(o.stock), s1 = stockWord(it.stock);
+    if (s0 && s1 && s0 !== s1) { c.stock++; if (ex.stock.length < 20) ex.stock.push({ code: it.code, name: it.name, from: s0, to: s1 }); }
+  }
+  const now = U.nowIso(), cut = Date.now() - GONE_DAYS * 864e5;
+  const gone = [];
+  for (const [k, o] of before) if (!after.has(k)) { c.gone++; if (ex.gone.length < 20) ex.gone.push({ code: o.code, name: o.name }); gone.push(Object.assign({}, o, { gone: now })); }
+  for (const [k, o] of prevGone) if (!after.has(k) && !before.has(k) && new Date(o.gone).getTime() > cut) gone.push(o);
+  next.gone = gone.slice(0, 5000);
+  c.goneKept = next.gone.length;
+  return { counts: c, examples: ex };
+}
+/** Save a new version of a supplier's list: the diff against the last one, and a line in its history (last 30). */
+function saveVersion(supplierId, data) {
+  const prev = store.read('pricelist-' + supplierId, null);
+  const d = diffVersions(prev, data);
+  data.version = ((prev && prev.version) || 0) + 1;
+  data.diff = d;
+  store.write('pricelist-' + supplierId, data);
+  store.update('pricelist-' + supplierId + '-versions', { items: [] }, (h) => {
+    h.items = (h.items || []).concat([{ v: data.version, at: data.importedAt, file: data.fileName || '', counts: d.counts, examples: d.examples }]).slice(-30);
+    return h;
+  });
+  return d;
+}
+function versions(supplierId) { return (store.read('pricelist-' + supplierId + '-versions', { items: [] }).items || []).slice().reverse(); }
+
 function importList(supplierId, opts) {
   const parsed = pending.get(supplierId);
   if (!parsed) throw new Error('Φόρτωσε ξανά το αρχείο.');
@@ -205,7 +251,7 @@ function importList(supplierId, opts) {
     });
   }
   const data = { importedAt: U.nowIso(), fileName: parsed.fileName, source: opts.url ? { url: opts.url } : { file: parsed.fileName }, mapping, priceKind: opts.priceKind === 'cost' ? 'cost' : 'retail', vatIncluded: !!opts.vatIncluded, items };
-  store.write('pricelist-' + supplierId, data);
+  const diff = saveVersion(supplierId, data);
   pending.delete(supplierId);
   // remember feed link on the supplier for one-click refresh
   if (opts.url) {
@@ -214,7 +260,7 @@ function importList(supplierId, opts) {
     if (s && s.feedUrl !== opts.url) sup.save(Object.assign({}, s, { feedUrl: opts.url }));
   }
   const changed = items.filter((i) => i.prevPrice != null && Math.abs(i.prevPrice - i.price) > 0.009).length;
-  return { items: items.length, changed };
+  return { items: items.length, changed, diff: diff.counts, version: data.version };
 }
 
 // ---------- Automatic sources: feed link, the supplier's own catalog (public or B2B login) ----------
@@ -275,10 +321,10 @@ async function fromCatalog(supplierId, job) {
   // B2B prices are usually without VAT and are our cost; public prices are their retail with VAT
   const priceKind = b2b ? (sup.b2bPriceKind || 'cost') : 'retail';
   const vatIncluded = b2b ? !!sup.b2bVatIncluded : true;
-  store.write('pricelist-' + supplierId, { importedAt: U.nowIso(), fileName: (b2b ? 'B2B ' : 'Κατάλογος ') + U.hostOf(origin), source: { catalog: origin, mode: b2b ? 'b2b' : 'public', kind }, mapping: null, priceKind, vatIncluded, items });
+  const diff = saveVersion(supplierId, { importedAt: U.nowIso(), fileName: (b2b ? 'B2B ' : 'Κατάλογος ') + U.hostOf(origin), source: { catalog: origin, mode: b2b ? 'b2b' : 'public', kind }, mapping: null, priceKind, vatIncluded, items });
   if (sup.catalogKind !== kind) suppliers.save(Object.assign({}, sup, { catalogKind: kind, b2bPass: undefined }));
   const changed = items.filter((i) => i.prevPrice != null && Math.abs(i.prevPrice - i.price) > 0.009).length;
-  return { items: items.length, changed, b2b };
+  return { items: items.length, changed, b2b, diff: diff.counts, version: (store.read('pricelist-' + supplierId, {}) || {}).version };
 }
 
 /** Everything automatic for one supplier (used by the daily run). */
@@ -440,8 +486,8 @@ function refreshCosts(supplierId) {
 
 function info(supplierId) {
   const l = store.read('pricelist-' + supplierId, null);
-  return l ? { importedAt: l.importedAt, fileName: l.fileName, items: l.items.length, priceKind: l.priceKind, vatIncluded: l.vatIncluded, source: l.source } : null;
+  return l ? { importedAt: l.importedAt, fileName: l.fileName, items: l.items.length, priceKind: l.priceKind, vatIncluded: l.vatIncluded, source: l.source, version: l.version || 1, diff: l.diff ? l.diff.counts : null, gone: (l.gone || []).length } : null;
 }
 function rawItems(supplierId) { const l = store.read('pricelist-' + supplierId, null); return l ? l.items : []; }
 
-module.exports = { refreshFeed, fromCatalog, refresh, refreshCosts, autoSources, smartMatch, preview, importList, compare, storeCosts, info, rawItems, FIELD_LABELS, retailFor, rowsFromBuffer, guessMapping };
+module.exports = { versions, diffVersions, saveVersion, GONE_DAYS, refreshFeed, fromCatalog, refresh, refreshCosts, autoSources, smartMatch, preview, importList, compare, storeCosts, info, rawItems, FIELD_LABELS, retailFor, rowsFromBuffer, guessMapping };

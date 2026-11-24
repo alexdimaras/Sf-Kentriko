@@ -329,6 +329,7 @@ const routes = {
 
   // Price lists
   'POST /api/pricelist/preview': (b) => pricelist.preview(b.supplierId, b),
+  'GET /api/pricelist/versions': (q) => pricelist.versions(String(q.supplierId || '')),
   'POST /api/pricelist/import': (b) => { const r = pricelist.importList(b.supplierId, b); fixes.invalidate(); return r; },
   'GET /api/pricelist/compare': (q) => pricelist.compare(q.supplierId, q.site) || Promise.reject(new Error('Δεν έχει φορτωθεί τιμοκατάλογος για αυτόν τον αντιπρόσωπο.')),
   'POST /api/pricelist/export': (b) => {
