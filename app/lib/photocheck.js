@@ -27,19 +27,30 @@ const CATS = {
   duplicate: 'Διπλή φωτογραφία',
   poor: 'Κακή ή ακατάλληλη ποιότητα',
   uncertain: 'Αβέβαιο αποτέλεσμα',
+  rejected: 'Απορρίφθηκε στις Διορθώσεις',
 };
 // never proposed / proposed only for a look
-const NEVER = new Set(['other_colour', 'other_version', 'wrong_product', 'generic', 'duplicate', 'poor']);
+const NEVER = new Set(['other_colour', 'other_version', 'wrong_product', 'generic', 'duplicate', 'poor', 'rejected']);
 const EDITION = /\b(PRO|MK\s?[2-9]|MKII|MKIII|V[2-9]|GEN\s?[2-9]|PLUS|MAX|MINI|LITE|XL|II|III|IV|2\.0|3\.0)\b/;
 const ACCESSORY = /(^|[-_ ])(spare|replacement|accessor(y|ies)|parts?|strap|clip|refill|adapter|ανταλλακτ|εξαρτημ)([-_ .]|$)/i;
 const PACKAGING = /(^|[-_ ])(box|package|packaging|packshot-box|blister|συσκευασ)([-_ .]|$)/i;
 const GENERIC = /(^|[-_ ])(banner|logo|placeholder|no-?image|size-?chart|sizechart|sizes?-?guide|measur|lifestyle|promo|icon|badge|youtube|play-button)([-_ .]|$)/i;
 
 const fileOf = (u) => decodeURIComponent(String(u || '').split('?')[0].split('#')[0].split('/').pop() || '').toLowerCase();
+/**
+ * The keys of OUR photos, also as they were before WordPress renamed them on import (kyler.jpg uploaded twice →
+ * kyler-1.jpg; a big one → kyler-scaled.jpg): a candidate «kyler.jpg» is then a photo the site already has.
+ */
+function ourKeysOf(images) {
+  const out = new Set();
+  for (const u of images || []) { const k = keyOf(u); out.add(k); out.add(k.replace(/-\d{1,2}$/, '')); }
+  return out;
+}
 /** The same picture at another size / address: the maker's file name without size and copy suffixes. */
 function keyOf(u) {
   const f = fileOf(u).replace(/\.(jpe?g|png|webp|gif|avif)$/i, '');
-  return f.replace(/[-_]\d{2,4}x\d{2,4}$/, '').replace(/_\d{2,4}x$/, '').replace(/[-_](scaled|large|medium|small|thumb|thumbnail|min|copy|e\d{10,})$/g, '').replace(/[-_]\d{1,2}$/, (m) => (/^[-_]\d$/.test(m) ? '' : m)).replace(/[^a-z0-9α-ω]+/g, '-');
+  // (a trailing number is NOT taken off: kyler-1 and kyler-2 are two different photos of a gallery)
+  return f.replace(/[-_]\d{2,4}x\d{2,4}$/, '').replace(/_\d{2,4}x$/, '').replace(/[-_](scaled|large|medium|small|thumb|thumbnail|min|copy|e\d{10,})$/g, '').replace(/[^a-z0-9α-ω]+/g, '-');
 }
 const tokens = (s) => U.foldKey(String(s || '').replace(/[-_.+%]/g, ' ')).split(/\s+/).filter(Boolean);
 
@@ -89,7 +100,7 @@ function classify(p, u, ctx) {
  */
 function gallery(p, cands, opts) {
   const o = opts || {};
-  const ourKeys = new Set((p.images || []).map(keyOf));
+  const ourKeys = ourKeysOf(p.images);
   const seen = new Set();
   const decided = o.checks || {}; // url → a person's answer
   const take = [], left = [];
@@ -135,6 +146,17 @@ function check(input, by) {
   store.update(KEY, {}, (d) => { d.items = d.items || {}; const prev = d.items[k + '|' + row.url]; if (prev && prev.sample) row.sample = true; d.items[k + '|' + row.url] = row; return d; });
   try { require('./fixes').invalidate(); } catch (_) { /* not loaded */ }
   return row;
+}
+/**
+ * A whole photo proposal rejected in Διορθώσεις: every NEW photo of it is remembered as «no» for that product (it does
+ * not come back when the research finds one more photo and the proposal changes) — and forgotten again on undo.
+ */
+function recordFromFixes(k, urls, by) {
+  const at = U.nowIso();
+  store.update(KEY, {}, (d) => { d.items = d.items || {}; for (const u of urls || []) { const id = k + '|' + String(u).slice(0, 500); if (d.items[id] && !d.items[id].fromFixes) continue; d.items[id] = { k, url: String(u).slice(0, 500), host: U.hostOf(u), verdict: 'no', category: 'rejected', by: by || '', at, sample: false, ver: VER, fromFixes: true, cat: catOf(k) }; } return d; });
+}
+function forgetFromFixes(k) {
+  store.update(KEY, {}, (d) => { d.items = d.items || {}; for (const [id, x] of Object.entries(d.items)) if (x.k === k && x.fromFixes) delete d.items[id]; return d; });
 }
 function undo(input) {
   const id = String(input.k || '') + '|' + String(input.url || '').slice(0, 500);
@@ -191,4 +213,4 @@ function withVision(row, v) {
   return Object.assign({}, row, { ai: { category: v.category, colour: v.same_colour, model: v.same_model, version: v.other_version, kind: v.same_product_or_kind, why: v.why, by: v.model }, ...(bad && row.category === 'right' ? { category: 'maybe', why: row.why + ' · το AI είδε: ' + (v.why || CATS[v.category] || 'διαφορά') } : {}) });
 }
 
-module.exports = { KEY, VER, CATS, NEVER, classify, gallery, keyOf, sample, check, undo, checksFor, agreement, visionCompare, withVision, VISION_SCHEMA };
+module.exports = { ourKeysOf, recordFromFixes, forgetFromFixes, KEY, VER, CATS, NEVER, classify, gallery, keyOf, sample, check, undo, checksFor, agreement, visionCompare, withVision, VISION_SCHEMA };

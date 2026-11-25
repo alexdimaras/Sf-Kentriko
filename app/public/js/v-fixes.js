@@ -207,6 +207,9 @@
         for (const [k, l] of Object.entries(v.origins || {})) if ((v.counts.origins || {})[k] || origin === k) ochips.appendChild(h('button', { type: 'button', class: 'chip o-' + k + (origin === k ? ' on' : ''), onclick: () => { origin = k; page = 1; load(); } }, l, ' ', h('b', null, fmt.num((v.counts.origins || {})[k] || 0))));
         if (status === 'pending' && (v.counts.notApplied || notApplied)) ochips.appendChild(h('button', { type: 'button', class: 'chip warn' + (notApplied ? ' on' : ''), title: 'Μπήκαν σε αρχείο, αλλά το site δεν άλλαξε μετά', onclick: () => { notApplied = !notApplied; page = 1; load(); } }, 'Δεν μπήκαν στο site ', h('b', null, fmt.num(v.counts.notApplied || 0))));
         clear(act);
+        // what these tabs mean, said plainly: «approved» is NOT on the site yet (it waits for the file)
+        if (status === 'approved' && v.counts.status.approved) act.appendChild(h('div', { class: 'note' }, h('b', null, 'Εγκρίθηκαν = περιμένουν το αρχείο: ΔΕΝ είναι ακόμα στο site. '), 'Μπαίνουν στο site όταν κατεβάσεις το αρχείο (κουμπί «Αρχείο») και το ανεβάσεις στο WooCommerce. Ό,τι δεν θέλεις πια: «Αναίρεση» (πίσω στις «Περιμένουν»).'));
+        if (status === 'exported') act.appendChild(h('div', { class: 'note' }, 'Στο αρχείο = μπήκαν σε αρχείο. Αν μετά την εισαγωγή το site δεν άλλαξε, γυρίζουν μόνες τους στις «Περιμένουν» με σήμα «δεν μπήκε στο site».'));
         if (status === 'pending' && v.counts.notApplied && !notApplied) act.appendChild(h('div', { class: 'note warn' }, `${fmt.plural(v.counts.notApplied, 'αλλαγή', 'αλλαγές')} μπήκαν σε αρχείο για το site, αλλά το site δεν άλλαξε μετά: το αρχείο δεν ανέβηκε στο WooCommerce (ή δεν πέρασε). Ξαναμπαίνουν εδώ — έγκριση και νέο αρχείο, μετά WooCommerce → Εισαγωγή με «Ενημέρωση υπαρχόντων».`));
         if (status === 'pending' && v.counts.high) act.appendChild(h('div', { class: 'fx-sure' }, icon('check'), h('div', null, h('b', null, `${fmt.plural(v.counts.high, 'σίγουρη διόρθωση', 'σίγουρες διορθώσεις')}${group ? ' (' + v.groups[group] + ')' : ''}`), h('div', { class: 'hint', style: { margin: 0 } }, 'Από κανόνες (κενά, κεφαλαία, τόνοι, γράμματα, τιμές, διαφημίσεις) ή από σίγουρη πηγή (ίδιο EAN / κωδικός στον αντιπρόσωπο, το άλλο μας site).')),
           btn('Έγκριση όλων των σίγουρων', { cls: 'primary', icon: 'check' }, () => POST('/api/fixes/approve-sure', { site, group }).then((r) => { toast(`Εγκρίθηκαν ${fmt.num(r.count)}. Φτιάξε το αρχείο από πάνω δεξιά.`); App.refreshBadges(); load(); }).catch(fail))));
@@ -246,11 +249,15 @@
             h('div', { class: 'fx-ch-head' }, h('span', { class: 'pill' }, c.label), h('span', { class: 'pill ' + lv[1], title: c.level === 'high' ? 'Κανόνας ή σίγουρη πηγή' : 'Πιθανότατα σωστό — ρίξε μια ματιά' }, lv[0]),
               c.edited ? h('span', { class: 'pill' }, 'αλλαγμένο από εσένα') : null,
               c.origin && v.origins ? h('span', { class: 'pill o-' + c.origin, title: 'Από πού προέρχεται' }, v.origins[c.origin]) : null,
+              c.oldRule ? h('span', { class: 'pill warn', title: `Εγκρίθηκε ${String(c.oldRule).slice(0, 10)}, πριν από τους κανόνες κωδικών της 19/11: δεν μπαίνει σε αρχείο αν δεν το ξαναεγκρίνεις` }, 'εγκρίθηκε με παλιό κανόνα') : null,
               c.notApplied ? h('span', { class: 'pill warn', title: 'Είχε μπει σε αρχείο ' + fmt.ago(c.notApplied) + ', αλλά το site δεν άλλαξε' }, 'δεν μπήκε στο site') : null,
               c.exportable === false ? h('span', { class: 'pill', title: 'Χρειάζεται δική σου απόφαση στο WooCommerce· δεν μπαίνει σε αρχείο' }, 'μόνο για έλεγχο') : null, c.by ? h('span', { class: 'faint', style: { fontSize: '12px' } }, c.by + ' · ' + fmt.ago(c.at)) : null,
               h('span', { class: 'grow' }),
               status === 'pending' && c.exportable !== false ? btn('Έγκριση', { cls: 'sm', icon: 'check' }, () => decide([c.id], 'approved')) : null,
               status === 'pending' ? btn('Όχι', { cls: 'sm ghost' }, () => decide([c.id], 'rejected')) : null,
+              // (any decision can be taken back: it goes back to «waiting», as if never decided)
+              status !== 'pending' ? h('span', { class: 'faint', style: { fontSize: '12px' } }, (status === 'approved' ? 'εγκρίθηκε ' : status === 'exported' ? 'σε αρχείο ' : 'απορρίφθηκε ') + (c.at ? fmt.ago(c.at) : '') + (c.by ? ' · ' + c.by : '')) : null,
+              status !== 'pending' ? btn('Αναίρεση', { cls: 'sm ghost', title: 'Πίσω στις «σε αναμονή», σαν να μην αποφασίστηκε ποτέ' }, () => decide([c.id], 'pending')) : null,
               status !== 'exported' && ['name', 'desc', 'short'].includes(c.field) ? btn('Αλλαγή', { cls: 'sm ghost', icon: 'edit' }, () => edit(c)) : null),
             changeBody(c),
             h('p', { class: 'fx-why' }, h('b', null, 'Γιατί: '), c.why),

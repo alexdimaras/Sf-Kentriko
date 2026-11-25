@@ -33,7 +33,7 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (97) · rules (127) · knowledge (23, πραγματικές περιπτώσεις: ΔΙΑΚΡΙΤΙΚΟ, XQ35, 223REM) · units (69: DNS rebinding, Cloudflare, ζωντανή εικόνα PC, ακρίβεια ανά τομέα, διαφημίσεις, PIN, αντιπρόσωποι, ιστορικό, ακρίβεια/εκμάθηση) · jobs (36) · integrity (46) · coord (74) · workers (52) · ai (53) · research (91) · variants (73, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
+`cd app && npm test` → run (97) · rules (135) · knowledge (23, πραγματικές περιπτώσεις: ΔΙΑΚΡΙΤΙΚΟ, XQ35, 223REM) · units (69: DNS rebinding, Cloudflare, ζωντανή εικόνα PC, ακρίβεια ανά τομέα, διαφημίσεις, PIN, αντιπρόσωποι, ιστορικό, ακρίβεια/εκμάθηση) · jobs (36) · integrity (46) · coord (74) · workers (52) · ai (53) · research (91) · variants (73, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
 Μετρήσεις: `node test/bench/recall-bench.js` (υποψήφιοι έρευνας τιμών, πραγματικοί κατάλογοι) · `node app/worker.js measure 30` (πραγματική έρευνα internet, στο PC) · `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.

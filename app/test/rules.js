@@ -307,6 +307,18 @@ function shop() {
     const k7 = items2.find((c) => c.pid === 7 && c.field === 'sku');
     ok(k7 && k7.to === 'K07012-13' && k7.level === 'high' && (k7.sources || []).length === 1, 'a missing code comes from the research: two shops give the same maker code → sure, both named', JSON.stringify(k7 && [k7.to, k7.level, k7.source.label]));
     ok(!items2.find((c) => c.pid === 6 && c.field === 'sku'), 'a shop\'s own variation number («3498.vs1») is never proposed as our code');
+    // codes approved under the old rules (before 19/11): looked at again, never put in a file by that approval (25/11)
+    {
+      const keep = store.read('fixes', {});
+      store.write('fixes', Object.assign({}, keep, { [k7.id]: { status: 'approved', hash: k7.hash, at: '2026-11-17T10:00:00.000Z', by: 'alex' } }));
+      fixes.invalidate();
+      const old = fixes.compute().items.find((c) => c.id === k7.id);
+      ok(old && old.status === 'pending' && old.oldRule, 'a code approved before the rules of 19/11: back to «waiting», marked «approved with an old rule»', JSON.stringify(old && [old.status, old.oldRule]));
+      store.write('fixes', Object.assign({}, keep, { [k7.id]: { status: 'approved', hash: k7.hash, at: '2026-11-20T10:00:00.000Z', by: 'alex' } }));
+      fixes.invalidate();
+      ok(fixes.compute().items.find((c) => c.id === k7.id).status === 'approved', '…one approved after them stays approved');
+      store.write('fixes', keep); fixes.invalidate();
+    }
     // photos (24/11: «a photo of an olive product for a black one»): the listing's photo shows ONE colour
     {
       const ev = { how: 'ean', ev: ['ίδιο EAN 5205550001117'] };
@@ -346,6 +358,41 @@ function shop() {
         fixes.invalidate();
         const im3y = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
         ok(im3y && im3y.to.includes(ph.u), 'undo: proposed again as before');
+      }
+      // «μη μου προτείνει ίδιες φωτό συνέχεια» (25/11)
+      {
+        const PC = require(APP + '/lib/photocheck');
+        const offer3 = (host, file) => off(host, { how: 'ean', ev: ['ίδιο EAN 5205550001117'], name: 'Pentagon Rush 8 Black', img: `https://${host}.example/img/${file}` });
+        const setOffers = (list) => { store.write('market', { 'sf:15': entry(15, list) }); fixes.invalidate(); };
+        const pick15 = () => fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+        setOffers([offer3('h1', 'rush8-black-a.jpg'), offer3('h2', 'rush8-black-a.jpg')]);
+        const a = pick15();
+        fixes.decide([a.id], 'rejected', 'alex');
+        const ra = pick15();
+        ok(ra && ra.status === 'rejected' && /δεν ξαναπροτείνονται/.test(ra.why), 'a rejected photo proposal stays visible in «Απορρίφθηκαν» (so it can be taken back)', JSON.stringify(ra && [ra.status, ra.why]));
+        fixes.decide([a.id], 'pending', 'alex');
+        ok((pick15() || {}).to && pick15().to.some((u) => /rush8-black-a/.test(u)), 'undo of a rejection: its photos can be proposed again');
+        fixes.decide([pick15().id], 'rejected', 'alex');
+        // the research finds one more photo: the proposal changes — the rejected photo must NOT come back with it
+        setOffers([offer3('h1', 'rush8-black-a.jpg'), offer3('h2', 'rush8-black-a.jpg'), offer3('h3', 'rush8-black-b.jpg'), offer3('h4', 'rush8-black-b.jpg')]);
+        const b = pick15();
+        ok(b && b.status === 'pending' && b.to.some((u) => /rush8-black-b/.test(u)) && !b.to.some((u) => /rush8-black-a/.test(u)), 'a rejected photo does not come back when the proposal changes (only the new one is proposed)', JSON.stringify(b && b.to));
+        fixes.decide([b.id], 'approved', 'alex');
+        // one more photo found after the approval: the approved proposal stays exactly as approved (not again «waiting» with the same photos)
+        setOffers([offer3('h3', 'rush8-black-b.jpg'), offer3('h4', 'rush8-black-b.jpg'), offer3('h5', 'rush8-black-c.jpg'), offer3('h6', 'rush8-black-c.jpg')]);
+        const c2 = pick15();
+        ok(c2 && c2.status === 'approved' && c2.to.join() === b.to.join() && /περιμένει να μπει στο site/.test(c2.why), 'an approved photo proposal stays as it was approved until the site has the photos (no new version with the same photos)', JSON.stringify(c2 && [c2.status, c2.to]));
+        fixes.decide([c2.id], 'pending', 'alex');
+        require(APP + '/lib/photocheck').forgetFromFixes('sf:15');
+        // the site already has the photo under the name WordPress gave it on import (…-1.jpg, …-scaled.jpg)
+        const p15 = catalog.byId('sf').get(15); const keepI = p15.images;
+        p15.images = keepI.concat(['https://shop.example/wp-content/uploads/rush8-black-a-1.jpg']);
+        setOffers([offer3('h1', 'rush8-black-a.jpg'), offer3('h2', 'rush8-black-a.jpg')]);
+        const w = pick15();
+        ok(!w || !w.to.filter((u) => !p15.images.includes(u)).some((u) => /rush8-black-a\.jpg/.test(u)), 'a photo the site already has under its WordPress name (…-1.jpg) is not proposed again', JSON.stringify(w && w.to));
+        p15.images = keepI;
+        ok(PC.gallery({ name: 'X ΜΑΥΡΟ', images: [] }, [{ u: 'https://a.gr/k-black-1.jpg', exact: true, proof: 'ean', title: 'X Black' }, { u: 'https://a.gr/k-black-2.jpg', exact: true, proof: 'ean', title: 'X Black' }]).take.length === 2, 'two photos of a gallery (…-1, …-2) are two photos, not a duplicate');
+        store.write('market', {}); fixes.invalidate();
       }
       // the supplier's item of ANOTHER colour of the model: its text fits, its photos do not
       store.write('market', {});

@@ -505,7 +505,7 @@ function buildCtx() {
   const checks = require('./checks');
   const wx = require('./wooexport');
   const L = catalog.links();
-  const C = { photoChecks: (() => { const o = {}; for (const x of Object.values((store.read('photo-checks', null) || {}).items || {})) (o[x.k] = o[x.k] || {})[x.url] = x; return o; })(), aiDesc: store.read(AIDESC, null) || {}, manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
+  const C = { dec: store.read(KEY, null) || {}, photoChecks: (() => { const o = {}; for (const x of Object.values((store.read('photo-checks', null) || {}).items || {})) (o[x.k] = o[x.k] || {})[x.url] = x; return o; })(), aiDesc: store.read(AIDESC, null) || {}, manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
   C.skuOwner = { sf: new Map(), st: new Map() }; // code → the product (not a variation) that has it
   for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) { C.skus[st].add(U.normSku(x.sku)); if (x.type !== 'variation') C.skuOwner[st].set(U.normSku(x.sku), x); }
   for (const site of catalog.SITES) {
@@ -638,7 +638,14 @@ function proposalsFor0(site, p, C) {
     let fromTwin = false, imgSource = null, imgLevel = 'medium', imgWhy = '';
     let photoRows = [], photoLeft = [];
     const imgAlso = [];
-    if (need.images) {
+    // photos already decided (approved / in a file): the proposal stays exactly as it was decided until the site has
+    // them — no new version of it with the same photos again («μη μου προτείνει ίδιες φωτό συνέχεια», 25/11)
+    const dImg = C.dec[key + ':images'];
+    const PC = require('./photocheck');
+    const onSite = PC.ourKeysOf(p.images);
+    const stickyImg = dImg && (dImg.status === 'approved' || dImg.status === 'exported') && Array.isArray(dImg.to) && dImg.to.some((u) => !onSite.has(PC.keyOf(u)));
+    if (stickyImg) add(Object.assign({}, base, { field: 'images', from: p.images || [], to: dImg.to, photos: dImg.photos || [], why: `Εγκρίθηκε ${String(dImg.at || '').slice(0, 10)}: περιμένει να μπει στο site με το αρχείο των Διορθώσεων (οι ίδιες φωτογραφίες δεν ξαναπροτείνονται).`, source: dImg.src0 || { kind: 'web', label: 'Όπως εγκρίθηκε' }, level: 'high' }));
+    if (need.images && !stickyImg) {
       const twinMore = twin && (twin.images || []).length > (p.images || []).length;
       fromTwin = !!twinMore;
       // (a page found by the older photo research: its photos only when its title shows OUR colour — it took a whole gallery)
@@ -688,14 +695,18 @@ function proposalsFor0(site, p, C) {
       }
       // every candidate looked at on its own (lib/photocheck.js): another colour / edition, an accessory, the box, a size
       // chart / banner, a duplicate, a thumbnail — left out with why; the right ones first, the box last; a person's answer wins
-      const fresh = cand.filter((u) => !(p.images || []).some((x) => sameImage(x, u)) && !otherColourPhoto(p, u));
-      const g = require('./photocheck').gallery(p, fresh.map((u) => Object.assign({ u }, pctx.get(u) || {})), { checks: C.photoChecks[key] || {} });
+      const fresh = cand.filter((u) => !(p.images || []).some((x) => sameImage(x, u)) && !onSite.has(PC.keyOf(u)) && !otherColourPhoto(p, u));
+      const g = PC.gallery(p, fresh.map((u) => Object.assign({ u }, pctx.get(u) || {})), { checks: C.photoChecks[key] || {} });
       for (const r of g.take) if (!extraImgs.some((x) => sameImage(x, r.u))) extraImgs.push(r.u);
       photoRows = g.take; photoLeft = g.left;
       if (g.take.some((r) => r.category !== 'right')) imgLevel = 'medium';
       // the same photo file at a shop with the same product: a second witness for the supplier's photos
       if (imgSource && imgSource.kind !== 'competitor') for (const w of wit) { const k = imageKey(fullImage(w.img)); if (k && extraImgs.some((u) => imageKey(u) === k) && !imgAlso.some((x) => x.label.endsWith(w.shop))) imgAlso.push({ kind: 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url }); }
       if (imgAlso.length && imgLevel === 'medium' && imgSource && imgSource.kind !== 'competitor') imgLevel = 'high';
+    }
+    // a rejected photo proposal with nothing new since: it stays visible in «Απορρίφθηκαν» (with «Αναίρεση»), as decided
+    if (!stickyImg && !extraImgs.length && dImg && dImg.status === 'rejected' && Array.isArray(dImg.to) && dImg.to.some((u) => !onSite.has(PC.keyOf(u)))) {
+      add(Object.assign({}, base, { field: 'images', from: p.images || [], to: dImg.to, photos: dImg.photos || [], why: `Απορρίφθηκε ${String(dImg.at || '').slice(0, 10)}: αυτές οι φωτογραφίες δεν ξαναπροτείνονται («Αναίρεση» για να ξαναμπούν).`, source: dImg.src0 || { kind: 'web', label: 'Όπως απορρίφθηκε' }, level: 'medium' }));
     }
     if (extraImgs.length) {
       add(Object.assign({}, base, { photos: photoRows.slice(0, 8).map((r) => ({ u: r.u, category: r.category, label: r.label, why: r.why, src: r.src, person: !!r.person })), photosLeft: photoLeft.slice(0, 8).map((r) => ({ u: r.u, category: r.category, label: r.label, why: r.why, src: r.src })), field: 'images', from: p.images || [], to: (p.images || []).concat(extraImgs).slice(0, 6), why: ((p.images || []).length ? 'Μόνο μία φωτογραφία: περισσότερες όψεις = περισσότερες πωλήσεις.' : 'Δεν έχει φωτογραφία: χωρίς αυτή δεν πουλάει και το Google Shopping το απορρίπτει.') + imgWhy, source: imgSource, sources: imgAlso, level: imgLevel }));
@@ -923,6 +934,9 @@ function compute() {
         // in the file, but the site read AFTER it still has the old value: the import did not happen (or did not take) —
         // back to «waiting», said so (seen 24/11: old changes stood as done while nothing changed on the site)
         if (d.status === 'exported' && d.exportedAt && syncedAfter(c.site, d.exportedAt)) { c.status = 'pending'; c.notApplied = d.exportedAt; }
+        // codes approved before the rules of codes of 19/11 (no code made of ours; a size / colour has a real code or the
+        // product's): never put in a file by that old approval — looked at again («παλιός κανόνας», asked 25/11)
+        if ((c.field === 'sku' || c.field === 'varsku') && d.status === 'approved' && String(d.at || '') < CODE_RULES_FROM) { c.status = 'pending'; c.oldRule = d.at; }
       }
       out.push(c);
       if (c.twin != null && c.status !== 'rejected') { lead.push(c); leadKey.add(c.twin + ':' + c.field); }
@@ -1035,6 +1049,8 @@ function view(q) {
 const learnQueue = [];
 function decide(ids, status, by, edited) {
   try { return decide0(ids, status, by, edited); } finally {
+    // (the photo memory, written after the decision: not inside the write of the decisions)
+    if (photoQueue.length) { for (const f of photoQueue.splice(0)) { try { f(); } catch (e) { console.error('photo memory:', e.message); } } invalidate(); }
     if (learnQueue.length) {
       const catalog = require('./catalog'), K = require('./knowledge');
       let refused = false;
@@ -1048,6 +1064,9 @@ function decide(ids, status, by, edited) {
 // (25/11: 1 = the photo rules of B34, the brand of B36, the certainty corrected by the decisions)
 const FIX_VERSION = 1;
 function catName(c) { try { const p = require('./catalog').byId(c.site).get(Number(c.pid)); return p ? String((p.catNames || [])[0] || '').slice(0, 60) : ''; } catch (_) { return ''; } }
+const photoQueue = [];
+// the day the rules of codes changed (the owner's plan of 19/11/2026): code approvals before it are looked at again
+const CODE_RULES_FROM = '2026-11-19';
 function decide0(ids, status, by, edited) {
   if (!['approved', 'rejected', 'pending'].includes(status)) throw new Error('Λάθος κατάσταση.');
   const items = new Map(compute().items.map((c) => [c.id, c]));
@@ -1055,8 +1074,8 @@ function decide0(ids, status, by, edited) {
   store.update(KEY, {}, (d) => {
     for (const id of [].concat(ids || [])) {
       const c = items.get(id);
-      if (!c) continue;
-      if (status === 'pending') { delete d[id]; n++; continue; }
+      if (!c) { if (status === 'pending' && d[id]) { if (String(id).endsWith(':images') && d[id].status === 'rejected') { const k = String(id).split(':').slice(0, 2).join(':'); photoQueue.push(() => require('./photocheck').forgetFromFixes(k)); } delete d[id]; n++; } continue; }
+      if (status === 'pending') { if (c.field === 'images' && d[id] && d[id].status === 'rejected') photoQueue.push(() => require('./photocheck').forgetFromFixes(c.site + ':' + c.pid)); delete d[id]; n++; continue; }
       const prev = d[id] || {};
       // (with the certainty it was given and where it came from: «we said 98% — how often was it approved?»)
       d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '', cf: c.confidence0 || c.confidence || 0, og: c.origin || '', fd: c.field,
@@ -1064,6 +1083,14 @@ function decide0(ids, status, by, edited) {
         src: c.source && c.source.url ? U.hostOf(c.source.url) : '', sk: (c.source && c.source.kind) || '', cat: catName(c), ver: FIX_VERSION };
       if (edited !== undefined && ids.length === 1) d[id].edited = editedValue(c, edited);
       else if (prev.edited !== undefined) d[id].edited = prev.edited;
+      // photos: what was decided is kept (the proposal stays as it is until the site has them); a rejected one's new photos
+      // are remembered as «no» (they do not come back with the next version of the proposal); undo forgets them
+      if (c.field === 'images') {
+        const k = c.site + ':' + c.pid;
+        if (status === 'approved' || status === 'rejected') Object.assign(d[id], { to: c.to, photos: c.photos || [], src0: c.source || null });
+        const fresh = (c.to || []).filter((u) => !(c.from || []).includes(u));
+        if (status === 'rejected') photoQueue.push(() => require('./photocheck').recordFromFixes(k, fresh, by));
+      }
       if (c.field === 'name') learnQueue.push({ site: c.site, pid: c.pid, from: c.from, to: c.to, status, edited: d[id].edited, by });
       n++;
     }
@@ -1359,4 +1386,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { FIX_VERSION, finishForTest: (c) => finish(c), photoWitness, otherColourPhoto, aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { CODE_RULES_FROM, FIX_VERSION, finishForTest: (c) => finish(c), photoWitness, otherColourPhoto, aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
