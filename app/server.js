@@ -501,6 +501,19 @@ const routes = {
   'POST /api/learn/ai': () => jobs.start('learn-ai', 'Έλεγχος αντιστοιχιών από το AI', async (job) => { job.progress(0, 1, 'Το AI ελέγχει 15 τυχαίες αντιστοιχίες…'); const r = await require('./lib/accuracy').aiRound(15); if (!r.judged && r.error) throw new Error('Το AI δεν απάντησε: ' + r.error); job.progress(1, 1, `Έλεγξε ${r.judged}`); return r; }),
   'GET /api/learn/recent': (q) => ({ rows: require('./lib/accuracy').recent(q.n || 100) }),
   'POST /api/learn/undo': (b, _, ctx) => require('./lib/accuracy').undo(b, ctx.user ? ctx.user.name : ''),
+  // the photos: a random sample of the proposed ones, a person's category for each (undo), the AI's eyes if it has any
+  'GET /api/learn/photos': (q) => require('./lib/photocheck').sample(q.n || 10),
+  'POST /api/learn/photo': (b, _, ctx) => require('./lib/photocheck').check(b, ctx.user ? ctx.user.name : ''),
+  'POST /api/learn/photo-undo': (b) => require('./lib/photocheck').undo(b),
+  'GET /api/learn/vision': async () => {
+    if (!(settings.all().localAI || {}).enabled) return { ok: false, models: [], text: 'Το τοπικό AI είναι κλειστό (Ρυθμίσεις → AI).' };
+    try { const m = await localai.visionModels(); return { ok: m.length > 0, models: m, text: m.length ? `Βλέπει εικόνες: ${m.map((x) => x.name).join(', ')}` : 'Κανένα εγκατεστημένο μοντέλο δεν βλέπει εικόνες (το qwen2.5:7b διαβάζει μόνο κείμενο).' }; } catch (e) { return { ok: false, models: [], text: 'Δεν ελέγχθηκε: ' + e.message }; }
+  },
+  'POST /api/learn/photo-ai': async (b) => {
+    const pc = require('./lib/photocheck');
+    const v = await pc.visionCompare(String(b.ours || ''), String(b.url || ''), { name: String(b.name || ''), title: String(b.title || '') });
+    return v;
+  },
   'POST /api/learn/check': (b, _, ctx) => require('./lib/accuracy').check(b, ctx.user ? ctx.user.name : ''),
   'POST /api/market/decide': (b, _, ctx) => market.decide(b.site === 'st' ? 'st' : 'sf', b.id, String(b.url || ''), b.answer, { by: ctx.user ? ctx.user.name : '' }),
   'POST /api/market/export': (b) => {
@@ -848,7 +861,7 @@ function serveReport(req, res, url) {
 let coordReady = false;
 const pairTries = new Map(); // ip -> { n, at }
 const AUDITED = {
-  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/learn/check': 'έλεγχος αντιστοιχίας (ίδιο / όχι)', 'POST /api/learn/ai': 'έλεγχος αντιστοιχιών από το AI', 'POST /api/learn/undo': 'αναίρεση ελέγχου αντιστοιχίας', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
+  'POST /api/fixes/decide': 'απόφαση για διορθώσεις', 'POST /api/fixes/manual': 'αλλαγή με το χέρι στο προϊόν', 'POST /api/fixes/ai-desc': 'περιγραφή με AI για προϊόν', 'POST /api/learn/check': 'έλεγχος αντιστοιχίας (ίδιο / όχι)', 'POST /api/learn/ai': 'έλεγχος αντιστοιχιών από το AI', 'POST /api/learn/undo': 'αναίρεση ελέγχου αντιστοιχίας', 'POST /api/learn/photo': 'έλεγχος φωτογραφίας', 'POST /api/learn/photo-undo': 'αναίρεση ελέγχου φωτογραφίας', 'POST /api/fixes/approve-sure': 'έγκριση όλων των σίγουρων', 'POST /api/fixes/export': 'αρχείο διορθώσεων',
   'POST /api/codes/find': 'αναζήτηση κωδικών στο internet', 'POST /api/codes/shop': 'έγκριση / απόρριψη καταστήματος του internet', 'POST /api/families/decide': 'οικογένεια προϊόντων (έγκριση)', 'POST /api/families/export': 'αρχεία οικογένειας προϊόντων', 'POST /api/search-keys': 'κλειδιά αναζήτησης', 'POST /api/market/export': 'αρχείο νέων τιμών', 'POST /api/market/decide': 'ίδιο / όχι ίδιο προϊόν', 'POST /api/drafts/export': 'αρχείο νέων προϊόντων',
   'POST /api/knowledge/rule': 'κανόνας λέξεων του καταστήματος', 'POST /api/knowledge/remove': 'αναίρεση κανόνα λέξεων', 'POST /api/knowledge/forget': 'αναίρεση όσων έμαθε το πρόγραμμα',
   'POST /api/settings': 'ρυθμίσεις', 'POST /api/users': 'χρήστης (νέος / αλλαγή)', 'POST /api/users/delete': 'διαγραφή χρήστη', 'POST /api/users/session-end': 'αποσύνδεση συσκευής',
@@ -1028,7 +1041,7 @@ function webPayload(items, run) {
  */
 async function aiWorkers() {
   if (!coordReady) return [];
-  return (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('ai.call')).map((w) => ({ id: w.id, name: w.name, models: w.caps.ollama || [], busy: w.jobs.some((j) => j.type === 'ai.call') }));
+  return (await coord.workersView()).filter((w) => w.online && w.caps && (w.caps.types || []).includes('ai.call')).map((w) => ({ id: w.id, name: w.name, rev: String(w.caps.rev || ''), models: w.caps.ollama || [], busy: w.jobs.some((j) => j.type === 'ai.call') }));
 }
 /** Why the AI of the computers can / cannot answer now → { ok, text } */
 async function aiWhy() {
@@ -1234,7 +1247,11 @@ async function askComputerAI(pathName, body, timeout, meta) {
   if (!ws.length) throw Object.assign(new Error((await aiWhy()).text), { code: 'no_worker' });
   const model = (meta && meta.model) || '';
   // a computer that has the model; the least busy first
-  const can = model ? ws.filter((w) => !w.models.length || w.models.includes(model)) : ws;
+  let can = model ? ws.filter((w) => !w.models.length || w.models.includes(model)) : ws;
+  // a question with pictures / about a model's abilities: only a worker that knows them (an older one would drop the
+  // pictures and the model would answer without seeing anything)
+  if ((body && body.imageUrls) || pathName === '/api/show') can = can.filter((w) => w.rev >= '2026-11-25c');
+  if (!can.length && ((body && body.imageUrls) || pathName === '/api/show')) throw Object.assign(new Error('Για εικόνες χρειάζεται υπολογιστής με την έκδοση 2026-11-25c ή νεότερη (ενημερώνεται μόνος του).'), { code: 'old_worker' });
   if (!can.length) throw Object.assign(new Error(`Κανένας υπολογιστής δεν έχει το μοντέλο ${model} (έχουν: ${[...new Set(ws.flatMap((w) => w.models))].join(', ') || 'κανένα'}). Στο PC: ollama pull ${model}`), { code: 'model_missing' });
   const target = can.slice().sort((a, b) => Number(a.busy) - Number(b.busy))[0];
   const wait = timeout || 300000;

@@ -505,7 +505,7 @@ function buildCtx() {
   const checks = require('./checks');
   const wx = require('./wooexport');
   const L = catalog.links();
-  const C = { aiDesc: store.read(AIDESC, null) || {}, manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
+  const C = { photoChecks: (() => { const o = {}; for (const x of Object.values((store.read('photo-checks', null) || {}).items || {})) (o[x.k] = o[x.k] || {})[x.url] = x; return o; })(), aiDesc: store.read(AIDESC, null) || {}, manual: store.read(MANUAL, null) || {}, s: settings.all(), L, ec: cache(), ign: checks.ignored(), banned: catalog.bannedOnAds(), sites: {}, price: new Map(), tw: new Map(), market: store.read('market', null) || {}, brands: catalog.knownBrands(), skus: { sf: new Set(), st: new Set() } };
   C.skuOwner = { sf: new Map(), st: new Map() }; // code → the product (not a variation) that has it
   for (const st of catalog.SITES) for (const x of catalog.load(st).products) if (x.sku) { C.skus[st].add(U.normSku(x.sku)); if (x.type !== 'variation') C.skuOwner[st].set(U.normSku(x.sku), x); }
   for (const site of catalog.SITES) {
@@ -636,6 +636,7 @@ function proposalsFor0(site, p, C) {
     // photos from ONE source: our other site first (our own photos), else the supplier's, else the same product at other shops
     const extraImgs = [];
     let fromTwin = false, imgSource = null, imgLevel = 'medium', imgWhy = '';
+    let photoRows = [], photoLeft = [];
     const imgAlso = [];
     if (need.images) {
       const twinMore = twin && (twin.images || []).length > (p.images || []).length;
@@ -645,12 +646,16 @@ function proposalsFor0(site, p, C) {
       // (the supplier's item of ANOTHER colour of the model — its text fits, its photos do not)
       const otherVariant = found && found.data && (found.data.otherVariant || !sameColours(p.name, found.data.name || ''));
       let cand = twinMore ? twin.images : found && found.data && !oldResearch && !otherVariant ? found.data.images || [] : [];
+      // (where each candidate comes from, for the photo check: its page's title, the proof, the source)
+      const pctx = new Map();
+      if (twinMore) for (const u of cand) pctx.set(u, { title: twin.name, proof: 'twin', exact: true, src: 'Από το ' + s.sites[other].name });
+      else if (cand.length) for (const u of cand) pctx.set(u, { title: found.data.name || '', proof: found.src.level === 'high' ? 'sku' : 'words', exact: found.src.level === 'high', src: found.src.label || '' });
       if (fromTwin) { imgSource = { kind: 'twin', label: 'Από το ' + s.sites[other].name, url: twin.url }; imgLevel = 'high'; }
       else if (cand.length) { imgSource = found.src; imgLevel = found.src.level; }
       else if ((p.images || []).length < ((s.webResearch || {}).minImages || 3)) {
         // only the photo of a shop that has the SAME product (code / EAN, or brand + model + colour), never of a look-alike
         const byKey = new Map();
-        for (const w of wit) { const safe = photoWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); }
+        for (const w of wit) { const safe = photoWitness(p, w); if (!safe) continue; const u = fullImage(w.img); if ((p.images || []).some((x) => sameImage(x, u))) continue; const k = imageKey(u); if (!u || !k) continue; const e = byKey.get(k) || { u, shops: [] }; if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w); if (safe === 'maybe' || w.byWords) e.weak = true; byKey.set(k, e); if (!pctx.has(u)) pctx.set(u, { title: w.name || '', proof: /EAN/.test(w.proof || '') ? 'ean' : w.exact ? 'sku' : 'words', exact: !!w.exact, src: w.shop }); }
         // …and the shops of the internet with the same product (each photo of their page; the same file at two shops = the maker's)
         for (const hh of webHits(C, site, p)) {
           // only photos the research tied to OUR variant (its own photos, a one-colour page in our colour, or the file
@@ -667,6 +672,7 @@ function proposalsFor0(site, p, C) {
             if (!e.shops.some((x) => x.shop === w.shop)) e.shops.push(w);
             if (safe === 'maybe') e.weak = true;
             byKey.set(k, e);
+            if (!pctx.has(u)) pctx.set(u, { title: hh.name || '', proof: hh.how === 'ean' ? 'ean' : hh.how === 'code' ? 'sku' : 'words', exact: !!w.exact, src: hh.host });
           }
         }
         const best = [...byKey.values()].sort((a1, b1) => b1.shops.length - a1.shops.length)[0];
@@ -680,13 +686,19 @@ function proposalsFor0(site, p, C) {
           imgWhy = (best.shops.length >= 2 ? ` Η ίδια φωτογραφία (ίδιο αρχείο) σε ${best.shops.length} καταστήματα: είναι του κατασκευαστή.` : ' Είναι φωτογραφία άλλου καταστήματος: δες ότι είναι του κατασκευαστή (χωρίς λογότυπο καταστήματος) πριν την έγκριση.') + ((p.images || []).length ? ' Προστίθεται δίπλα στην υπάρχουσα: δες ότι δεν είναι η ίδια λήψη.' : '');
         }
       }
-      for (const u of cand) if (!(p.images || []).some((x) => sameImage(x, u)) && !extraImgs.some((x) => sameImage(x, u)) && !otherColourPhoto(p, u)) extraImgs.push(u);
+      // every candidate looked at on its own (lib/photocheck.js): another colour / edition, an accessory, the box, a size
+      // chart / banner, a duplicate, a thumbnail — left out with why; the right ones first, the box last; a person's answer wins
+      const fresh = cand.filter((u) => !(p.images || []).some((x) => sameImage(x, u)) && !otherColourPhoto(p, u));
+      const g = require('./photocheck').gallery(p, fresh.map((u) => Object.assign({ u }, pctx.get(u) || {})), { checks: C.photoChecks[key] || {} });
+      for (const r of g.take) if (!extraImgs.some((x) => sameImage(x, r.u))) extraImgs.push(r.u);
+      photoRows = g.take; photoLeft = g.left;
+      if (g.take.some((r) => r.category !== 'right')) imgLevel = 'medium';
       // the same photo file at a shop with the same product: a second witness for the supplier's photos
       if (imgSource && imgSource.kind !== 'competitor') for (const w of wit) { const k = imageKey(fullImage(w.img)); if (k && extraImgs.some((u) => imageKey(u) === k) && !imgAlso.some((x) => x.label.endsWith(w.shop))) imgAlso.push({ kind: 'competitor', label: `ίδια φωτογραφία στο ${w.shop}`, url: w.url }); }
       if (imgAlso.length && imgLevel === 'medium' && imgSource && imgSource.kind !== 'competitor') imgLevel = 'high';
     }
     if (extraImgs.length) {
-      add(Object.assign({}, base, { field: 'images', from: p.images || [], to: (p.images || []).concat(extraImgs).slice(0, 6), why: ((p.images || []).length ? 'Μόνο μία φωτογραφία: περισσότερες όψεις = περισσότερες πωλήσεις.' : 'Δεν έχει φωτογραφία: χωρίς αυτή δεν πουλάει και το Google Shopping το απορρίπτει.') + imgWhy, source: imgSource, sources: imgAlso, level: imgLevel }));
+      add(Object.assign({}, base, { photos: photoRows.slice(0, 8).map((r) => ({ u: r.u, category: r.category, label: r.label, why: r.why, src: r.src, person: !!r.person })), photosLeft: photoLeft.slice(0, 8).map((r) => ({ u: r.u, category: r.category, label: r.label, why: r.why, src: r.src })), field: 'images', from: p.images || [], to: (p.images || []).concat(extraImgs).slice(0, 6), why: ((p.images || []).length ? 'Μόνο μία φωτογραφία: περισσότερες όψεις = περισσότερες πωλήσεις.' : 'Δεν έχει φωτογραφία: χωρίς αυτή δεν πουλάει και το Google Shopping το απορρίπτει.') + imgWhy, source: imgSource, sources: imgAlso, level: imgLevel }));
     }
     if (need.brand) {
       // votes: the supplier (its list or page) and every shop with the same product; a brand the shop already uses wins
@@ -1032,6 +1044,10 @@ function decide(ids, status, by, edited) {
     }
   }
 }
+// the version of the rules of the proposals: raised when they change, so that «did the change help» is measured
+// (25/11: 1 = the photo rules of B34, the brand of B36, the certainty corrected by the decisions)
+const FIX_VERSION = 1;
+function catName(c) { try { const p = require('./catalog').byId(c.site).get(Number(c.pid)); return p ? String((p.catNames || [])[0] || '').slice(0, 60) : ''; } catch (_) { return ''; } }
 function decide0(ids, status, by, edited) {
   if (!['approved', 'rejected', 'pending'].includes(status)) throw new Error('Λάθος κατάσταση.');
   const items = new Map(compute().items.map((c) => [c.id, c]));
@@ -1043,7 +1059,9 @@ function decide0(ids, status, by, edited) {
       if (status === 'pending') { delete d[id]; n++; continue; }
       const prev = d[id] || {};
       // (with the certainty it was given and where it came from: «we said 98% — how often was it approved?»)
-      d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '', cf: c.confidence0 || c.confidence || 0, og: c.origin || '', fd: c.field };
+      d[id] = { status, hash: c.hash, at: U.nowIso(), by: by || '', cf: c.confidence0 || c.confidence || 0, og: c.origin || '', fd: c.field,
+        // (for «where are the mistakes»: the source's site, the kind of source, the product's category, the version of the rules)
+        src: c.source && c.source.url ? U.hostOf(c.source.url) : '', sk: (c.source && c.source.kind) || '', cat: catName(c), ver: FIX_VERSION };
       if (edited !== undefined && ids.length === 1) d[id].edited = editedValue(c, edited);
       else if (prev.edited !== undefined) d[id].edited = prev.edited;
       if (c.field === 'name') learnQueue.push({ site: c.site, pid: c.pid, from: c.from, to: c.to, status, edited: d[id].edited, by });
@@ -1341,4 +1359,4 @@ function summary() {
   } catch (e) { return { pending: 0, sure: 0, approved: 0, exported: 0, products: 0, error: e.message }; }
 }
 
-module.exports = { finishForTest: (c) => finish(c), photoWitness, otherColourPhoto, aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };
+module.exports = { FIX_VERSION, finishForTest: (c) => finish(c), photoWitness, otherColourPhoto, aiDescribe, AIDESC, ORIGINS, originOf, sizeJunk, copiedFrom, syncedAfter, invalidateSoon, setManual, MANUAL, unifyCodes, junkSku, variationCodes, setLazy, isDirty, proposals, rebuild, refreshProduct, forSave, setSaved, scrub, compute, view, decide, approveSure, exportFile, findSources, fromPage, translate, summary, quality, invalidate, validGtin, greekShare, contentNeeds, buildDesc, CACHE, GROUPS };

@@ -1212,7 +1212,7 @@ function decide(site, id, url, answer, opts) {
   // every yes / no is kept with what the program had said (Ακρίβεια & εκμάθηση: how right it is, what it learns)
   if (!(opts && opts.noRecord) && (answer === 'yes' || answer === 'no')) {
     const c0 = ((results()[key] || {}).competitors || []).find((c) => c.url === url);
-    if (c0) try { require('./accuracy').record({ k: key, url, kind: c0.web ? 'web' : 'price', prog: { match: c0.confirmed ? 'confirmed' : c0.match, how: c0.how, why: c0.why, score: c0.score }, verdict: answer, by: (opts && opts.by) || '' }); } catch (_) { /* measuring only */ }
+    if (c0) try { require('./accuracy').record({ k: key, url, kind: c0.web ? 'web' : 'price', prog: { match: c0.confirmed ? 'confirmed' : c0.match, how: c0.how, why: c0.why, score: c0.score, used: !!c0.used }, verdict: answer, by: (opts && opts.by) || '' }); } catch (_) { /* measuring only */ }
   }
   store.update('market-decisions', {}, (all) => {
     const d = all[key] || { yes: [], no: [] };

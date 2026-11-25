@@ -28,6 +28,8 @@ function fakeOllama(state) {
     const send = (code, j) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(j)); };
     if (req.method === 'GET' && req.url === '/api/version') return send(200, { version: '0.12.6' });
     if (req.method === 'GET' && req.url === '/api/tags') return send(200, { models: state.models.map((n) => ({ name: n, model: n, size: 4.7e9, details: { family: /embed/.test(n) ? 'nomic-bert' : 'qwen2', families: [/embed/.test(n) ? 'nomic-bert' : 'qwen2'], parameter_size: /embed/.test(n) ? '137M' : '7.6B' } })) });
+    // (Ollama's own word on a model's abilities; a text model has no «vision»)
+    if (req.method === 'POST' && req.url === '/api/show') { let b = ''; req.on('data', (c) => { b += c; }); return req.on('end', () => { const m = JSON.parse(b).model; send(200, { capabilities: /vl|llava/.test(m) ? ['completion', 'vision'] : ['completion'], details: { families: [] } }); }); }
     if (req.method === 'POST' && req.url === '/api/generate') {
       let b = '';
       req.on('data', (c) => { b += c; });
@@ -159,6 +161,38 @@ function fakeOllama(state) {
     state.answer = 'μάλλον ναι';
     let bad = null; try { await acc.aiJudge({ ours: { name: 'A' }, theirs: { name: 'B' } }); } catch (e) { bad = e; }
     ok(bad && bad.code === 'bad_json', 'an answer outside the form is never taken as a verdict');
+  }
+
+  section('Φωτογραφίες: το AI τις κοιτάζει μόνο αν το μοντέλο ΒΛΕΠΕΙ (Ollama «vision»)');
+  {
+    settings.save({ localAI: { enabled: true, url: ol.url, model: 'qwen2.5' } });
+    const PC = require(APP + '/lib/photocheck');
+    let novis = null;
+    try { await PC.visionCompare('http://127.0.0.1/a.jpg', 'http://127.0.0.1/b.jpg', { name: 'X' }); } catch (e) { novis = e; }
+    ok(novis && novis.code === 'no_vision' && /qwen2\.5:7b διαβάζει μόνο κείμενο/.test(novis.message), 'only a text model (qwen2.5:7b): no picture is «looked at» — said why, nothing guessed');
+    // two pictures served here (a JPEG and a PNG header), and a vision model installed
+    const img = http.createServer((q, r) => { const jpg = /a\.jpg/.test(q.url); r.writeHead(200, { 'content-type': jpg ? 'image/jpeg' : 'image/png' }); r.end(Buffer.concat([jpg ? Buffer.from([0xff, 0xd8, 0xff, 0xe0]) : Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(200, 1)])); });
+    await new Promise((r) => img.listen(0, '127.0.0.1', r));
+    const base = 'http://127.0.0.1:' + img.address().port;
+    state.models = ['qwen2.5:7b', 'qwen2.5vl:3b'];
+    state.calls.length = 0;
+    state.answer = JSON.stringify({ same_model: 'yes', same_colour: 'no', same_shape: 'yes', matches_text: 'yes', same_product_or_kind: 'same_product', other_version: 'no', category: 'other_colour', why: 'ίδιο σακίδιο, αλλά λαδί' });
+    const vm = await require(APP + '/lib/localai').visionModels();
+    ok(vm.length === 1 && vm[0].name === 'qwen2.5vl:3b' && /capabilities/.test(vm[0].how), 'the models that see: told by Ollama itself (capabilities «vision»), not by the name', JSON.stringify(vm));
+    const v = await PC.visionCompare(base + '/a.jpg', base + '/b.png', { name: 'ΣΑΚΙΔΙΟ PENTAGON KYLER ΜΑΥΡΟ', title: 'Kyler Olive' });
+    const call = state.calls[state.calls.length - 1];
+    ok(call.model === 'qwen2.5vl:3b' && Array.isArray(call.images) && call.images.length === 2 && call.format && call.format.properties.same_colour, 'our photo and the candidate go to the model that sees, with a fixed answer form (every part apart)', JSON.stringify([call.model, (call.images || []).length]));
+    ok(v.same_colour === 'no' && v.category === 'other_colour' && v.model === 'qwen2.5vl:3b', 'its answer, part by part (model / colour / shape / text / same product or kind / edition)');
+    const row = PC.withVision({ u: 'x', category: 'right', why: 'Ίδιο EAN, ίδιο χρώμα' }, v);
+    const row2 = PC.withVision({ u: 'x', category: 'maybe', why: 'λέξεις' }, Object.assign({}, v, { same_colour: 'yes', category: 'right' }));
+    ok(row.category === 'maybe' && /το AI είδε/.test(row.why) && row2.category === 'maybe', 'the AI can only add doubt: «right» → «confirm it» when it sees another colour; it never makes a photo «right» by itself');
+    let fmtErr = null;
+    const gif = http.createServer((q, r) => { r.writeHead(200, { 'content-type': 'image/webp' }); r.end(Buffer.from('RIFF....WEBP')); });
+    await new Promise((r) => gif.listen(0, '127.0.0.1', r));
+    try { await PC.visionCompare(base + '/a.jpg', 'http://127.0.0.1:' + gif.address().port + '/c.webp', { name: 'X' }); } catch (e) { fmtErr = e; }
+    ok(fmtErr && /δεν είναι JPEG\/PNG/.test(fmtErr.message), 'a picture the model cannot read (WebP): said, not sent');
+    img.close(); gif.close();
+    state.models = ['qwen2.5:7b', 'nomic-embed-text:latest'];
   }
 
   section('Μετάφραση σε κομμάτια (δεν κόβεται)');

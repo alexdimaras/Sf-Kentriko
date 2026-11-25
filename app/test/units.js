@@ -278,6 +278,25 @@ const section = (t) => console.log('\n' + t);
       const c7b = store.read('market')['sf:107'].competitors.find((c) => c.url === 'https://good.gr/p7');
       ok(c7b.match === 'exact' && !c7b.variantOk && !(store.read('market-decisions')['sf:107'] || {}).variant, 'undo: back to what the program had said', JSON.stringify([c7b.match, c7b.variantOk]));
     }
+    // accuracy by DOMAIN (25/11 §2): each from its own evidence, never one number for everything
+    {
+      const dec = {};
+      for (let i = 0; i < 12; i++) dec['sf:' + i + ':sku'] = { status: i < 11 ? 'approved' : 'rejected', cf: 96, fd: 'sku', og: 'sources', src: i === 11 ? 'bad.gr' : 'good.gr', cat: 'ΣΑΚΙΔΙΑ', ver: 1, at: new Date().toISOString() };
+      dec['sf:50:gtin'] = { status: 'approved', edited: '123', cf: 96, fd: 'gtin', og: 'sources', at: new Date().toISOString() };
+      store.write('fixes', dec);
+      const ds = acc.domains();
+      const D = Object.fromEntries(ds.map((d) => [d.id, d]));
+      ok(ds.length === 10 && D.match.main.basis === 'sample' && D.sku.main.basis === 'decisions' && D.sku.main.n === 12 && D.sku.main.yes === 11 && !D.ean.main.yes && D.ean.main.partial === 1,
+        'ten domains, each from its own evidence: matching from the random sample, codes from your decisions; an EAN approved WITH your change is not «right as proposed»', JSON.stringify([D.match.main.basis, D.sku.main, D.ean.main]));
+      ok(D.sku.problems.some((p) => p.what === 'bad.gr') && !D.sku.enough && D.sku.need === 18 && /18 ακόμη/.test(D.sku.next.text), 'what is needed: the source of the mistakes, and how many more decisions for a sound sample', JSON.stringify([D.sku.problems, D.sku.next]));
+      ok(!D.specs.main && D.specs.next.who === 'none' && /Δεν μετριέται/.test(D.specs.next.text), 'a domain the program does not measure says so (never a made-up number)');
+      ok(D.match.evidence.some((e) => e.type === 'bench' && e.t.p === 99.1) && D.match.main.p !== 99.1 && !D.sku.evidence.some((e) => e.type === 'bench'), 'the synthetic benchmark is shown apart and is never the number of the domain (nor of another one)');
+      const acts = acc.actions(ds);
+      ok(acts.length && acts.some((a) => /χρειάζονται \d+ ακόμη/.test(a.text)) && acts.some((a) => /bad\.gr/.test(a.text)) && acts.every((a) => a.why), 'what to do now: with priority and why (more checks where the sample is small, the shop with mistakes)', JSON.stringify(acts.map((a) => a.text)));
+      const h = store.read('accuracy-history');
+      ok(h && Object.keys(h.days).length === 1 && h.days[Object.keys(h.days)[0]].sku.n === 12, 'one measurement a day is kept (for «how it changed since»)');
+      store.write('fixes', {});
+    }
     ok(acc.wilson(98, 100).low > 92 && acc.wilson(3, 3).low < 45, 'the margin: 98 of 100 → at least ~93%; 3 of 3 says little (from ~44%)', JSON.stringify([acc.wilson(98, 100), acc.wilson(3, 3)]));
   }
 

@@ -20,10 +20,10 @@
       let tab = p.tab || 'score';
       const body = h('div', { class: 'stack' });
       const tabs = h('div', { class: 'tabs' });
-      const TABS = [['score', 'Μέτρηση'], ['sample', 'Έλεγχος δείγματος'], ['history', 'Ιστορικό'], ['product', 'Ένα προϊόν'], ['how', 'Πώς δουλεύει']];
+      const TABS = [['score', 'Μέτρηση'], ['sample', 'Έλεγχος δείγματος'], ['photos', 'Φωτογραφίες'], ['history', 'Ιστορικό'], ['product', 'Ένα προϊόν'], ['how', 'Πώς δουλεύει']];
       const drawTabs = () => { clear(tabs); for (const [id, label] of TABS) tabs.appendChild(h('button', { 'aria-selected': String(tab === id), onclick: () => { tab = id; App.keep({ tab }); drawTabs(); show(); } }, label)); };
       main.appendChild(tabs); main.appendChild(body);
-      const show = () => { clear(body); (tab === 'sample' ? sample : tab === 'history' ? history : tab === 'product' ? product : tab === 'how' ? how : score)(body, p); };
+      const show = () => { clear(body); (tab === 'sample' ? sample : tab === 'photos' ? photos : tab === 'history' ? history : tab === 'product' ? product : tab === 'how' ? how : score)(body, p); };
       drawTabs(); show();
     },
   };
@@ -36,6 +36,9 @@
     clear(box);
     const sm = s.sample;
     const enough = sm.n >= 30;
+    // first: what to do now (the most useful for the least of your time), then every domain apart
+    if (s.actions && s.actions.length) box.appendChild(actionsPanel(s.actions));
+    if (s.domains) box.appendChild(domainsPanel(s.domains, s.enough));
     // the answer to «how many of 100 are right»
     box.appendChild(h('div', { class: 'panel lr-answer' },
       h('h2', null, 'Από 100 αντιστοιχίες που κάνει μόνο του, πόσες είναι σωστές;'),
@@ -89,6 +92,41 @@
         h('li', null, h('b', null, 'Τίτλοι: '), `${fmt.num(s.naming.examples)} εγκεκριμένοι τίτλοι (παραδείγματα για το AI) · ${fmt.num(s.naming.rejections)} λέξεις είδους που απέρριψες (δεν ξαναπροτείνονται). `, h('a', { href: '#/settings?tab=words' }, 'Ρυθμίσεις → Λέξεις'))),
       s.shops.length ? h('details', null, h('summary', null, `Ανά κατάστημα (${s.shops.length})`), h('table', { class: 'tbl lr-tbl' }, h('thead', null, h('tr', null, h('th', null, 'Κατάστημα'), h('th', { class: 'num' }, 'Σωστές'), h('th', { class: 'num' }, 'Έλεγχοι'))),
         h('tbody', null, s.shops.map((x) => h('tr', null, h('td', null, x.host, x.doubt ? h('span', { class: 'pill warn', style: { marginLeft: '6px' } }, 'θέλει «ναι»') : null), h('td', { class: 'num' }, pct(x)), h('td', { class: 'num' }, fmt.num(x.n))))))) : null));
+  }
+
+  // ---------- what to do now ----------
+  function actionsPanel(list) {
+    const GO = { sample: ['Έλεγχος δείγματος', { tab: 'sample' }], photos: ['Έλεγχος φωτογραφιών', { tab: 'photos' }], aidoubts: ['Το AI διαφωνεί', { tab: 'sample', ai: '1' }], product: ['Ένα προϊόν', { tab: 'product' }] };
+    return h('div', { class: 'panel lr-actions' }, h('h2', null, 'Τι να κάνεις τώρα'),
+      h('ol', { class: 'lr-act' }, list.map((a) => h('li', null, h('b', null, a.text), h('div', { class: 'faint' }, 'Γιατί: ' + a.why),
+        a.go === 'fixes' ? h('a', { href: '#/fixes' }, 'Διορθώσεις →') : GO[a.go] ? h('button', { type: 'button', class: 'linkish', onclick: () => App.go('learn', GO[a.go][1]) }, GO[a.go][0] + ' →') : null))));
+  }
+  // ---------- every domain apart (never one number for everything) ----------
+  const TYPE = { sample: 'Τυχαίο δείγμα', human: 'Δικοί σου έλεγχοι', decisions: 'Αποφάσεις σου', ai: 'AI', bench: 'Συνθετικό benchmark', tests: 'Tests', production: 'Παραγωγή' };
+  function domainsPanel(ds, enough) {
+    const card = (d) => {
+      const m = d.main;
+      const cls = !m ? '' : !d.enough ? 'few' : m.low >= 95 ? 'good' : m.low >= 85 ? 'ok' : 'bad';
+      return h('details', { class: 'lr-dom ' + cls },
+        h('summary', null,
+          h('span', { class: 'lr-dom-name' }, d.label),
+          h('span', { class: 'lr-dom-p' }, m && m.p != null ? fmt.num(m.p) + '%' : '—'),
+          h('span', { class: 'lr-dom-sub faint' }, m ? `${m.n} ${m.basis === 'decisions' ? 'αποφάσεις' : 'έλεγχοι'} · ${fmt.num(m.low)}–${fmt.num(m.high)}%${d.enough ? '' : ' · λίγα'}${d.delta != null ? ` · ${d.delta > 0 ? '▲' : '▼'}${Math.abs(d.delta)}` : ''}` : d.id === 'specs' ? 'δεν μετριέται' : 'χωρίς μέτρηση')),
+        m ? h('p', { class: 'faint' }, `Βάση του αριθμού: ${m.basisLabel}. Σωστά ${m.yes}${m.partial ? ` · με αλλαγή σου ${m.partial}` : ''} · λάθος ${m.no}${m.unsure ? ` · αβέβαια ${m.unsure}` : ''} · τελευταία μέτρηση ${d.last ? fmt.ago(d.last) : '—'}${d.prev ? ` · πριν (${d.prev.day}): ${fmt.num(d.prev.p)}% σε ${d.prev.n}` : ''}.`) : null,
+        h('h4', { class: 'needs-h' }, 'Από πού (κάθε είδος απόδειξης χωριστά)'),
+        h('ul', { class: 'todo-list' }, d.evidence.map((e) => h('li', null, h('span', { class: 'pill' }, TYPE[e.type] || e.type), ' ', e.label, ': ',
+          e.t ? h('b', null, e.t.p != null ? fmt.num(e.t.p) + '%' : '—') : null, e.t && e.t.n ? ` (${e.t.n}, ${fmt.num(e.t.low)}–${fmt.num(e.t.high)}%)` : '', e.text || '', e.note ? ' · ' + e.note : '',
+          e.agreement && e.agreement.n ? ` · συμφωνεί μαζί σου ${fmt.num(e.agreement.p)}% (${e.agreement.n})` : '', e.at ? h('span', { class: 'faint' }, ' · ' + (String(e.at).length <= 10 ? e.at : fmt.ago(e.at))) : null))),
+        d.versions && d.versions.length > 1 ? h('div', null, h('h4', { class: 'needs-h' }, 'Βοήθησαν οι αλλαγές; (ανά έκδοση κανόνων)'), h('ul', { class: 'todo-list' }, d.versions.map((v) => h('li', null, h('b', null, v.ver + ': '), `${fmt.num(v.p)}% σε ${v.n} (${fmt.num(v.low)}–${fmt.num(v.high)}%)`)))) : null,
+        h('h4', { class: 'needs-h' }, 'Τι χρειάζεται για να αυξηθεί η ακρίβεια'),
+        h('ul', { class: 'todo-list' },
+          d.problems.length ? h('li', null, h('b', null, 'Συχνότερα λάθη: '), d.problems.map((p) => `${p.what} (${p.n}, ${p.kind})`).join(' · ')) : h('li', null, h('b', null, 'Συχνότερα λάθη: '), 'κανένα γνωστό ακόμα'),
+          d.auto.length ? h('li', null, h('b', null, 'Ήδη σε ισχύ (αυτόματα, μόνο προς το πιο προσεκτικό): '), d.auto.join(' · ')) : null,
+          h('li', { class: d.next.who === 'human' ? 'warn' : '' }, h('b', null, 'Επόμενο βήμα: '), d.next.text, h('div', { class: 'faint' }, d.next.who === 'human' ? 'Χρειάζεται δική σου κρίση.' : d.next.who === 'system' ? 'Το κάνει το σύστημα με ασφάλεια.' : ''))));
+    };
+    return h('div', { class: 'panel' }, h('h2', null, 'Ακρίβεια ανά τομέα'),
+      h('p', { class: 'faint' }, `Κάθε τομέας με τον δικό του αριθμό, από τη δική του απόδειξη· ο ένας δεν αποδεικνύει τον άλλο. 100% φαίνεται μόνο για όσα ελέγχθηκαν, πάντα με το περιθώριό του· «επαρκές» από ${enough} ελέγχους. Πάτα έναν τομέα για λεπτομέρειες.`),
+      h('div', { class: 'lr-doms' }, ds.map(card)));
   }
 
   // ---------- one match, ours next to theirs ----------
@@ -154,6 +192,48 @@
     try { r = await GET('/api/learn/ai-doubts', { n: 10 }); } catch (e) { list.appendChild(h('div', { class: 'note crit' }, e.message)); return; }
     if (!r.rows.length) { list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Καμία διαφωνία'), h('p', null, 'Το AI δεν βρήκε αντιστοιχία που να μη μοιάζει σωστή (ή δεν έχει ελέγξει ακόμα).'))); return; }
     for (const x of r.rows) { const c = matchCard(x); c.insertBefore(h('div', { class: 'note warn', style: { margin: '6px 0' } }, h('b', null, 'AI: όχι ίδιο — '), x.ai.why || ''), c.children[1]); list.appendChild(c); }
+  }
+
+  // ---------- the photos: each one on its own, with a category (a random sample of what is proposed now) ----------
+  const PCAT = [['right', 'Σωστό', 'primary'], ['other_colour', 'Άλλο χρώμα'], ['other_version', 'Άλλη έκδοση'], ['wrong_product', 'Λάθος προϊόν'], ['accessory', 'Αξεσουάρ / εξάρτημα'], ['packaging', 'Συσκευασία'], ['generic', 'Γενική εικόνα'], ['duplicate', 'Διπλή'], ['poor', 'Κακή ποιότητα'], ['uncertain', 'Δεν ξέρω', 'ghost']];
+  async function photos(box) {
+    box.appendChild(h('div', { class: 'note' }, 'Τυχαίες φωτογραφίες από όσες προτείνει τώρα το πρόγραμμα (Διορθώσεις → Φωτογραφίες), μία-μία. Διάλεξε τι δείχνει: «Σωστό» μόνο αν είναι το ίδιο προϊόν ΚΑΙ το δικό μας χρώμα / έκδοση. Ό,τι πεις μένει: μια φωτογραφία που δεν είναι σωστή δεν ξαναπροτείνεται (με αναίρεση).'));
+    const vis = h('p', { class: 'faint' }, 'Έλεγχος αν το AI βλέπει εικόνες…');
+    box.appendChild(vis);
+    let vision = null;
+    GET('/api/learn/vision').then((v) => { vision = v; vis.textContent = 'Το AI στις φωτογραφίες: ' + v.text + (v.ok ? ' · δεύτερη γνώμη ανά φωτογραφία (ποτέ μόνη της απόδειξη, ποτέ έγκριση).' : ' Για να βλέπει: στον υπολογιστή «ollama pull qwen2.5vl:3b» (~3,2 GB μνήμη) — πρώτα μέτρηση στο PC.'); }).catch(() => { vis.textContent = ''; });
+    const list = h('div', { class: 'stack' });
+    box.appendChild(h('div', { class: 'toolbar' }, btn('Άλλες 10', { cls: 'sm', icon: 'sync' }, () => load())));
+    box.appendChild(list);
+    const load = async () => {
+      clear(list).appendChild(h('span', { class: 'muted' }, 'Επιλογή…'));
+      let r;
+      try { r = await GET('/api/learn/photos', { n: 10 }); } catch (e) { clear(list).appendChild(h('div', { class: 'note crit' }, e.message)); return; }
+      clear(list);
+      if (!r.rows.length) { list.appendChild(h('div', { class: 'panel empty' }, h('h3', null, 'Καμία φωτογραφία για έλεγχο'), h('p', null, 'Δεν υπάρχουν προτάσεις φωτογραφιών αυτή τη στιγμή, ή τις έχεις ελέγξει όλες.'))); return; }
+      list.appendChild(h('p', { class: 'faint' }, `${fmt.num(r.left)} φωτογραφίες δεν έχουν ελεγχθεί ακόμα.`));
+      for (const x of r.rows) {
+        const res = h('div', { class: 'lr-result' });
+        const ai = h('div', { class: 'faint' });
+        const answer = (cat) => POST('/api/learn/photo', { k: x.k, url: x.url, category: cat, sample: true, prog: x.category, src: x.src }).then(() => {
+          clear(res).appendChild(h('span', { class: 'pill ' + (cat === 'right' ? 'ok' : cat === 'uncertain' ? '' : 'crit') }, (PCAT.find((y) => y[0] === cat) || [])[1] || cat));
+          res.appendChild(btn('Αναίρεση', { cls: 'sm ghost' }, () => POST('/api/learn/photo-undo', { k: x.k, url: x.url }).then(() => { clear(res); card.classList.remove('done'); toast('Αναιρέθηκε.'); }).catch(fail)));
+          card.classList.add('done');
+        }).catch(fail);
+        const card = h('div', { class: 'panel lr-card' },
+          h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } }, h('b', null, x.name), h('span', { class: 'pill ' + (x.category === 'right' ? 'ok' : 'warn') }, 'Το πρόγραμμα: ' + (PCAT.find((y) => y[0] === x.category) || [0, x.category])[1])),
+          h('div', { class: 'lr-pair' },
+            h('div', { class: 'lr-side' }, h('div', { class: 'faint' }, 'Δική μας'), x.ours ? h('img', { src: x.ours, alt: '', loading: 'lazy', class: 'lr-photo' }) : h('span', { class: 'faint' }, 'χωρίς φωτογραφία')),
+            h('div', { class: 'lr-side' }, h('div', { class: 'faint' }, 'Υποψήφια'), h('a', { href: x.url, target: '_blank', rel: 'noopener noreferrer' }, h('img', { src: x.url, alt: '', loading: 'lazy', class: 'lr-photo' })))),
+          h('div', { class: 'faint' }, h('b', null, 'Γιατί: '), x.why || '—', x.src ? ' · πηγή: ' + x.src : ''),
+          ai,
+          h('div', { class: 'row tight', style: { flexWrap: 'wrap', marginTop: '6px' } }, PCAT.map(([id, label, cls]) => btn(label, { cls: 'sm ' + (cls || '') }, () => answer(id))),
+            vision && vision.ok && x.ours ? btn('Ρώτα το AI', { cls: 'sm ghost', icon: 'bolt' }, (ev) => { ev.currentTarget.disabled = true; ai.textContent = 'Το AI κοιτάζει…'; POST('/api/learn/photo-ai', { ours: x.ours, url: x.url, name: x.name }).then((v) => { ai.textContent = `AI (${v.model}): μοντέλο ${v.same_model} · χρώμα ${v.same_colour} · σχήμα ${v.same_shape} · ${v.same_product_or_kind} · άλλη έκδοση ${v.other_version} → ${(PCAT.find((y) => y[0] === v.category) || [0, v.category])[1]}. ${v.why || ''} (δεύτερη γνώμη, όχι απόδειξη)`; }).catch((e) => { ai.textContent = 'AI: ' + e.message; }); }) : null),
+          res);
+        list.appendChild(card);
+      }
+    };
+    load();
   }
 
   // ---------- everything you answered, newest first: each one can be taken back ----------

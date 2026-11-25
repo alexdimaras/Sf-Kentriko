@@ -102,7 +102,48 @@ function setRemote(r) { remote = typeof r === 'function' ? { call: r } : r; }
 function where() { return remote ? 'computer' : 'local'; }
 async function call(path, body, timeout, meta) {
   if (remote) return remote.call(path, body, timeout, meta || {});
-  return ollamaFetch(resolveUrl(cfg().url), path, body, { timeout });
+  return ollamaFetch(resolveUrl(cfg().url), path, body && body.imageUrls ? await withImages(body) : body, { timeout });
+}
+/**
+ * The pictures of a question, fetched where the AI runs (only public addresses, JPEG / PNG — what the vision models
+ * read — at most 4, 4 MB each) and given to Ollama as it wants them (base64 in «images»).
+ */
+async function withImages(body) {
+  const http = require('./http');
+  const out = Object.assign({}, body);
+  delete out.imageUrls;
+  const imgs = [];
+  for (const u of [].concat(body.imageUrls || []).slice(0, 4)) {
+    const r = await http.get(String(u), { raw: true, retries: 1, timeout: 20000 });
+    const type = String(r.headers.get('content-type') || '');
+    const b = r.buf || Buffer.alloc(0);
+    const jpg = b[0] === 0xff && b[1] === 0xd8, png = b[0] === 0x89 && b[1] === 0x50;
+    if (!(jpg || png)) throw aiError('image_format', `Η εικόνα ${String(u).slice(0, 80)} δεν είναι JPEG/PNG (${type || 'άγνωστο'}): το μοντέλο δεν τη διαβάζει.`);
+    if (b.length > 4 * 1048576) throw aiError('image_size', 'Πολύ μεγάλη εικόνα (πάνω από 4 MB).');
+    imgs.push(b.toString('base64'));
+  }
+  out.images = imgs;
+  return out;
+}
+/**
+ * Which installed models SEE pictures. Never assumed from the name alone when Ollama can say: its /api/show gives the
+ * model's «capabilities» (vision) — a text model such as qwen2.5:7b has none. → [{ name, how }]
+ */
+const VISION_NAME = /llava|bakllava|moondream|minicpm-v|qwen2(\.5)?-?vl|llama3\.2-vision|gemma3(?!.*:1b)|granite3\.2-vision|mistral-small3\.1|llama4/i;
+async function visionModels() {
+  const st = await status();
+  const out = [];
+  for (const m of st.details.filter((x) => !x.embedding)) {
+    let how = '';
+    try {
+      const sh = await call('/api/show', { model: m.name }, 15000);
+      if (Array.isArray(sh && sh.capabilities)) { if (sh.capabilities.includes('vision')) how = 'Ollama: capabilities «vision»'; else continue; }
+    } catch (_) { /* an older Ollama / a computer of an older worker: the model's families, then its name */ }
+    if (!how && (m.families || []).some((f) => /clip|mllama/i.test(f))) how = 'Ollama: οικογένεια ' + m.families.join('+');
+    if (!how && VISION_NAME.test(m.name)) how = 'όνομα μοντέλου (δεν επιβεβαιώθηκε από το Ollama)';
+    if (how) out.push({ name: m.name, how });
+  }
+  return out;
 }
 
 async function status() {
@@ -134,7 +175,7 @@ async function ask(prompt, opts) {
   if (!c.enabled && !o.force) throw aiError('disabled', 'Το τοπικό AI είναι κλειστό (Ρυθμίσεις → AI: «Ενεργό»).');
   const model = o.model || (await chooseModel()).model;
   const t0 = Date.now();
-  const body = Object.assign({ model, prompt, stream: false, keep_alive: '15m', options: { temperature: o.temperature == null ? 0.3 : o.temperature, num_ctx: NUM_CTX, num_predict: o.maxTokens || 1200 } }, o.format ? { format: o.format } : {}, o.system ? { system: o.system } : {});
+  const body = Object.assign({ model, prompt, stream: false, keep_alive: '15m', options: { temperature: o.temperature == null ? 0.3 : o.temperature, num_ctx: NUM_CTX, num_predict: o.maxTokens || 1200 } }, o.format ? { format: o.format } : {}, o.system ? { system: o.system } : {}, Array.isArray(o.imageUrls) && o.imageUrls.length ? { imageUrls: o.imageUrls.slice(0, 4) } : {});
   let r;
   try { r = await call('/api/generate', body, o.timeout || GEN_TIMEOUT, { model }); } catch (e) {
     // (into the program's log: which model, what went wrong — the test of «Σύστημα» says the same in words)
@@ -331,4 +372,4 @@ async function translateFull(html) {
 }
 async function translate(html) { return (await translateFull(html)).html; }
 
-module.exports = { askJson, logUse, setRemote, status, generate, ask, test, describe, describeFull, translate, translateFull, pickModel, modelsOf, resolveUrl, ollamaFetch, guardFacts, cleanAnswer, toHtml, DEFAULT_URL, where };
+module.exports = { visionModels, withImages, askJson, logUse, setRemote, status, generate, ask, test, describe, describeFull, translate, translateFull, pickModel, modelsOf, resolveUrl, ollamaFetch, guardFacts, cleanAnswer, toHtml, DEFAULT_URL, where };

@@ -33,7 +33,7 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 - Ασφάλεια δικτύου: `http.assertPublic` (κανένα ιδιωτικό IP, σε κάθε redirect). Τεστ με τοπικούς mock servers: `SFK_ALLOW_PRIVATE=1`.
 
 ## Τεστ
-`cd app && npm test` → run (97) · rules (115) · knowledge (23, πραγματικές περιπτώσεις: ΔΙΑΚΡΙΤΙΚΟ, XQ35, 223REM) · units (63: DNS rebinding, Cloudflare, ζωντανή εικόνα PC, διαφημίσεις, PIN, αντιπρόσωποι, ιστορικό, ακρίβεια/εκμάθηση) · jobs (36) · integrity (46) · coord (74) · workers (52) · ai (47) · research (91) · variants (73, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
+`cd app && npm test` → run (97) · rules (127) · knowledge (23, πραγματικές περιπτώσεις: ΔΙΑΚΡΙΤΙΚΟ, XQ35, 223REM) · units (69: DNS rebinding, Cloudflare, ζωντανή εικόνα PC, ακρίβεια ανά τομέα, διαφημίσεις, PIN, αντιπρόσωποι, ιστορικό, ακρίβεια/εκμάθηση) · jobs (36) · integrity (46) · coord (74) · workers (52) · ai (53) · research (91) · variants (73, πραγματικά δεδομένα στο `test/fixtures`) · db (11, με `COORD_PG`).
 Μετρήσεις: `node test/bench/recall-bench.js` (υποψήφιοι έρευνας τιμών, πραγματικοί κατάλογοι) · `node app/worker.js measure 30` (πραγματική έρευνα internet, στο PC) · `node test/bench/research-bench.js` (παλιά vs νέα, συνθετικό) · `node test/bench/live-research.js` (ζωντανά σε πραγματικά καταστήματα).
 Τοπική PG: `service postgresql start`, `COORD_PG=postgres://sfk:sfk-test-pass@127.0.0.1:5432/sfk`. CI: `.github/workflows/test.yml`.
 Αληθινά δεδομένα για μετρήσεις (αν υπάρχουν στο scratchpad): κατάλογοι ~9.900 sf + 7.400 st προϊόντα.
@@ -45,7 +45,9 @@ Back office (Node 22, vanilla JS, χωρίς framework) για δύο WooCommerc
 **AGENTS.md** (χάρτης για κάθε AI) · **docs/STATE.md** (τι τρέχει, τι δεν έχει αποδειχθεί) · **docs/DECISIONS.md** (αποφάσεις — μην τις αναιρείς) · **docs/BUGS.md** · **docs/RUNBOOKS.md** · **docs/TEST-MATRIX.md**.
 - **Συμβάντα** `lib/events.js` (ένα αρχείο για όλα τα μέρη, χωρίς μυστικά) + **πακέτο διάγνωσης για AI** `lib/diagnostics.js` (Σύστημα → Συμβάντα).
 - **Αυτοεπισκευές** `lib/repair.js` (μόνο λίστα ακίνδυνων ενεργειών, έλεγχος πριν/μετά, όρια). **Μενού** σε 4 ενότητες (`GROUPS` στο `core.js`).
-- **Ακρίβεια & εκμάθηση** `lib/accuracy.js` + `v-learn.js`: τυχαίο δείγμα ελέγχου (αντικειμενικό %), AI δεύτερη γνώμη (σιωπηλά, μετράει μόνο αν αποδειχθεί), αυτόματη διόρθωση Σιγουριάς % (`fixes.calibrate`), καταστήματα με λάθη (`doubtShops`). Μόνο προς το πιο προσεκτικό.
+- **Τι κάνει τώρα** `lib/liveview.js` + `v-live.js` (`GET /api/workers/live`): ανά PC και ανά εργασία από πραγματικές ενδείξεις (online ≠ worker ≠ runner ≠ εκτέλεση ≠ πρόοδος `progressAt`), εξωτερικές υπηρεσίες.
+- **Φωτογραφίες** `lib/photocheck.js`: κατηγορία ανά φωτογραφία (σωστό / άλλο χρώμα / άλλη έκδοση / αξεσουάρ / συσκευασία / γενική / διπλή / κακή / αβέβαιο), γκαλερί ανά παραλλαγή, έλεγχος ανθρώπου με αναίρεση, AI όρασης ΜΟΝΟ με μοντέλο «vision» (`localai.visionModels`), ποτέ απόδειξη μόνο του.
+- **Ακρίβεια & εκμάθηση** `lib/accuracy.js` + `v-learn.js` (10 τομείς χωριστά, `domains()` / `actions()`): τυχαίο δείγμα ελέγχου (αντικειμενικό %), AI δεύτερη γνώμη (σιωπηλά, μετράει μόνο αν αποδειχθεί), αυτόματη διόρθωση Σιγουριάς % (`fixes.calibrate`), καταστήματα με λάθη (`doubtShops`). Μόνο προς το πιο προσεκτικό.
 - **Υγεία συστήματος** `lib/health.js`: 4 επίπεδα ΟΚ/ΠΡΟΣΟΧΗ/ΚΡΙΣΙΜΟ/ΑΓΝΩΣΤΟ από πραγματικούς ελέγχους (βάση, αποθήκευση, αντίγραφο, ουρά), κάθε 15′ και με «Έλεγχος όλων».
 
 ## Δουλειά που εκκρεμεί

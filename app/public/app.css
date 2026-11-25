@@ -1018,3 +1018,17 @@ body:has(.modal[aria-hidden="false"]) .savepill, body:has(.drawer[aria-hidden="f
 .lv-layers li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; } .lv-layers li > span:nth-child(2) { flex: 1 1 150px; } .lv-layers li b { margin-left: auto; text-align: right; }
 .lv .tbl-wrap { overflow-x: auto; max-width: 100%; }
 .lv-card, .lv-job, .lv-facts li { min-width: 0; overflow-wrap: anywhere; }
+
+.lr-act { display: grid; gap: 8px; padding-left: 20px; margin: 0; }
+.lr-doms { display: grid; gap: 8px; }
+.lr-dom { border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.lr-dom.good { border-left-color: var(--ok); } .lr-dom.ok { border-left-color: var(--ok); } .lr-dom.bad { border-left-color: var(--signal); } .lr-dom.few { border-left-color: var(--amber); }
+.lr-dom summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; cursor: pointer; list-style: none; }
+.lr-dom-name { font-weight: 650; flex: 1 1 160px; }
+.lr-dom-p { font-size: 22px; font-weight: 760; font-variant-numeric: tabular-nums; }
+.lr-dom.good .lr-dom-p { color: var(--ok); } .lr-dom.bad .lr-dom-p { color: var(--signal); } .lr-dom.few .lr-dom-p { color: var(--amber); }
+.lr-dom-sub { flex: 1 1 100%; font-size: 12.5px; }
+.lr-dom .todo-list li { overflow-wrap: anywhere; }
+.lr-photo { width: 100%; max-width: 170px; aspect-ratio: 1; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.fx-img.doubt { outline: 2px solid var(--amber); outline-offset: 1px; }
+.fx-photos { margin-top: 6px; font-size: 13px; }

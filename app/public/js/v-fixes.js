@@ -51,6 +51,14 @@
       case 'images': {
         const old = new Set(from || []);
         const added = (to || []).filter((u) => !old.has(u)).length;
+        // every new photo with what the check said about it (category, why, source) — and what was left out, and why
+        const ph = new Map((c.photos || []).map((x) => [x.u, x]));
+        const detail = (c.photos || []).length || (c.photosLeft || []).length ? h('details', { class: 'fx-photos' }, h('summary', null, `Έλεγχος φωτογραφιών: ${fmt.num((c.photos || []).length)} προτείνονται${(c.photosLeft || []).length ? ` · ${fmt.num(c.photosLeft.length)} αφέθηκαν έξω` : ''}`),
+          h('ul', { class: 'todo-list' }, (c.photos || []).map((x) => h('li', { class: x.category === 'right' ? '' : 'warn' }, h('b', null, x.label + ': '), x.why, x.src ? h('span', { class: 'faint' }, ' · ' + x.src) : null)),
+            (c.photosLeft || []).map((x) => h('li', { class: 'crit' }, h('b', null, 'Έξω — ' + x.label + ': '), x.why, x.src ? h('span', { class: 'faint' }, ' · ' + x.src) : null)))) : null;
+        if (detail) return h('div', null, beforeAfter(
+          (from || []).length ? h('div', { class: 'fx-imgs' }, (from || []).map((u) => h('div', { class: 'fx-img' }, thumb(u)))) : none('Χωρίς φωτογραφία'),
+          [h('div', { class: 'fx-imgs' }, (to || []).map((u) => h('div', { class: 'fx-img' + (old.has(u) ? '' : ' new') + (ph.get(u) && ph.get(u).category !== 'right' ? ' doubt' : ''), title: ph.get(u) ? ph.get(u).label + ' — ' + ph.get(u).why : '' }, thumb(u), old.has(u) ? null : h('span', null, ph.get(u) && ph.get(u).category !== 'right' ? 'έλεγξε' : 'νέα'))))]), detail);
         return beforeAfter(
           (from || []).length ? h('div', { class: 'fx-imgs' }, (from || []).map((u) => h('div', { class: 'fx-img' }, thumb(u)))) : none('Χωρίς φωτογραφία'),
           [h('div', { class: 'fx-imgs' }, (to || []).map((u) => h('div', { class: 'fx-img' + (old.has(u) ? '' : ' new') }, thumb(u), old.has(u) ? null : h('span', null, 'νέα')))), h('div', { class: 'faint ba-note' }, `${fmt.plural((to || []).length, 'φωτογραφία', 'φωτογραφίες')} (${added} ${added === 1 ? 'νέα' : 'νέες'})`)], { cls: 'ba-imgs' });

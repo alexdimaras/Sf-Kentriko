@@ -18,6 +18,10 @@ const MAX = 5000;
 const DOUBT_MIN = 3;        // checks of a shop before its record counts
 const DOUBT_SHARE = 0.34;   // a third of them wrong → its matches wait for a person
 
+function matchVersion() { try { return require('./market').MATCH_VERSION || 0; } catch (_) { return 0; } }
+function catOf(k) {
+  try { const [site, id] = String(k).split(':'); const p = require('./catalog').byId(site).get(Number(id)); return p ? String((p.catNames || [])[0] || '').slice(0, 60) : ''; } catch (_) { return ''; }
+}
 function data() { const d = store.read(KEY, null) || {}; d.items = d.items || {}; return d; }
 let memo = null;
 function changed() { memo = null; }
@@ -29,7 +33,9 @@ function record(o) {
   const prog = o.prog || {};
   const row = {
     k: o.k, url: String(o.url).slice(0, 400), host: U.hostOf(o.url), kind: o.kind === 'web' ? 'web' : 'price',
-    prog: { match: prog.match || '', how: prog.how || '', why: String(prog.why || '').slice(0, 160), score: Number(prog.score) || 0 },
+    prog: { match: prog.match || '', how: prog.how || '', why: String(prog.why || '').slice(0, 160), score: Number(prog.score) || 0, used: !!prog.used, ver: prog.ver || matchVersion() },
+    // (the product's category: where the mistakes are — asked 25/11 «ποιες κατηγορίες έχουν περισσότερα λάθη»)
+    cat: o.cat || catOf(o.k),
     verdict: o.verdict, by: o.by || '', at: U.nowIso(), sample: !!o.sample,
     // (why it is not the same: «variant» = the same model in another colour / size / edition — the commonest mistake)
     ...(o.verdict === 'no' && ['variant', 'other'].includes(o.reason) ? { reason: o.reason } : {}),
@@ -123,7 +129,7 @@ function check(input, by) {
   const market = require('./market');
   const e = market.results()[k];
   const c = e && (e.competitors || []).find((x) => x.url === url);
-  const prog = c ? { match: c.match, how: c.how, why: c.why, score: c.score } : { match: input.match || '', how: input.how || '' };
+  const prog = c ? { match: c.match, how: c.how, why: c.why, score: c.score, used: !!c.used } : { match: input.match || '', how: input.how || '' };
   const row = record({ k, url, kind: c && c.web ? 'web' : input.kind || 'price', prog, verdict, by, sample: !!input.sample, reason: input.reason });
   // (the market's own memory: a yes / no there is the same answer; «not sure» changes nothing)
   // («another colour / size»: not «the same», not thrown away — its price is evaluated as a sign; lib/market.js variantEval)
@@ -198,7 +204,9 @@ function scoreboard() {
   const cal = calibration();
   const FIELDS = ['name', 'sku', 'varsku', 'gtin', 'images', 'brand', 'cats', 'desc', 'short', 'price'];
   const wrong = rows.filter((r) => r.verdict === 'no' && r.prog.match === 'exact');
+  const doms = domains();
   return {
+    domains: doms, actions: actions(doms), enough: ENOUGH,
     wrongKinds: { all: wrong.length, variant: wrong.filter((r) => r.reason === 'variant').length },
     ai: Object.assign(tally(aiRows), { agreement: aiAgreement(), last: aiRows.map((a) => a.at).sort().pop() || null, doubts: aiRows.filter((a) => a.verdict === 'no' && !data().items[a.k + '|' + a.url]).length }),
     calibration: FIELDS.map((f) => ({ field: f, high: cal[f + '|high'] || null, medium: cal[f + '|medium'] || null })).filter((x) => x.high || x.medium),
@@ -359,6 +367,161 @@ function migrateVariants() {
   return n;
 }
 
+// ---------- accuracy by DOMAIN (asked 25/11 §2): never one number for everything ----------
+// Every domain has its own number, from its own evidence, said apart: a random sample a person checked (the honest
+// estimate) · a person's decisions on proposals · the AI · a synthetic benchmark · the automatic tests · what the
+// program produces now (volume, not accuracy). One domain never proves another. 100% is shown only for what was
+// checked, always with its margin; «enough» only from 30 checks on.
+const ENOUGH = 30;
+const HIST = 'accuracy-history'; // { days: { 'YYYY-MM-DD': { domain: { n, p } } } }
+const DOMAINS = [
+  ['match', 'Αντιστοίχιση προϊόντων'], ['photos', 'Φωτογραφίες'], ['colour', 'Χρώμα και παραλλαγές'], ['sku', 'SKU και κωδικοί κατασκευαστή'],
+  ['ean', 'EAN'], ['brand', 'Μάρκα'], ['specs', 'Χαρακτηριστικά και προδιαγραφές'], ['aidesc', 'Περιγραφές AI'], ['price', 'Εντοπισμός τιμών'], ['sources', 'Αξιοπιστία πηγών και καταστημάτων'],
+];
+// what the automatic tests cover in each domain (checked at every publication: `npm test` green before a push)
+const TESTS = { match: 'research (91), variants (73), rules', photos: 'rules: φωτογραφίες άλλου χρώματος / έκδοσης / διπλές', colour: 'rules, knowledge, units: άλλο χρώμα', sku: 'rules: κωδικοί μόνο από απόδειξη', ean: 'rules, research: EAN με ψηφίο ελέγχου', brand: 'rules: μάρκα (Brands)', specs: '', aidesc: 'ai: περιγραφή μόνο από στοιχεία', price: 'rules, units: τιμή άλλου χρώματος, ύποπτες τιμές', sources: 'units: κατάστημα με λάθη' };
+const BENCH = { match: { p: 99.1, recall: 60.9, at: '2026-11-24', what: 'συνθετικός κόσμος 60 προϊόντων / 14 καταστημάτων (test/bench/research-bench.js)' } };
+const FIELD_OF = { sku: ['sku', 'varsku'], ean: ['gtin'], brand: ['brand'], specs: ['specs', 'attrs'], photos: ['images'] };
+
+function tallyDec(rows) {
+  const ok = rows.filter((d) => (d.status === 'approved' || d.status === 'exported') && d.edited === undefined).length;
+  const part = rows.filter((d) => (d.status === 'approved' || d.status === 'exported') && d.edited !== undefined).length;
+  const no = rows.filter((d) => d.status === 'rejected').length;
+  const n = ok + part + no;
+  return Object.assign({ n, yes: ok, partial: part, no, unsure: 0 }, wilson(ok, n));
+}
+const lastAt = (rows) => rows.map((r) => r.at || '').sort().pop() || null;
+function byVersion(rows, isOk, verOf) {
+  const g = {};
+  for (const r of rows) { const v = verOf(r); if (v == null || v === '') continue; (g[v] = g[v] || []).push(r); }
+  return Object.entries(g).map(([ver, list]) => { const yes = list.filter(isOk).length; return Object.assign({ ver, n: list.length, yes }, wilson(yes, list.length)); }).sort((a, b) => String(a.ver).localeCompare(String(b.ver), undefined, { numeric: true }));
+}
+const top = (rows, key, n) => { const m = new Map(); for (const r of rows) { const k = key(r); if (k) m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n || 5).map(([k, c]) => ({ k, n: c })); };
+
+/** Every domain → { id, label, main, basis, enough, evidence: [...], versions, delta, last, problems, next, auto, human } */
+function domains() {
+  const items = Object.values(data().items);
+  const human = items.filter((r) => r.verdict === 'yes' || r.verdict === 'no' || r.verdict === 'unsure');
+  const exactRows = human.filter((r) => r.prog.match === 'exact');
+  const ai = Object.values(data().ai || {});
+  const fx = Object.values(store.read('fixes', null) || {}).filter((d) => d && d.fd);
+  const photoChecks = Object.values((store.read('photo-checks', null) || {}).items || {});
+  const isYes = (r) => r.verdict === 'yes';
+  const tallyChecks = (rows) => tally(rows);
+  const prod = productionCounts();
+  const out = [];
+  for (const [id, label] of DOMAINS) {
+    const ev = [];
+    let sampleRows = [], humanRows = [], decRows = [], aiRows = [], problems = [], auto = [], versions = [];
+    if (id === 'match' || id === 'sources') {
+      sampleRows = exactRows.filter((r) => r.sample); humanRows = exactRows.filter((r) => !r.sample); aiRows = ai.filter((a) => !a.prog || a.prog.match === 'exact');
+      versions = byVersion(exactRows.filter((r) => r.verdict !== 'unsure'), isYes, (r) => r.prog.ver ? 'αντιστοίχιση v' + r.prog.ver : '');
+      const wrong = exactRows.filter((r) => r.verdict === 'no');
+      if (id === 'match') problems = [
+        ...top(wrong, (r) => (r.reason === 'variant' ? 'το ίδιο μοντέλο σε άλλο χρώμα / μέγεθος' : r.reason === 'other' ? 'άλλο προϊόν' : 'όχι ίδιο')).map((x) => ({ what: x.k, n: x.n, kind: 'λάθος' })),
+        ...top(wrong, (r) => r.prog.how && 'απόδειξη: ' + ({ ean: 'EAN', sku: 'κωδικός', code: 'κωδικός μοντέλου', words: 'μόνο λέξεις' }[r.prog.how] || r.prog.how)).map((x) => ({ what: x.k, n: x.n, kind: 'απόδειξη' })),
+        ...top(wrong, (r) => r.cat).map((x) => ({ what: x.k, n: x.n, kind: 'κατηγορία' })),
+      ];
+      else problems = top(wrong, (r) => r.host).map((x) => ({ what: x.k, n: x.n, kind: 'κατάστημα' }));
+      const ds = doubtShops();
+      if (ds.size) auto.push(`${ds.size} ${ds.size === 1 ? 'κατάστημα' : 'καταστήματα'} με συχνά λάθη δεν μετράνε πια μόνα τους: ${[...ds.keys()].slice(0, 5).join(', ')}`);
+    } else if (id === 'colour') {
+      const rel = human.filter((r) => r.verdict === 'yes' || (r.verdict === 'no' && r.reason === 'variant'));
+      sampleRows = rel.filter((r) => r.sample && r.prog.match === 'exact'); humanRows = rel.filter((r) => !(r.sample && r.prog.match === 'exact'));
+      const pc = photoChecks.filter((x) => x.verdict && x.category);
+      if (pc.length) ev.push({ type: 'human', label: 'Φωτογραφίες που έλεγξες (σωστό χρώμα ή όχι)', t: tally(pc.map((x) => ({ verdict: x.category === 'other_colour' ? 'no' : x.verdict }))), at: lastAt(pc) });
+      problems = top(rel.filter((r) => r.verdict === 'no'), (r) => r.cat).map((x) => ({ what: x.k, n: x.n, kind: 'κατηγορία' }));
+      auto.push('Κωδικός, EAN και φωτογραφίες ποτέ από άλλο χρώμα· η ΤΙΜΗ άλλου χρώματος μετράει μόνο ως ένδειξη με αξιολόγηση (★★ / ★)');
+    } else if (id === 'price') {
+      const rel = exactRows.filter((r) => r.prog.used);
+      sampleRows = rel.filter((r) => r.sample); humanRows = rel.filter((r) => !r.sample);
+      problems = top(rel.filter((r) => r.verdict === 'no'), (r) => r.host).map((x) => ({ what: x.k, n: x.n, kind: 'κατάστημα' }));
+      auto.push('Μετράνε μόνο: ίδιο προϊόν, διαθέσιμο, ελληνικό, πρόσφατο, όχι ύποπτο· αλλαγή τιμής μόνο με ≥2 καταστήματα');
+    } else if (id === 'aidesc') {
+      decRows = fx.filter((d) => d.fd === 'desc' && d.sk === 'ai');
+    } else if (id === 'photos') {
+      decRows = fx.filter((d) => d.fd === 'images');
+      const pc = photoChecks.filter((x) => x.verdict);
+      if (pc.length) { sampleRows = pc.filter((x) => x.sample); humanRows = pc.filter((x) => !x.sample); }
+      problems = top(photoChecks.filter((x) => x.verdict === 'no'), (x) => PHOTO_WHY[x.category] || x.category).map((x) => ({ what: x.k, n: x.n, kind: 'λάθος' }))
+        .concat(top(decRows.filter((d) => d.status === 'rejected'), (d) => d.src).map((x) => ({ what: x.k, n: x.n, kind: 'πηγή' })));
+      auto.push('Ποτέ φωτογραφία από καταχώριση πολλών χρωμάτων, από αρχείο που λέει άλλο χρώμα, από είδος αντιπροσώπου σε άλλο χρώμα· ποτέ «σίγουρη» από ομοιότητα εικόνας μόνο');
+    } else {
+      decRows = fx.filter((d) => (FIELD_OF[id] || []).includes(d.fd));
+    }
+    if (decRows.length || FIELD_OF[id] || id === 'aidesc') {
+      if (!problems.length) problems = top(decRows.filter((d) => d.status === 'rejected'), (d) => d.src || ({ rules: 'κανόνες', site: 'δεδομένα του site', sources: 'αντιπρόσωποι & sites', infer: 'συμπέρασμα', mine: 'δικές σου' }[d.og] || d.og)).map((x) => ({ what: x.k, n: x.n, kind: 'πηγή' }))
+        .concat(top(decRows.filter((d) => d.status === 'rejected'), (d) => d.cat).map((x) => ({ what: x.k, n: x.n, kind: 'κατηγορία' })));
+      if (decRows.length) versions = versions.concat(byVersion(decRows.filter((d) => ['approved', 'exported', 'rejected'].includes(d.status)), (d) => d.status !== 'rejected' && d.edited === undefined, (d) => (d.ver ? 'κανόνες v' + d.ver : 'πριν τις 25/11')));
+      for (const f of FIELD_OF[id] || []) { const g = calibrationFor(f, 95); if (g && g.p < 90) auto.push(`Οι «σίγουρες» προτάσεις εδώ εγκρίνονταν ${g.p}% (${g.ok}/${g.n}): έγιναν «μέτριες», όχι στο «Έγκριση όλων των σίγουρων»`); }
+    }
+    if (sampleRows.length) ev.unshift({ type: 'sample', label: 'Τυχαίο δείγμα που έλεγξες (η αντικειμενική εκτίμηση)', t: tallyChecks(sampleRows), at: lastAt(sampleRows) });
+    if (humanRows.length) ev.push({ type: 'human', label: 'Άλλοι δικοί σου έλεγχοι (όχι τυχαίοι)', t: tallyChecks(humanRows), at: lastAt(humanRows) });
+    if (decRows.length) ev.push({ type: 'decisions', label: 'Οι αποφάσεις σου στις προτάσεις (εγκρίθηκε χωρίς αλλαγή / με αλλαγή / όχι)', t: tallyDec(decRows), at: lastAt(decRows) });
+    if (aiRows.length) ev.push({ type: 'ai', label: 'Δεύτερη γνώμη AI (μετράει όσο συμφωνεί μαζί σου)', t: tally(aiRows), at: lastAt(aiRows), agreement: aiAgreement() });
+    if (BENCH[id]) ev.push({ type: 'bench', label: 'Συνθετικό benchmark: ' + BENCH[id].what, t: { p: BENCH[id].p, n: null }, at: BENCH[id].at, note: `βρίσκει ~${Math.round(BENCH[id].recall / 10)} στα 10 καταστήματα που το έχουν` });
+    if (TESTS[id]) ev.push({ type: 'tests', label: 'Αυτοματοποιημένα tests (πράσινα σε κάθε δημοσίευση)', text: TESTS[id] });
+    if (prod[id] != null) ev.push({ type: 'production', label: 'Παραγωγή τώρα (πλήθος, όχι ακρίβεια)', text: prod[id] });
+    // the main number: the random sample when there is one, else the person's decisions / checks — said which
+    const mainEv = ev.find((e) => e.type === 'sample' && e.t.n) || ev.find((e) => (e.type === 'decisions' || e.type === 'human') && e.t.n) || null;
+    const main = mainEv ? Object.assign({ basis: mainEv.type, basisLabel: mainEv.label }, mainEv.t) : null;
+    const enough = !!(main && main.n >= ENOUGH);
+    out.push({ id, label, main, enough, need: main ? Math.max(0, ENOUGH - main.n) : ENOUGH, evidence: ev, versions, last: mainEv ? mainEv.at : null, problems: problems.slice(0, 8), auto });
+  }
+  // the change since the last day measured before today (history kept once a day)
+  const h = store.read(HIST, null) || { days: {} };
+  const today = new Date().toISOString().slice(0, 10);
+  const prevDay = Object.keys(h.days || {}).filter((d) => d < today).sort().pop();
+  for (const d of out) {
+    const pr = prevDay && h.days[prevDay][d.id];
+    d.delta = pr && pr.p != null && d.main && d.main.p != null && d.main.n > pr.n ? Math.round((d.main.p - pr.p) * 10) / 10 : null;
+    d.prev = pr ? Object.assign({ day: prevDay }, pr) : null;
+    d.next = nextStep(d);
+  }
+  store.update(HIST, { days: {} }, (x) => { x.days = x.days || {}; x.days[today] = Object.fromEntries(out.filter((d) => d.main).map((d) => [d.id, { n: d.main.n, p: d.main.p, basis: d.main.basis }])); const ks = Object.keys(x.days).sort(); for (const k of ks.slice(0, Math.max(0, ks.length - 120))) delete x.days[k]; return x; });
+  return out;
+}
+const PHOTO_WHY = { other_colour: 'άλλο χρώμα', other_version: 'άλλη έκδοση', wrong_product: 'λάθος προϊόν', accessory: 'αξεσουάρ / εξάρτημα', packaging: 'συσκευασία', generic: 'γενική διαφημιστική', duplicate: 'διπλή', poor: 'κακή ποιότητα', watermark: 'υδατογράφημα', maybe: 'αβέβαιη' };
+/** How much the program produces now in each domain (volume — never shown as accuracy). */
+function productionCounts() {
+  const out = {};
+  try { out.match = `${automatic().length} αντιστοιχίσεις «ίδιο» μετράνε χωρίς να τις έχεις δει`; } catch (_) { /* market not loaded */ }
+  try {
+    const items = require('./fixes').compute().items.filter((c) => c.status === 'pending');
+    const c = (fs) => items.filter((x) => fs.includes(x.field)).length;
+    out.sku = `${c(['sku', 'varsku'])} προτάσεις κωδικών περιμένουν`; out.ean = `${c(['gtin'])} προτάσεις EAN περιμένουν`; out.brand = `${c(['brand'])} προτάσεις μάρκας περιμένουν`;
+    out.photos = `${c(['images'])} προτάσεις φωτογραφιών περιμένουν`; out.aidesc = `${items.filter((x) => x.field === 'desc' && x.source && x.source.kind === 'ai').length} περιγραφές AI περιμένουν`;
+  } catch (_) { /* fixes not loaded */ }
+  return out;
+}
+/** The next best step of a domain, in words — and whether a person is needed. */
+function nextStep(d) {
+  if (d.id === 'specs') return { who: 'none', text: 'Δεν μετριέται: το πρόγραμμα δεν προτείνει ακόμα χαρακτηριστικά (μόνο τα παίρνει από τον αντιπρόσωπο για τις περιγραφές).' };
+  if (!d.main) return { who: 'human', text: d.id === 'match' || d.id === 'price' || d.id === 'colour' || d.id === 'sources' ? 'Δεν έχει μετρηθεί: κάνε 10 ελέγχους στον «Έλεγχο δείγματος».' : d.id === 'photos' ? 'Δεν έχει μετρηθεί: έλεγξε 10 φωτογραφίες στον «Έλεγχο φωτογραφιών».' : 'Δεν έχει μετρηθεί: οι εγκρίσεις / απορρίψεις σου στις Διορθώσεις μετράνε μόνες τους.' };
+  if (!d.enough) return { who: 'human', text: `Χρειάζονται ${d.need} ακόμη ${d.main.basis === 'decisions' ? 'αποφάσεις στις Διορθώσεις' : 'έλεγχοι'} για επαρκές δείγμα (έχεις ${d.main.n}).` };
+  if (d.main.low < 90 && d.problems.length) return { who: 'system', text: `Κύρια αιτία λάθους: ${d.problems[0].what} (${d.problems[0].n}). Το σύστημα γίνεται αυστηρότερο εκεί μόνο του όπου μπορεί με ασφάλεια· μετά νέος έλεγχος σε τυχαίο δείγμα.` };
+  return { who: 'none', text: 'Δεν απαιτείται δική σου ενέργεια: το δείγμα είναι επαρκές και κανένα συστηματικό λάθος δεν είναι γνωστό.' };
+}
+/** What the owner should do first, with why (the most useful for the least of their time). */
+function actions(ds) {
+  const out = [];
+  const W = { match: 10, price: 9, photos: 8, colour: 8, sku: 7, ean: 6, brand: 5, aidesc: 4, sources: 3, specs: 0 };
+  for (const d of ds) {
+    if (d.id === 'specs') continue;
+    if (!d.enough) out.push({ prio: W[d.id] + (d.main ? 0 : 2), domain: d.label, text: d.main ? `${d.label}: χρειάζονται ${d.need} ακόμη ${d.main.basis === 'decisions' ? 'αποφάσεις' : 'επιβεβαιώσεις'} για επαρκές δείγμα.` : `${d.label}: δεν έχει μετρηθεί ακόμα.`, why: 'Χωρίς ~30 ελέγχους ο αριθμός έχει μεγάλο περιθώριο (δεν ξέρουμε αν είναι καλό).', go: d.id === 'photos' ? 'photos' : ['match', 'price', 'colour', 'sources'].includes(d.id) ? 'sample' : 'fixes' });
+    if (d.delta != null && Math.abs(d.delta) >= 2) out.push({ prio: 2, domain: d.label, text: `${d.label}: ${d.delta > 0 ? 'βελτιώθηκε' : 'χειροτέρεψε'} κατά ${Math.abs(d.delta)} μονάδες από ${d.prev.day}.`, why: d.delta > 0 ? 'Οι τελευταίες διορθώσεις φαίνεται να βοήθησαν (στο ίδιο είδος μέτρησης).' : 'Κάτι άλλαξε προς το χειρότερο: δες τα λάθη του τομέα.', go: '' });
+  }
+  const match = ds.find((d) => d.id === 'match');
+  const variant = match && match.problems.find((p) => /άλλο χρώμα/.test(p.what));
+  if (variant && variant.n >= 3) out.push({ prio: 14, domain: 'Χρώμα', text: `Εντοπίστηκαν ${variant.n} λάθη «άλλο χρώμα / μέγεθος» στις αντιστοιχίες.`, why: 'Το πιο συχνό λάθος: κοίτα αν αφορά συγκεκριμένα καταστήματα ή κατηγορίες (στο «Τι χρειάζεται»).', go: '' });
+  // (a known systematic mistake comes before a domain that is only measured too little)
+  for (const host of doubtShops().keys()) out.push({ prio: 13, domain: 'Πηγές', text: `Το κατάστημα ${host} έχει χαμηλότερη αξιοπιστία από τα υπόλοιπα.`, why: 'Οι αντιστοιχίες του δεν μετράνε πια μόνες τους· αν το ξέρεις αξιόπιστο, οι «Ίδιο» σου το διορθώνουν.', go: 'product' });
+  const ag = aiAgreement();
+  if (ag.n >= 10 && !ag.proven) out.push({ prio: 3, domain: 'AI', text: `Το AI συμφωνεί μαζί σου ${ag.p}% (${ag.same}/${ag.n}): δεν μετράει ακόμα στην εκμάθηση.`, why: 'Χρειάζεται ≥90% σε ≥20 κοινές απαντήσεις· οι έλεγχοί σου στο «Το AI διαφωνεί» το δείχνουν γρηγορότερα.', go: 'aidoubts' });
+  if (!out.length) out.push({ prio: 0, domain: '', text: 'Δεν απαιτείται δική σου ενέργεια — το σύστημα προχωρά μόνο του.', why: 'Όλοι οι τομείς που μετριούνται έχουν επαρκές δείγμα και κανένα γνωστό συστηματικό λάθος.', go: '' });
+  return out.sort((a, b) => b.prio - a.prio).slice(0, 5); // (the five most useful: never a long list of chores)
+}
+
 /** What was answered lately (newest first), with the product and the shop — each one can be taken back (undo). */
 function recent(n) {
   const catalog = require('./catalog');
@@ -369,4 +532,4 @@ function recent(n) {
   });
 }
 
-module.exports = { migrateVariants, undo, aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };
+module.exports = { domains, actions, nextStep, ENOUGH, DOMAINS, migrateVariants, undo, aiRound, aiJudge, aiPrompt, aiDoubts, aiAgreement, calibration, calibrationFor, CAL_MIN, KEY, record, sample, dossier, check, scoreboard, doubtShops, recent, wilson, automatic, DOUBT_MIN, DOUBT_SHARE };

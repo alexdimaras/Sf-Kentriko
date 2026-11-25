@@ -330,6 +330,23 @@ function shop() {
       fixes.invalidate();
       const im2 = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
       ok(im2 && im2.to.some((u) => /k16099-01-black/.test(u)) && im2.level === 'high', 'the same black photo at two shops whose titles say black (same EAN) → proposed, sure', JSON.stringify(im2 && [im2.to, im2.level]));
+      {
+        const PC = require(APP + '/lib/photocheck');
+        const ph = (im2.photos || [])[0];
+        ok(ph && ph.category === 'right' && ph.src && /EAN/.test(ph.why), 'every proposed photo says its category, why and its source', JSON.stringify(ph));
+        const smp = PC.sample(10);
+        ok(smp.rows.some((r) => r.k === 'sf:15' && r.url === ph.u && r.category === 'right'), 'the photo sample: the proposed photos one by one, with what the program said');
+        PC.check({ k: 'sf:15', url: ph.u, category: 'other_colour', sample: true, prog: 'right' }, 'alex');
+        fixes.invalidate();
+        const im3x = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+        ok(!im3x || !im3x.to.includes(ph.u), 'a person said «another colour»: that photo is not proposed any more');
+        const dsP = require(APP + '/lib/accuracy').domains().find((d) => d.id === 'photos');
+        ok(dsP.main && dsP.main.basis === 'sample' && dsP.main.n === 1 && dsP.main.no === 1 && dsP.problems.some((p) => p.what === 'άλλο χρώμα'), 'the accuracy of photos is measured from these checks (its own domain), with the kind of mistake', JSON.stringify([dsP.main, dsP.problems]));
+        PC.undo({ k: 'sf:15', url: ph.u });
+        fixes.invalidate();
+        const im3y = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
+        ok(im3y && im3y.to.includes(ph.u), 'undo: proposed again as before');
+      }
       // the supplier's item of ANOTHER colour of the model: its text fits, its photos do not
       store.write('market', {});
       const keepEc = store.read('enrich-cache', null);
@@ -338,6 +355,31 @@ function shop() {
       const im3 = fixes.compute().items.find((c) => c.pid === 15 && c.field === 'images');
       ok(!im3 || !im3.to.some((u) => /sup\.example/.test(u)), 'the supplier\'s OLIVE item matched to our BLACK product: no photos from it', JSON.stringify(im3 && im3.to));
       store.write('enrich-cache', keepEc || { products: {}, pages: {} });
+      // every candidate photo on its own (25/11 §1): a category per photo, never one score
+      {
+        const PC = require(APP + '/lib/photocheck');
+        const ours = { name: 'ΣΑΚΙΔΙΟ PENTAGON KYLER 36L ΜΑΥΡΟ', images: ['https://shop.example/wp-content/uploads/kyler-main-600x600.jpg'] };
+        const cl = (u, ctx) => PC.classify(ours, u, Object.assign({ ourKeys: new Set(ours.images.map(PC.keyOf)) }, ctx || {})).category;
+        const ex = { exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' };
+        ok(cl('https://a.gr/img/k16110-olive-1.jpg', ex) === 'other_colour' && cl('https://a.gr/img/kyler-a.jpg', { exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Coyote' }) === 'other_colour' && cl('https://a.gr/img/kyler.jpg', Object.assign({ multi: true }, ex)) === 'other_colour',
+          'another colour: in the file name · in the page title · the main photo of a page in several colours');
+        ok(cl('https://a.gr/img/kyler-pro-black.jpg', ex) === 'other_version' && cl('https://a.gr/img/kyler-mk2.jpg', ex) === 'other_version', 'another edition (PRO / MK2) that ours is not');
+        ok(cl('https://a.gr/img/kyler-spare-strap.jpg', ex) === 'accessory' && cl('https://a.gr/img/kyler-black-box.jpg', ex) === 'packaging' && cl('https://a.gr/img/size-chart-bags.jpg', ex) === 'generic', 'an accessory / spare part · the box · a size chart (not the product)');
+        ok(cl('https://b.gr/x/kyler-main.jpg', ex) === 'duplicate' && cl('https://a.gr/img/kyler-black-150x150.jpg', ex) === 'poor', 'our own photo at another address / size · a thumbnail too small');
+        ok(cl('https://a.gr/img/kyler-black-1.jpg', ex) === 'right' && cl('https://a.gr/img/kyler-1.jpg', { proof: 'words', title: 'Pentagon Kyler 36L Black' }) === 'maybe' && cl('https://a.gr/img/kyler-2.jpg', { exact: true, proof: 'ean', title: 'Pentagon Kyler 36L' }) === 'maybe',
+          'the right product and colour (EAN + black) · by words only: «confirm it» · our title says a colour, theirs none: «confirm it»');
+        const g = PC.gallery(ours, [
+          { u: 'https://a.gr/img/kyler-black-box.jpg', exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' },
+          { u: 'https://a.gr/img/kyler-black-1.jpg', exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' },
+          { u: 'https://a.gr/img/kyler-black-1-1024x1024.jpg', exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' },
+          { u: 'https://a.gr/img/kyler-olive-1.jpg', exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' },
+          { u: 'https://a.gr/img/kyler-black-detail-zip.jpg', exact: true, proof: 'ean', title: 'Pentagon Kyler 36L Black' },
+        ]);
+        ok(g.take.map((x) => x.u.split('/').pop()).join() === 'kyler-black-1.jpg,kyler-black-detail-zip.jpg,kyler-black-box.jpg' && g.left.map((x) => x.category).sort().join() === 'duplicate,other_colour',
+          'a gallery for our variant: the right ones first, a detail kept, the box last; the same photo at another size and the olive one left out (with why)', JSON.stringify([g.take.map((x) => x.u.split('/').pop()), g.left.map((x) => x.category)]));
+        const g2 = PC.gallery(ours, [{ u: 'https://a.gr/img/kyler-black-1.jpg', exact: true, proof: 'ean', title: 'x' }], { checks: { 'https://a.gr/img/kyler-black-1.jpg': { verdict: 'no', category: 'other_version' } } });
+        ok(!g2.take.length && g2.left[0].person && /Το είπες εσύ/.test(g2.left[0].why), 'a person said «another edition»: that photo is never proposed again');
+      }
       ok(fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8 ΜΑΥΡΟ' }, 'https://x/k16099-olive-2_1024x.jpg') && !fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8 ΜΑΥΡΟ' }, 'https://x/k16099-black.jpg') && !fixes.otherColourPhoto({ name: 'ΣΑΚΙΔΙΟ PENTAGON RUSH 8' }, 'https://x/olive.jpg'),
         'a file name that says another colour is never used (our title has no colour: nothing to compare, nothing dropped)');
     }

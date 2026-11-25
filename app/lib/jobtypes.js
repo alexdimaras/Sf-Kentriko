@@ -121,7 +121,7 @@ function registerAI() {
     },
     async run(payload, api) {
       const localai = require('./localai');
-      const path = payload.path === '/api/tags' ? '/api/tags' : payload.path === '/api/generate' ? '/api/generate' : null;
+      const path = payload.path === '/api/tags' ? '/api/tags' : payload.path === '/api/generate' ? '/api/generate' : payload.path === '/api/show' ? '/api/show' : null;
       if (!path) throw new Error('Άγνωστη ερώτηση προς το AI.');
       api.progress(0, 1, path === '/api/tags' ? 'Έλεγχος του Ollama…' : 'Το AI του υπολογιστή γράφει…');
       // the same address the worker checks every minute (worker.json «ollamaUrl», else SFK_OLLAMA_URL, else 127.0.0.1)
@@ -132,10 +132,16 @@ function registerAI() {
       const body = path === '/api/generate' ? Object.assign({ model: String(b.model || ''), prompt: String(b.prompt || '').slice(0, 60000), stream: false, keep_alive: b.keep_alive || '15m', options: b.options && typeof b.options === 'object' ? b.options : {} }, fmt ? { format: fmt } : {}, b.system ? { system: String(b.system).slice(0, 4000) } : {}) : null;
       const t0 = Date.now();
       let j;
-      try { j = await localai.ollamaFetch(base, path, body, { timeout: path === '/api/tags' ? 15000 : Number(payload.timeout) || 300000, signal: api.signal }); } catch (e) {
+      // (a question with pictures: the computer fetches them itself — only public addresses, JPEG / PNG)
+      let send = path === '/api/show' ? { model: String(b.model || '').slice(0, 200) } : body;
+      if (path === '/api/generate' && Array.isArray(b.imageUrls) && b.imageUrls.length) {
+        try { send = await localai.withImages(Object.assign({}, body, { imageUrls: b.imageUrls.slice(0, 4).map(String) })); } catch (e) { throw Object.assign(new Error(e.message), { fatal: true }); }
+      }
+      try { j = await localai.ollamaFetch(base, path, send, { timeout: path === '/api/tags' || path === '/api/show' ? 15000 : Number(payload.timeout) || 300000, signal: api.signal }); } catch (e) {
         // the reason travels to the cloud as it is (missing model, memory, Ollama closed…)
         throw Object.assign(new Error(e.message), { fatal: true, cancelled: !!e.cancelled });
       }
+      if (path === '/api/show') return { capabilities: Array.isArray(j.capabilities) ? j.capabilities.map(String).slice(0, 10) : null, families: j.details && Array.isArray(j.details.families) ? j.details.families.map(String).slice(0, 10) : [] };
       if (path === '/api/tags') return { models: (j.models || []).map((x) => ({ name: x.name, size: x.size || 0, details: x.details ? { family: x.details.family || '', families: x.details.families || [], parameter_size: x.details.parameter_size || '' } : {} })) };
       return { response: String(j.response || ''), model: String(j.model || body.model), eval_count: Number(j.eval_count) || 0, prompt_eval_count: Number(j.prompt_eval_count) || 0, done_reason: String(j.done_reason || ''), ms: Date.now() - t0,
         // Ollama's own times (nanoseconds): loading the model, reading the question, writing the answer, in all
